@@ -1,0 +1,4 @@
+category: Musical_Instruments
+metadata: none  # none / raw / sentence
+split: leave_one_out # last_out / timestamp
+kcore: 5core    # 5core / 0core

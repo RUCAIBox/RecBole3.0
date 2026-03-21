@@ -1,0 +1,1 @@
+from recbole.models.base import BaseModel
