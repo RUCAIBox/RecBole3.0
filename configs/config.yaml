@@ -1,0 +1,14 @@
+﻿defaults:
+  - optional dataset: null
+  - optional model: null
+  - optional trainer: null
+  - _self_
+
+runtime:
+  seed: 42
+  device: auto
+  output_dir: outputs
+
+hydra:
+  run:
+    dir: ${runtime.output_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}

@@ -1,0 +1,13 @@
+name: hstu
+history_max_length: 50
+embedding_dim: 64
+num_layers: 2
+num_heads: 2
+attention_dim: 16
+linear_hidden_dim: 16
+linear_dropout_rate: 0.1
+attn_dropout_rate: 0.0
+temperature: 0.05
+l2_norm_eps: 1.0e-6
+normalize_embeddings: true
+num_time_buckets: 128
