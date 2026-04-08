@@ -5,7 +5,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from recbole3.dataset import Interaction, RecordsDataset, RetrievalEvalRequest
-from recbole3.model.base import BaseRankingModelDataset, BaseRetrievalModelDataset, ModelConfig
+from recbole3.model.base import BaseRankingModelDataset, BaseRetrievalModelDataset, ModelConfig, ModelDatasets
+from recbole3.model.hstu.config import HSTUConfig
 
 
 @dataclass(slots=True)
@@ -85,7 +86,7 @@ class BaseSequentialRankingModelDataset(
 ):
     """Model-side ranking dataset that adds history_item_ids to every split."""
 
-    def _build_model_datasets(self, *, model_config: ModelConfig) -> None:
+    def _build_model_datasets(self, *, model_config: HSTUConfig) -> ModelDatasets[SequentialInteraction, SequentialInteraction]:
         history_max_length = _get_history_max_length(model_config)
         train_records, history_state = self._build_sequential_interactions(
             list(self.get_train_dataset()),
@@ -101,8 +102,8 @@ class BaseSequentialRankingModelDataset(
             initial_histories=history_state,
             history_max_length=history_max_length,
         )
-        self._set_train_dataset(RecordsDataset(train_records))
-        self._set_eval_datasets(
+        return ModelDatasets(
+            train_dataset=RecordsDataset(train_records),
             valid_dataset=RecordsDataset(valid_records),
             test_dataset=RecordsDataset(test_records),
         )
@@ -142,7 +143,11 @@ class BaseSequentialRetrievalModelDataset(
 ):
     """Model-side retrieval dataset that adds history_item_ids to train and eval splits."""
 
-    def _build_model_datasets(self, *, model_config: ModelConfig) -> None:
+    def _build_model_datasets(
+        self,
+        *,
+        model_config: ModelConfig,
+    ) -> ModelDatasets[SequentialInteraction, SequentialRetrievalEvalRequest]:
         history_max_length = _get_history_max_length(model_config)
         train_records, history_state = self._build_sequential_interactions(
             list(self.get_train_dataset()),
@@ -158,8 +163,8 @@ class BaseSequentialRetrievalModelDataset(
             initial_histories=history_state,
             history_max_length=history_max_length,
         )
-        self._set_train_dataset(RecordsDataset(train_records))
-        self._set_eval_datasets(
+        return ModelDatasets(
+            train_dataset=RecordsDataset(train_records),
             valid_dataset=RecordsDataset(valid_records),
             test_dataset=RecordsDataset(test_records),
         )

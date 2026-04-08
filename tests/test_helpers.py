@@ -20,7 +20,16 @@ from recbole3.dataset import (
 )
 from recbole3.dataset.base import DatasetConfig
 from recbole3.evaluation import EvalConfig, MetricSpec
-from recbole3.model import MODEL_TABLE, BaseCollator, BaseRankingModel, BaseRetrievalModel, BaseRetrievalModelDataset, ModelConfig, ModelSpec
+from recbole3.model import (
+    MODEL_TABLE,
+    BaseCollator,
+    BaseRankingModel,
+    BaseRetrievalModel,
+    BaseRetrievalModelDataset,
+    ModelConfig,
+    ModelDatasets,
+    ModelSpec,
+)
 from recbole3.trainer import TRAINER_TABLE, OptimizerConfig, Trainer, TrainerConfig, TrainerSpec
 
 
@@ -148,8 +157,9 @@ class StubRankingEvalCollator(BaseCollator):
 
 
 class StubModelDataset(BaseRetrievalModelDataset[Any, Any]):
-    def _build_model_datasets(self, *, model_config: ModelConfig) -> None:
+    def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[Any, Any]:
         self.model_name = model_config.name
+        return ModelDatasets()
 
 
 class StubRankingModel(BaseRankingModel):

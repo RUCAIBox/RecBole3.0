@@ -22,6 +22,15 @@ class ModelConfig:
     name: str = field(default="", metadata={"help": "Registered model name."})
 
 
+@dataclass(slots=True)
+class ModelDatasets(Generic[TModelTrain, TModelEval]):
+    """Optional model-side split replacements applied by BaseModelDataset."""
+
+    train_dataset: Dataset[TModelTrain] | None = None
+    valid_dataset: Dataset[TModelEval] | None = None
+    test_dataset: Dataset[TModelEval] | None = None
+
+
 class BaseCollator(ABC):
     """Turn model-produced feature records into model-ready batches via DataLoader.collate_fn."""
 
@@ -93,7 +102,8 @@ class BaseModelDataset(ABC, Generic[TModelTrain, TModelEval]):
         model_config: ModelConfig,
     ) -> Self:
         model_dataset = cls._clone_task_dataset(dataset)
-        model_dataset._build_model_datasets(model_config=model_config)
+        model_datasets = model_dataset._build_model_datasets(model_config=model_config)
+        model_dataset._apply_model_datasets(model_datasets)
         return model_dataset
 
     @classmethod
@@ -102,8 +112,8 @@ class BaseModelDataset(ABC, Generic[TModelTrain, TModelEval]):
         """Clone one prepared task dataset into the model-side dataset type."""
 
     @abstractmethod
-    def _build_model_datasets(self, *, model_config: ModelConfig) -> None:
-        """Replace or augment prepared split datasets for one model."""
+    def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[TModelTrain, TModelEval]:
+        """Return model-side prepared split replacements for one model."""
 
     @staticmethod
     def _copy_task_dataset_state(target: BaseTaskDataset[Any, Any], source: BaseTaskDataset[Any, Any]) -> None:
@@ -121,18 +131,29 @@ class BaseModelDataset(ABC, Generic[TModelTrain, TModelEval]):
         target._valid_dataset = source.get_eval_dataset("valid")
         target._test_dataset = source.get_eval_dataset("test")
 
-    def _set_train_dataset(self, dataset: Dataset[Any]) -> None:
-        self._train_dataset = dataset
+    def _apply_model_datasets(self, model_datasets: ModelDatasets[TModelTrain, TModelEval]) -> None:
+        if not isinstance(model_datasets, ModelDatasets):
+            if model_datasets is None:
+                raise TypeError(
+                    f"{type(self).__name__}._build_model_datasets(...) must return ModelDatasets. "
+                    "The old manual _set_* protocol has been removed."
+                )
+            raise TypeError(
+                f"{type(self).__name__}._build_model_datasets(...) must return ModelDatasets, "
+                f"got {type(model_datasets).__name__}."
+            )
+        if model_datasets.train_dataset is not None:
+            self._train_dataset = self._require_dataset("train_dataset", model_datasets.train_dataset)
+        if model_datasets.valid_dataset is not None:
+            self._valid_dataset = self._require_dataset("valid_dataset", model_datasets.valid_dataset)
+        if model_datasets.test_dataset is not None:
+            self._test_dataset = self._require_dataset("test_dataset", model_datasets.test_dataset)
 
-    def _set_valid_dataset(self, dataset: Dataset[Any]) -> None:
-        self._valid_dataset = dataset
-
-    def _set_test_dataset(self, dataset: Dataset[Any]) -> None:
-        self._test_dataset = dataset
-
-    def _set_eval_datasets(self, *, valid_dataset: Dataset[Any], test_dataset: Dataset[Any]) -> None:
-        self._set_valid_dataset(valid_dataset)
-        self._set_test_dataset(test_dataset)
+    @staticmethod
+    def _require_dataset(name: str, dataset: Dataset[Any]) -> Dataset[Any]:
+        if not isinstance(dataset, Dataset):
+            raise TypeError(f"ModelDatasets.{name} must be a torch.utils.data.Dataset, got {type(dataset).__name__}.")
+        return dataset
 
 
 class BaseRankingModelDataset(BaseModelDataset[TModelTrain, TModelEval], RankingDataset, ABC):

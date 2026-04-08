@@ -13,6 +13,7 @@ from recbole3.model.base import (
     BaseRetrievalModel,
     BaseRetrievalModelDataset,
     ModelConfig,
+    ModelDatasets,
 )
 from recbole3.model.hstu import (
     HSTUConfig,
@@ -74,6 +75,7 @@ __all__ = [
     "HSTURetrievalEvalRequest",
     "MODEL_TABLE",
     "ModelConfig",
+    "ModelDatasets",
     "ModelSpec",
     "SequentialModelConfig",
     "SequentialInteraction",

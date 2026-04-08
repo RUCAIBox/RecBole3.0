@@ -219,20 +219,22 @@ Use the task-matched base class:
 You do not need to override `from_task_dataset(...)`. The base class clones one prepared task dataset for you, then calls `_build_model_datasets(...)`.
 
 ```python
-from recbole3.model import BaseRetrievalModelDataset, MODEL_TABLE, ModelSpec
+from recbole3.model import BaseRetrievalModelDataset, MODEL_TABLE, ModelDatasets, ModelSpec
 
 
 class MyModelDataset(BaseRetrievalModelDataset[Any, Any]):
-    def _build_model_datasets(self, *, model_config: MyModelConfig) -> None:
+    def _build_model_datasets(self, *, model_config: MyModelConfig) -> ModelDatasets[Any, Any]:
         train_dataset = self.get_train_dataset()
-        self._set_train_dataset(train_dataset)
+        return ModelDatasets(train_dataset=train_dataset)
 ```
 
 Rules for model-side datasets:
 
 - keep the same task as the source task dataset
+- return `ModelDatasets(...)` from `_build_model_datasets(...)`
 - you may replace `train_dataset`
 - you may replace eval datasets only if they still satisfy the task evaluation contract
+- any split left as `None` keeps the cloned prepared split unchanged
 - do not move source download or source cache logic into the model-data class
 
 ### Sequential Model-side Dataset

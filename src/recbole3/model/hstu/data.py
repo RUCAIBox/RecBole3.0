@@ -7,7 +7,8 @@ from typing import Any
 import torch
 
 from recbole3.dataset import Interaction, RecordsDataset, RetrievalEvalRequest
-from recbole3.model.base import BaseCollator, BaseRetrievalModelDataset, ModelConfig
+from recbole3.model.base import BaseCollator, BaseRetrievalModelDataset, ModelDatasets
+from recbole3.model.hstu.config import HSTUConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +73,11 @@ class HSTUModelDataset(
 ):
     """Model-side retrieval dataset that adds HSTU item and timestamp histories."""
 
-    def _build_model_datasets(self, *, model_config: ModelConfig) -> None:
+    def _build_model_datasets(
+        self,
+        *,
+        model_config: HSTUConfig,
+    ) -> ModelDatasets[HSTUInteraction, HSTURetrievalEvalRequest]:
         history_max_length = _require_history_max_length(model_config)
         train_records, history_state = self._build_hstu_interactions(
             list(self.get_train_dataset()),
@@ -88,8 +93,8 @@ class HSTUModelDataset(
             initial_histories=history_state,
             history_max_length=history_max_length,
         )
-        self._set_train_dataset(RecordsDataset(train_records))
-        self._set_eval_datasets(
+        return ModelDatasets(
+            train_dataset=RecordsDataset(train_records),
             valid_dataset=RecordsDataset(valid_records),
             test_dataset=RecordsDataset(test_records),
         )
@@ -187,7 +192,7 @@ def _build_hstu_history_batch(records: Sequence[HSTUInteraction | HSTURetrievalE
     }
 
 
-def _require_history_max_length(model_config: ModelConfig) -> int:
+def _require_history_max_length(model_config: HSTUConfig) -> int:
     history_max_length = getattr(model_config, "history_max_length", None)
     if history_max_length is None or int(history_max_length) <= 0:
         raise ValueError("HSTU requires model_config.history_max_length to be a positive integer.")
