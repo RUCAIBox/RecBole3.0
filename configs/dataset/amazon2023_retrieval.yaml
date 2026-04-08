@@ -1,0 +1,13 @@
+name: amazon2023_retrieval
+category: All_Beauty
+kcore: 5core
+metadata_mode: sentence
+download_source: modelscope
+download_dir: data/raw
+processed_dir: data/processed
+split:
+  strategy: leave_one_out
+  order: chronological
+  per_user: true
+  valid_holdout_num: 1
+  test_holdout_num: 1
