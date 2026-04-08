@@ -1,0 +1,12 @@
+n_layers: 2
+n_heads: 2
+d_model: 64
+d_ff: 64
+linear_dim: 32
+attention_dim: 32
+linear_dropout_rate: 0.5
+attn_dropout_rate: 0.0
+
+temperature: 0.1
+item_l2_norm: True
+l2_norm_eps: 1e-6
