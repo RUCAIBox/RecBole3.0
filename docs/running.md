@@ -18,7 +18,6 @@ The default built-in example in this repository uses:
 
 - `dataset=amazon2023_retrieval`
 - `model=hstu`
-- `trainer=retrieval`
 
 That combination also needs optional extras:
 
@@ -38,19 +37,23 @@ Hydra group selection comes from filenames under `configs/`:
 
 - `configs/dataset/amazon2023_retrieval.yaml` -> `dataset=amazon2023_retrieval`
 - `configs/model/hstu.yaml` -> `model=hstu`
-- `configs/trainer/retrieval.yaml` -> `trainer=retrieval`
 
-The root config keeps these groups optional, so a normal run should choose all three explicitly.
+The root config keeps dataset and model groups optional, so a normal run should choose both explicitly.
+
+Each model config file provides:
+
+- the top-level `model` block
+- the top-level `trainer` defaults bound to that model
 
 ## 3. Minimal Run Command
 
 Run from the repository root:
 
 ```bash
-python -m recbole3.run dataset=amazon2023_retrieval model=hstu trainer=retrieval
+python -m recbole3.run dataset=amazon2023_retrieval model=hstu
 ```
 
-This composes `configs/config.yaml` together with the selected dataset, model, and trainer group files.
+This composes `configs/config.yaml` together with the selected dataset and model files. The selected model file injects the matching `trainer` defaults.
 
 ## 4. Override Individual Fields
 
@@ -62,7 +65,6 @@ Example:
 python -m recbole3.run \
   dataset=amazon2023_retrieval \
   model=hstu \
-  trainer=retrieval \
   dataset.category=Books \
   dataset.kcore=full \
   trainer.max_epochs=10 \
@@ -91,7 +93,6 @@ Example:
 python -m recbole3.run \
   dataset=amazon2023_retrieval \
   model=hstu \
-  trainer=retrieval \
   runtime.output_dir=outputs/debug_run
 ```
 
@@ -103,10 +104,15 @@ If checkpoint saving is enabled, checkpoints are written under:
 
 ## 6. Common Issues
 
-`Missing dataset/model/trainer configuration`
+`Missing dataset/model configuration`
 
 - You did not select one of the required Hydra config groups.
-- Start from `dataset=... model=... trainer=...`.
+- Start from `dataset=... model=...`.
+
+`Could not override 'trainer'`
+
+- Trainer is no longer a standalone Hydra config group.
+- Select the model with `model=...`, then override trainer fields such as `trainer.max_epochs=...`.
 
 `model.name=hstu` fails with missing `fbgemm-gpu`
 
@@ -127,7 +133,6 @@ cfg = compose_config(
     overrides=[
         "dataset=amazon2023_retrieval",
         "model=hstu",
-        "trainer=retrieval",
         "trainer.max_epochs=2",
     ]
 )

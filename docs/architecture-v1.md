@@ -135,13 +135,14 @@ Those sequential helpers are model-side only. They do not change dataset parser 
 
 ## Component Tables
 
-The framework uses three explicit tables rather than dynamic registration:
+The framework uses two explicit tables rather than dynamic registration:
 
 - `DATASET_TABLE`
 - `MODEL_TABLE`
-- `TRAINER_TABLE`
 
-User config still supplies strings such as `dataset.name`, `model.name`, and `trainer.name`. `run_experiment(...)` resolves those names through the tables and instantiates the matching config dataclasses and implementations.
+`MODEL_TABLE` binds each model to its model class, model config class, optional model-data class, trainer class, and trainer config class.
+
+User config still supplies strings such as `dataset.name` and `model.name`. `run_experiment(...)` resolves those names through the tables, instantiates the matching implementations, and reads trainer defaults from the selected model config.
 
 ## Prepared Dataset Contract
 

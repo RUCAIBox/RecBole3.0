@@ -46,7 +46,6 @@ def test_instantiate_dataclass_recursively_builds_nested_trainer_config() -> Non
     trainer_config = instantiate_dataclass(
         StubTrainerConfig,
         {
-            "name": "stub_trainer",
             "batch_size": 2,
             "optimizer": {
                 "name": "AdamW",

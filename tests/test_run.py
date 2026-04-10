@@ -14,7 +14,6 @@ def test_full_stub_flow_runs(tmp_path: Path) -> None:
     config_dir = tmp_path / "configs"
     (config_dir / "dataset").mkdir(parents=True)
     (config_dir / "model").mkdir(parents=True)
-    (config_dir / "trainer").mkdir(parents=True)
 
     (config_dir / "config.yaml").write_text(
         "\n".join(
@@ -22,7 +21,6 @@ def test_full_stub_flow_runs(tmp_path: Path) -> None:
                 "defaults:",
                 "  - dataset: stub_dataset",
                 "  - model: stub_model",
-                "  - trainer: stub_trainer",
                 "  - _self_",
                 "runtime:",
                 "  seed: 7",
@@ -47,26 +45,29 @@ def test_full_stub_flow_runs(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    (config_dir / "model" / "stub_model.yaml").write_text("name: stub_model\n", encoding="utf-8")
-    (config_dir / "trainer" / "stub_trainer.yaml").write_text(
+    (config_dir / "model" / "stub_model.yaml").write_text(
         "\n".join(
             [
-                "name: stub_trainer",
-                "batch_size: 2",
-                "shuffle: false",
-                "optimizer:",
-                "  name: SGD",
-                "  kwargs:",
-                "    lr: 0.001",
-                "checkpoint:",
-                "  save_last: true",
-                "eval:",
-                "  protocol: sampled",
-                "  neg_sampling_num: 2",
-                "  candidate_seed: 7",
-                "  metrics:",
-                "    - name: recall",
-                "      ks: [3]",
+                "# @package _global_",
+                "",
+                "model:",
+                "  name: stub_model",
+                "trainer:",
+                "  batch_size: 2",
+                "  shuffle: false",
+                "  optimizer:",
+                "    name: SGD",
+                "    kwargs:",
+                "      lr: 0.001",
+                "  checkpoint:",
+                "    save_last: true",
+                "  eval:",
+                "    protocol: sampled",
+                "    neg_sampling_num: 2",
+                "    candidate_seed: 7",
+                "    metrics:",
+                "      - name: recall",
+                "        ks: [3]",
             ]
         ),
         encoding="utf-8",
@@ -89,7 +90,6 @@ def test_run_wraps_task_dataset_with_model_data_class(tmp_path: Path) -> None:
     config_dir = tmp_path / "configs_model_data"
     (config_dir / "dataset").mkdir(parents=True)
     (config_dir / "model").mkdir(parents=True)
-    (config_dir / "trainer").mkdir(parents=True)
 
     (config_dir / "config.yaml").write_text(
         "\n".join(
@@ -97,7 +97,6 @@ def test_run_wraps_task_dataset_with_model_data_class(tmp_path: Path) -> None:
                 "defaults:",
                 "  - dataset: stub_dataset",
                 "  - model: stub_model_with_data",
-                "  - trainer: stub_trainer",
                 "  - _self_",
                 "runtime:",
                 "  seed: 7",
@@ -122,24 +121,27 @@ def test_run_wraps_task_dataset_with_model_data_class(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    (config_dir / "model" / "stub_model_with_data.yaml").write_text("name: stub_model_with_data\n", encoding="utf-8")
-    (config_dir / "trainer" / "stub_trainer.yaml").write_text(
+    (config_dir / "model" / "stub_model_with_data.yaml").write_text(
         "\n".join(
             [
-                "name: stub_trainer",
-                "batch_size: 2",
-                "shuffle: false",
-                "optimizer:",
-                "  name: SGD",
-                "  kwargs:",
-                "    lr: 0.001",
-                "eval:",
-                "  protocol: sampled",
-                "  neg_sampling_num: 2",
-                "  candidate_seed: 7",
-                "  metrics:",
-                "    - name: recall",
-                "      ks: [3]",
+                "# @package _global_",
+                "",
+                "model:",
+                "  name: stub_model_with_data",
+                "trainer:",
+                "  batch_size: 2",
+                "  shuffle: false",
+                "  optimizer:",
+                "    name: SGD",
+                "    kwargs:",
+                "      lr: 0.001",
+                "  eval:",
+                "    protocol: sampled",
+                "    neg_sampling_num: 2",
+                "    candidate_seed: 7",
+                "    metrics:",
+                "      - name: recall",
+                "        ks: [3]",
             ]
         ),
         encoding="utf-8",

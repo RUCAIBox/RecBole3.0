@@ -268,14 +268,12 @@ def test_table_and_run_experiment_support_amazon2023(monkeypatch: pytest.MonkeyP
     config_dir = tmp_path / "configs"
     (config_dir / "dataset").mkdir(parents=True)
     (config_dir / "model").mkdir(parents=True)
-    (config_dir / "trainer").mkdir(parents=True)
     (config_dir / "config.yaml").write_text(
         "\n".join(
             [
                 "defaults:",
                 "  - dataset: amazon2023_retrieval",
                 "  - model: stub_model",
-                "  - trainer: stub_trainer",
                 "  - _self_",
                 "runtime:",
                 "  seed: 7",
@@ -305,24 +303,27 @@ def test_table_and_run_experiment_support_amazon2023(monkeypatch: pytest.MonkeyP
         ),
         encoding="utf-8",
     )
-    (config_dir / "model" / "stub_model.yaml").write_text("name: stub_model\n", encoding="utf-8")
-    (config_dir / "trainer" / "stub_trainer.yaml").write_text(
+    (config_dir / "model" / "stub_model.yaml").write_text(
         "\n".join(
             [
-                "name: stub_trainer",
-                "batch_size: 2",
-                "shuffle: false",
-                "optimizer:",
-                "  name: SGD",
-                "  kwargs:",
-                "    lr: 0.001",
-                "eval:",
-                "  protocol: sampled",
-                "  neg_sampling_num: 2",
-                "  candidate_seed: 7",
-                "  metrics:",
-                "    - name: recall",
-                "      ks: [3]",
+                "# @package _global_",
+                "",
+                "model:",
+                "  name: stub_model",
+                "trainer:",
+                "  batch_size: 2",
+                "  shuffle: false",
+                "  optimizer:",
+                "    name: SGD",
+                "    kwargs:",
+                "      lr: 0.001",
+                "  eval:",
+                "    protocol: sampled",
+                "    neg_sampling_num: 2",
+                "    candidate_seed: 7",
+                "    metrics:",
+                "      - name: recall",
+                "        ks: [3]",
             ]
         ),
         encoding="utf-8",

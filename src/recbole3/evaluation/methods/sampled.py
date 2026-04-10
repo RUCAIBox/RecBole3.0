@@ -7,7 +7,7 @@ import torch
 from recbole3.dataset import RetrievalEvalRequest
 from recbole3.evaluation.metric import MetricSpec, RetrievalEvalData
 from recbole3.evaluation.methods.base import BaseRetrievalEvaluationMethod
-from recbole3.model import BaseModel, BaseRetrievalModel
+from recbole3.model.base import BaseModel, BaseRetrievalModel
 
 
 class SampledEvaluationMethod(BaseRetrievalEvaluationMethod):

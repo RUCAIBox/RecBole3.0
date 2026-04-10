@@ -14,7 +14,7 @@ from recbole3.evaluation import EvalConfig, MetricSpec
 from recbole3.model import HSTUConfig, HSTUInteraction, HSTUModel, HSTUModelDataset, HSTURetrievalEvalRequest, get_model_spec
 from recbole3.model.hstu.data import HSTUEvalCollator, HSTUTrainCollator
 from recbole3.run import compose_config, run_experiment
-from recbole3.trainer import Trainer, get_trainer_spec
+from recbole3.trainer import Trainer, TrainerConfig
 from tests.test_helpers import StubDataset, StubDatasetConfig, ensure_stub_tables
 
 
@@ -140,8 +140,10 @@ def test_hstu_collators_pad_history_sequences() -> None:
 
 
 def test_hstu_model_registration_and_retrieval_trainer_registration_exist() -> None:
-    assert get_model_spec("hstu").config_cls is HSTUConfig
-    assert get_trainer_spec("base").trainer_cls is Trainer
+    model_spec = get_model_spec("hstu")
+    assert model_spec.config_cls is HSTUConfig
+    assert model_spec.trainer_cls is Trainer
+    assert model_spec.trainer_config_cls is TrainerConfig
 
 
 def test_hstu_model_requires_fbgemm_gpu_dependency() -> None:
@@ -195,7 +197,6 @@ def test_run_experiment_with_hstu_fails_fast_without_fbgemm_gpu(tmp_path: Path) 
     config_dir = tmp_path / "configs"
     (config_dir / "dataset").mkdir(parents=True)
     (config_dir / "model").mkdir(parents=True)
-    (config_dir / "trainer").mkdir(parents=True)
 
     (config_dir / "config.yaml").write_text(
         "\n".join(
@@ -203,7 +204,6 @@ def test_run_experiment_with_hstu_fails_fast_without_fbgemm_gpu(tmp_path: Path) 
                 "defaults:",
                 "  - dataset: stub_dataset",
                 "  - model: hstu",
-                "  - trainer: retrieval",
                 "  - _self_",
                 "runtime:",
                 "  seed: 7",
@@ -231,37 +231,33 @@ def test_run_experiment_with_hstu_fails_fast_without_fbgemm_gpu(tmp_path: Path) 
     (config_dir / "model" / "hstu.yaml").write_text(
         "\n".join(
             [
-                "name: hstu",
-                "history_max_length: 2",
-                "embedding_dim: 8",
-                "num_layers: 1",
-                "num_heads: 1",
-                "attention_dim: 4",
-                "linear_hidden_dim: 4",
-                "linear_dropout_rate: 0.0",
-                "attn_dropout_rate: 0.0",
-                "temperature: 1.0",
-                "normalize_embeddings: false",
-                "num_time_buckets: 16",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    (config_dir / "trainer" / "retrieval.yaml").write_text(
-        "\n".join(
-            [
-                "name: base",
-                "batch_size: 2",
-                "shuffle: false",
-                "optimizer:",
-                "  name: SGD",
-                "  kwargs:",
-                "    lr: 0.001",
-                "eval:",
-                "  protocol: full",
-                "  metrics:",
-                "    - name: recall",
-                "      ks: [3]",
+                "# @package _global_",
+                "",
+                "model:",
+                "  name: hstu",
+                "  history_max_length: 2",
+                "  embedding_dim: 8",
+                "  num_layers: 1",
+                "  num_heads: 1",
+                "  attention_dim: 4",
+                "  linear_hidden_dim: 4",
+                "  linear_dropout_rate: 0.0",
+                "  attn_dropout_rate: 0.0",
+                "  temperature: 1.0",
+                "  normalize_embeddings: false",
+                "  num_time_buckets: 16",
+                "trainer:",
+                "  batch_size: 2",
+                "  shuffle: false",
+                "  optimizer:",
+                "    name: SGD",
+                "    kwargs:",
+                "      lr: 0.001",
+                "  eval:",
+                "    protocol: full",
+                "    metrics:",
+                "      - name: recall",
+                "        ks: [3]",
             ]
         ),
         encoding="utf-8",
