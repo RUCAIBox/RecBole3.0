@@ -30,6 +30,8 @@ from recbole3.model.sequential import (
     SequentialRetrievalEvalRequest,
     build_history_item_ids,
 )
+from recbole3.trainer import Trainer
+from recbole3.trainer_config import TrainerConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +41,8 @@ class ModelSpec:
     model_cls: type[BaseModel]
     config_cls: type[ModelConfig]
     model_data_cls: type[BaseModelDataset[Any, Any]] | None = None
+    trainer_cls: type[Trainer] = Trainer
+    trainer_config_cls: type[TrainerConfig] = TrainerConfig
 
 
 MODEL_TABLE: dict[str, ModelSpec] = {
@@ -46,6 +50,8 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         model_cls=HSTUModel,
         config_cls=HSTUConfig,
         model_data_cls=HSTUModelDataset,
+        trainer_cls=Trainer,
+        trainer_config_cls=TrainerConfig,
     ),
 }
 

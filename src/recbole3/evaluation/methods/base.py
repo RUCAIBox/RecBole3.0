@@ -17,7 +17,7 @@ from recbole3.evaluation.metric import (
     RetrievalEvalData,
     create_builtin_metrics,
 )
-from recbole3.model import BaseModel
+from recbole3.model.base import BaseModel
 
 
 class BaseEvaluationMethod(ABC):

@@ -1,7 +1,6 @@
 ﻿defaults:
   - optional dataset: null
   - optional model: null
-  - optional trainer: null
   - _self_
 
 runtime:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence
 
@@ -11,97 +11,17 @@ from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 
 from recbole3.dataset import BaseTaskDataset
-from recbole3.evaluation import BaseEvaluationMethod, EvalConfig
-from recbole3.evaluation.methods import create_evaluation_method as build_evaluation_method
-from recbole3.model import BaseCollator, BaseModel
+from recbole3.model.base import BaseCollator, BaseModel
+from recbole3.trainer_config import (
+    CheckpointConfig,
+    EarlyStoppingConfig,
+    OptimizerConfig,
+    SchedulerConfig,
+    TrainerConfig,
+)
 
 
 EvalSplitName = Literal["valid", "test"]
-SchedulerInterval = Literal["step", "epoch"]
-
-
-@dataclass(slots=True)
-class EarlyStoppingConfig:
-    """Configuration for validation-driven early stopping."""
-
-    enabled: bool = field(default=False, metadata={"help": "Whether fit() stops early when the monitor stops improving."})
-    patience: int = field(default=3, metadata={"help": "Number of non-improving epochs tolerated before fit() stops."})
-    min_delta: float = field(default=0.0, metadata={"help": "Minimum monitor improvement required to reset early stopping."})
-
-
-@dataclass(slots=True)
-class CheckpointConfig:
-    """Configuration for model-weight checkpoint persistence."""
-
-    save_best: bool = field(default=False, metadata={"help": "Whether fit() writes the best monitored model weights."})
-    save_last: bool = field(default=False, metadata={"help": "Whether fit() writes the most recent model weights each epoch."})
-
-
-@dataclass(slots=True)
-class OptimizerConfig:
-    """Configuration for one torch.optim optimizer."""
-
-    name: str = field(default="Adam", metadata={"help": "Name of one torch.optim optimizer class."})
-    kwargs: dict[str, Any] = field(
-        default_factory=lambda: {"lr": 1e-3},
-        metadata={"help": "Keyword arguments passed into the optimizer constructor."},
-    )
-
-
-@dataclass(slots=True)
-class SchedulerConfig:
-    """Configuration for one torch.optim.lr_scheduler scheduler."""
-
-    name: str = field(metadata={"help": "Name of one torch.optim.lr_scheduler scheduler class."})
-    interval: SchedulerInterval = field(
-        default="step",
-        metadata={"help": "Whether fit() steps the scheduler every optimizer step or every epoch."},
-    )
-    kwargs: dict[str, Any] = field(
-        default_factory=dict,
-        metadata={"help": "Keyword arguments passed into the scheduler constructor."},
-    )
-
-
-@dataclass(slots=True)
-class TrainerConfig:
-    """Convenience trainer config template with the framework's standard fields."""
-
-    name: str = field(default="", metadata={"help": "Registered component name."})
-    batch_size: int = field(default=256, metadata={"help": "Default batch size used by trainer dataloaders."})
-    shuffle: bool = field(default=True, metadata={"help": "Whether to shuffle train samples in the dataloader."})
-    dataloader_num_workers: int = field(default=0, metadata={"help": "Worker count used by dataloaders."})
-    pin_memory: bool = field(default=False, metadata={"help": "Whether dataloaders pin host memory."})
-    mixed_precision: Literal["no", "fp16", "bf16"] = field(
-        default="no",
-        metadata={"help": "Accelerate mixed precision mode."},
-    )
-    gradient_accumulation_steps: int = field(
-        default=1,
-        metadata={"help": "Number of optimizer accumulation steps handled by accelerate."},
-    )
-    max_epochs: int = field(default=1, metadata={"help": "Number of epochs executed by fit()."})
-    optimizer: OptimizerConfig = field(
-        default_factory=OptimizerConfig,
-        metadata={"help": "Optimizer settings used during fit()."},
-    )
-    scheduler: SchedulerConfig | None = field(
-        default=None,
-        metadata={"help": "Optional learning-rate scheduler settings used during fit()."},
-    )
-    monitor: str | None = field(
-        default=None,
-        metadata={"help": "Validation metric key used by early stopping, best checkpointing, and metric-driven schedulers."},
-    )
-    early_stopping: EarlyStoppingConfig = field(
-        default_factory=EarlyStoppingConfig,
-        metadata={"help": "Early stopping policy driven by validation metrics."},
-    )
-    checkpoint: CheckpointConfig = field(
-        default_factory=CheckpointConfig,
-        metadata={"help": "Checkpoint save policy."},
-    )
-    eval: EvalConfig = field(kw_only=True, metadata={"help": "Evaluation protocol settings."})
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +32,8 @@ class MonitorSpec:
 
 class Trainer:
     """Align prepared data with train and evaluation flows and execute them through accelerate."""
+
+    config_cls = TrainerConfig
 
     def __init__(self, config: TrainerConfig):
         self.config = config
@@ -141,6 +63,8 @@ class Trainer:
         )
 
     def create_evaluation_method(self, prepared_data: BaseTaskDataset[Any, Any] | None = None) -> BaseEvaluationMethod:
+        from recbole3.evaluation.methods import create_evaluation_method as build_evaluation_method
+
         return build_evaluation_method(self.config.eval)
 
     def build_optimizer(self, model: BaseModel) -> Optimizer:
@@ -492,3 +416,12 @@ class Trainer:
         return float(sum(values) / len(values))
 
 
+__all__ = [
+    "CheckpointConfig",
+    "EarlyStoppingConfig",
+    "MonitorSpec",
+    "OptimizerConfig",
+    "SchedulerConfig",
+    "Trainer",
+    "TrainerConfig",
+]

@@ -273,8 +273,9 @@ Bind it in `MODEL_TABLE`:
 MODEL_TABLE["my_model"] = ModelSpec(
     model_cls=MyModel,
     config_cls=MyModelConfig,
-    task="retrieval",
     model_data_cls=MyModelDataset,
+    trainer_cls=Trainer,
+    trainer_config_cls=TrainerConfig,
 )
 ```
 
@@ -284,9 +285,9 @@ If one model does not need extra data processing, keep `model_data_cls=None`.
 
 You need:
 
-1. one `TrainerConfig` subclass
-2. one `Trainer` subclass or direct `Trainer` reuse
-3. one `TRAINER_TABLE` entry
+1. one `TrainerConfig` subclass in the model's `config.py` if the common config is not enough
+2. one `Trainer` subclass in the model directory if direct `Trainer` reuse is not enough
+3. one `ModelSpec(...)` binding that points at that trainer class and trainer config class
 
 Trainer code should consume prepared datasets through:
 
@@ -294,29 +295,40 @@ Trainer code should consume prepared datasets through:
 - `get_eval_dataset(...)`
 
 ```python
-from recbole3.trainer import TRAINER_TABLE, TrainerSpec
+from recbole3.model import MODEL_TABLE, ModelSpec
+from recbole3.trainer import Trainer
+from my_model.config import MyModelConfig, MyTrainerConfig
+from my_model.trainer import MyTrainer
 
-
-TRAINER_TABLE["my_trainer"] = TrainerSpec(
+MODEL_TABLE["my_model"] = ModelSpec(
+    model_cls=MyModel,
+    config_cls=MyModelConfig,
+    model_data_cls=MyModelDataset,
     trainer_cls=MyTrainer,
-    config_cls=MyTrainerConfig,
-    task="retrieval",
+    trainer_config_cls=MyTrainerConfig,
 )
 ```
 
 ## YAML Layout
 
-Each component should have one YAML file under:
+Each dataset should have one YAML file under:
 
 - `configs/dataset/`
+
+Each model should have one YAML file under:
+
 - `configs/model/`
-- `configs/trainer/`
 
 Example:
 
 ```yaml
+# @package _global_
+
+model:
+  name: my_model
+  history_max_length: 50
+
 trainer:
-  name: my_trainer
   optimizer:
     name: Adam
     kwargs:
@@ -328,6 +340,8 @@ trainer:
       - name: recall
         ks: [10]
 ```
+
+Model-data parameters belong in the `model` block because they are model-specific, even when they are consumed by `BaseModelDataset`.
 
 ## Checklist
 

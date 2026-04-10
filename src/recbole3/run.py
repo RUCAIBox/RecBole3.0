@@ -11,7 +11,6 @@ from omegaconf import DictConfig, OmegaConf
 from recbole3.config import RuntimeConfig, configs_dir, instantiate_dataclass
 from recbole3.dataset import BaseTaskDataset, get_dataset_spec
 from recbole3.model import BaseModelDataset, ModelSpec, get_model_spec
-from recbole3.trainer import get_trainer_spec
 
 
 def run_experiment(cfg: DictConfig) -> dict[str, Any]:
@@ -24,15 +23,13 @@ def run_experiment(cfg: DictConfig) -> dict[str, Any]:
 
     dataset_name = _require_component_name(dataset_cfg, "dataset")
     model_name = _require_component_name(model_cfg, "model")
-    trainer_name = _require_component_name(trainer_cfg, "trainer")
 
     dataset_spec = get_dataset_spec(dataset_name)
     model_spec = get_model_spec(model_name)
-    trainer_spec = get_trainer_spec(trainer_name)
 
     dataset = dataset_spec.dataset_cls(instantiate_dataclass(dataset_spec.config_cls, dataset_cfg))
     model = model_spec.model_cls(instantiate_dataclass(model_spec.config_cls, model_cfg))
-    trainer = trainer_spec.trainer_cls(instantiate_dataclass(trainer_spec.config_cls, trainer_cfg))
+    trainer = model_spec.trainer_cls(instantiate_dataclass(model_spec.trainer_config_cls, trainer_cfg))
 
     task_data = dataset.prepare(eval_config=trainer.config.eval)
     prepared_data = _build_model_data(task_data, model_spec, model.config)

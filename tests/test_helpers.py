@@ -30,7 +30,7 @@ from recbole3.model import (
     ModelDatasets,
     ModelSpec,
 )
-from recbole3.trainer import TRAINER_TABLE, OptimizerConfig, Trainer, TrainerConfig, TrainerSpec
+from recbole3.trainer import OptimizerConfig, Trainer, TrainerConfig
 
 
 DEFAULT_STUB_SPLIT = SplitConfig(
@@ -185,7 +185,6 @@ class StubRankingModel(BaseRankingModel):
 
 @dataclass(slots=True)
 class StubTrainerConfig(TrainerConfig):
-    name: str = field(default="stub_trainer", metadata={"help": "Stub trainer name."})
     batch_size: int = field(default=2, metadata={"help": "Batch size used by the stub trainer."})
     max_epochs: int = field(default=1, metadata={"help": "Epoch count used by the stub trainer."})
     eval: EvalConfig = field(
@@ -204,7 +203,6 @@ class StubTrainer(Trainer):
 
 @dataclass(slots=True)
 class StubRankingTrainerConfig(TrainerConfig):
-    name: str = field(default="stub_ranking_trainer", metadata={"help": "Stub ranking trainer name."})
     batch_size: int = field(default=2, metadata={"help": "Batch size used by the stub trainer."})
     max_epochs: int = field(default=1, metadata={"help": "Epoch count used by the stub trainer."})
     eval: EvalConfig = field(
@@ -233,23 +231,21 @@ def ensure_stub_tables() -> None:
     MODEL_TABLE["stub_model"] = ModelSpec(
         model_cls=StubModel,
         config_cls=StubModelConfig,
+        trainer_cls=StubTrainer,
+        trainer_config_cls=StubTrainerConfig,
     )
     MODEL_TABLE["stub_model_with_data"] = ModelSpec(
         model_cls=StubModel,
         config_cls=StubModelConfig,
         model_data_cls=StubModelDataset,
+        trainer_cls=StubTrainer,
+        trainer_config_cls=StubTrainerConfig,
     )
     MODEL_TABLE["stub_ranking_model"] = ModelSpec(
         model_cls=StubRankingModel,
         config_cls=StubRankingModelConfig,
-    )
-    TRAINER_TABLE["stub_trainer"] = TrainerSpec(
-        trainer_cls=StubTrainer,
-        config_cls=StubTrainerConfig,
-    )
-    TRAINER_TABLE["stub_ranking_trainer"] = TrainerSpec(
         trainer_cls=StubRankingTrainer,
-        config_cls=StubRankingTrainerConfig,
+        trainer_config_cls=StubRankingTrainerConfig,
     )
 
 

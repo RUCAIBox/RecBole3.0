@@ -7,7 +7,7 @@ import numpy as np
 from recbole3.dataset import Interaction
 from recbole3.evaluation.methods.base import BaseRankingEvaluationMethod
 from recbole3.evaluation.metric import RankingEvalData
-from recbole3.model import BaseModel, BaseRankingModel
+from recbole3.model.base import BaseModel, BaseRankingModel
 
 
 class LabeledEvaluationMethod(BaseRankingEvaluationMethod):
