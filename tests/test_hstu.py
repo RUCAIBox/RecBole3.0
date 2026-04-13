@@ -206,7 +206,6 @@ def test_run_experiment_with_hstu_fails_fast_without_fbgemm_gpu(tmp_path: Path) 
                 "  - model: hstu",
                 "  - _self_",
                 "runtime:",
-                "  seed: 7",
                 "  device: cpu",
                 f"  output_dir: {(tmp_path / 'outputs').as_posix()}",
             ]

@@ -23,7 +23,6 @@ def test_full_stub_flow_runs(tmp_path: Path) -> None:
                 "  - model: stub_model",
                 "  - _self_",
                 "runtime:",
-                "  seed: 7",
                 "  device: cpu",
                 f"  output_dir: {(tmp_path / 'outputs').as_posix()}",
             ]
@@ -99,7 +98,6 @@ def test_run_wraps_task_dataset_with_model_data_class(tmp_path: Path) -> None:
                 "  - model: stub_model_with_data",
                 "  - _self_",
                 "runtime:",
-                "  seed: 7",
                 "  device: cpu",
                 f"  output_dir: {(tmp_path / 'outputs_model_data').as_posix()}",
             ]

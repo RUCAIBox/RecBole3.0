@@ -1,18 +1,9 @@
 from __future__ import annotations
 
-from recbole3.config import instantiate_dataclass, parameter_docs
+from recbole3.config import instantiate_dataclass
 from recbole3.evaluation import EvalConfig, MetricSpec
 from recbole3.trainer import CheckpointConfig, EarlyStoppingConfig, OptimizerConfig, TrainerConfig
-from tests.test_helpers import StubDatasetConfig, StubTrainerConfig
-
-
-def test_parameter_docs_extract_help_and_defaults() -> None:
-    """Verify that config metadata is exposed through the parameter doc helper."""
-
-    docs = {item.name: item for item in parameter_docs(StubDatasetConfig)}
-    assert docs["name"].default == "stub_dataset"
-    assert docs["name"].help_text == "Stub dataset name."
-    assert docs["processed_dir"].help_text == "Processed data root."
+from tests.test_helpers import StubTrainerConfig
 
 
 def test_trainer_config_defaults_to_adam_optimizer() -> None:

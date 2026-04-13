@@ -276,7 +276,6 @@ def test_table_and_run_experiment_support_amazon2023(monkeypatch: pytest.MonkeyP
                 "  - model: stub_model",
                 "  - _self_",
                 "runtime:",
-                "  seed: 7",
                 "  device: cpu",
                 f"  output_dir: {(tmp_path / 'outputs').as_posix()}",
             ]

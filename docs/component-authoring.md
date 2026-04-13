@@ -108,7 +108,6 @@ from recbole3.dataset import DATASET_TABLE, DatasetSpec
 DATASET_TABLE["my_retrieval_dataset"] = DatasetSpec(
     dataset_cls=MyRetrievalDataset,
     config_cls=MyDatasetConfig,
-    task="retrieval",
 )
 ```
 
