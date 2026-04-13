@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
+from recbole3.dataset import ITEM_ID, LABEL, SEEN_ITEM_IDS, TIMESTAMP, USER_ID
 from recbole3.evaluation import EvalConfig
 from recbole3.model import (
+    HISTORY_ITEM_IDS,
     BaseSequentialRankingModelDataset,
     BaseSequentialRetrievalModelDataset,
     ModelConfig,
     SequentialModelConfig,
-    SequentialInteraction,
-    SequentialRetrievalEvalRequest,
     build_history_item_ids,
 )
 from tests.test_helpers import StubDataset, StubDatasetConfig, StubRankingDataset, StubRankingDatasetConfig
@@ -31,12 +32,18 @@ def _full_eval_config() -> EvalConfig:
     return EvalConfig(protocol="full")
 
 
+def _rows(dataset, columns: list[str]) -> list[dict]:
+    return dataset.frame.loc[:, columns].to_dict("records")
+
+
 def test_build_history_item_ids_skips_non_positive_updates() -> None:
-    records = [
-        SequentialInteraction(user_id=0, item_id=1, label=1.0),
-        SequentialInteraction(user_id=0, item_id=2, label=0.0),
-        SequentialInteraction(user_id=0, item_id=3, label=1.0),
-    ]
+    records = pd.DataFrame(
+        [
+            {USER_ID: 0, ITEM_ID: 1, LABEL: 1.0},
+            {USER_ID: 0, ITEM_ID: 2, LABEL: 0.0},
+            {USER_ID: 0, ITEM_ID: 3, LABEL: 1.0},
+        ]
+    )
 
     history_item_ids, history_state = build_history_item_ids(records)
 
@@ -45,10 +52,12 @@ def test_build_history_item_ids_skips_non_positive_updates() -> None:
 
 
 def test_build_history_item_ids_truncates_to_most_recent_items() -> None:
-    records = [
-        SequentialInteraction(user_id=0, item_id=4, label=1.0),
-        SequentialInteraction(user_id=0, item_id=5, label=1.0),
-    ]
+    records = pd.DataFrame(
+        [
+            {USER_ID: 0, ITEM_ID: 4, LABEL: 1.0},
+            {USER_ID: 0, ITEM_ID: 5, LABEL: 1.0},
+        ]
+    )
 
     history_item_ids, history_state = build_history_item_ids(
         records,
@@ -64,7 +73,7 @@ def test_build_history_item_ids_truncates_to_most_recent_items() -> None:
 def test_build_history_item_ids_rejects_non_positive_history_max_length(history_max_length: int) -> None:
     with pytest.raises(ValueError, match="history_max_length"):
         build_history_item_ids(
-            [SequentialInteraction(user_id=0, item_id=1, label=1.0)],
+            pd.DataFrame([{USER_ID: 0, ITEM_ID: 1, LABEL: 1.0}]),
             history_max_length=history_max_length,
         )
 
@@ -74,19 +83,20 @@ def test_sequential_ranking_dataset_builds_prefix_histories_across_splits() -> N
 
     sequential_data = StubSequentialRankingDataset.from_task_dataset(prepared, model_config=ModelConfig(name="stub"))
 
-    assert list(sequential_data.get_train_dataset()) == [
-        SequentialInteraction(user_id=0, item_id=0, timestamp=1, label=1.0, history_item_ids=()),
-        SequentialInteraction(user_id=0, item_id=1, timestamp=2, label=1.0, history_item_ids=(0,)),
-        SequentialInteraction(user_id=1, item_id=4, timestamp=1, label=1.0, history_item_ids=()),
-        SequentialInteraction(user_id=1, item_id=5, timestamp=2, label=1.0, history_item_ids=(4,)),
+    columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL, HISTORY_ITEM_IDS]
+    assert _rows(sequential_data.get_train_dataset(), columns) == [
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (1,)},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (5,)},
     ]
-    assert list(sequential_data.get_eval_dataset("valid")) == [
-        SequentialInteraction(user_id=0, item_id=2, timestamp=3, label=1.0, history_item_ids=(0, 1)),
-        SequentialInteraction(user_id=1, item_id=6, timestamp=3, label=1.0, history_item_ids=(4, 5)),
+    assert _rows(sequential_data.get_eval_dataset("valid"), columns) == [
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (1, 2)},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (5, 6)},
     ]
-    assert list(sequential_data.get_eval_dataset("test")) == [
-        SequentialInteraction(user_id=0, item_id=3, timestamp=4, label=1.0, history_item_ids=(0, 1, 2)),
-        SequentialInteraction(user_id=1, item_id=7, timestamp=4, label=1.0, history_item_ids=(4, 5, 6)),
+    assert _rows(sequential_data.get_eval_dataset("test"), columns) == [
+        {USER_ID: 0, ITEM_ID: 4, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (1, 2, 3)},
+        {USER_ID: 1, ITEM_ID: 8, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (5, 6, 7)},
     ]
 
 
@@ -98,19 +108,20 @@ def test_sequential_ranking_dataset_truncates_prefix_histories_across_splits() -
         model_config=SequentialModelConfig(name="stub", history_max_length=2),
     )
 
-    assert list(sequential_data.get_train_dataset()) == [
-        SequentialInteraction(user_id=0, item_id=0, timestamp=1, label=1.0, history_item_ids=()),
-        SequentialInteraction(user_id=0, item_id=1, timestamp=2, label=1.0, history_item_ids=(0,)),
-        SequentialInteraction(user_id=1, item_id=4, timestamp=1, label=1.0, history_item_ids=()),
-        SequentialInteraction(user_id=1, item_id=5, timestamp=2, label=1.0, history_item_ids=(4,)),
+    columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL, HISTORY_ITEM_IDS]
+    assert _rows(sequential_data.get_train_dataset(), columns) == [
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (1,)},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (5,)},
     ]
-    assert list(sequential_data.get_eval_dataset("valid")) == [
-        SequentialInteraction(user_id=0, item_id=2, timestamp=3, label=1.0, history_item_ids=(0, 1)),
-        SequentialInteraction(user_id=1, item_id=6, timestamp=3, label=1.0, history_item_ids=(4, 5)),
+    assert _rows(sequential_data.get_eval_dataset("valid"), columns) == [
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (1, 2)},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (5, 6)},
     ]
-    assert list(sequential_data.get_eval_dataset("test")) == [
-        SequentialInteraction(user_id=0, item_id=3, timestamp=4, label=1.0, history_item_ids=(1, 2)),
-        SequentialInteraction(user_id=1, item_id=7, timestamp=4, label=1.0, history_item_ids=(5, 6)),
+    assert _rows(sequential_data.get_eval_dataset("test"), columns) == [
+        {USER_ID: 0, ITEM_ID: 4, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (2, 3)},
+        {USER_ID: 1, ITEM_ID: 8, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (6, 7)},
     ]
 
 
@@ -119,51 +130,20 @@ def test_sequential_retrieval_dataset_preserves_eval_contract_and_histories() ->
 
     sequential_data = StubSequentialRetrievalDataset.from_task_dataset(prepared, model_config=ModelConfig(name="stub"))
 
-    assert list(sequential_data.get_train_dataset()) == [
-        SequentialInteraction(user_id=0, item_id=0, timestamp=1, label=1.0, history_item_ids=()),
-        SequentialInteraction(user_id=0, item_id=1, timestamp=2, label=1.0, history_item_ids=(0,)),
-        SequentialInteraction(user_id=1, item_id=4, timestamp=1, label=1.0, history_item_ids=()),
-        SequentialInteraction(user_id=1, item_id=5, timestamp=2, label=1.0, history_item_ids=(4,)),
+    assert _rows(sequential_data.get_train_dataset(), [USER_ID, ITEM_ID, TIMESTAMP, LABEL, HISTORY_ITEM_IDS]) == [
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (1,)},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (5,)},
     ]
-    assert list(sequential_data.get_eval_dataset("valid")) == [
-        SequentialRetrievalEvalRequest(
-            user_id=0,
-            item_id=2,
-            timestamp=3,
-            label=1.0,
-            seen_item_ids=(0, 1),
-            candidate_item_ids=None,
-            history_item_ids=(0, 1),
-        ),
-        SequentialRetrievalEvalRequest(
-            user_id=1,
-            item_id=6,
-            timestamp=3,
-            label=1.0,
-            seen_item_ids=(4, 5),
-            candidate_item_ids=None,
-            history_item_ids=(4, 5),
-        ),
+    eval_columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS, HISTORY_ITEM_IDS]
+    assert _rows(sequential_data.get_eval_dataset("valid"), eval_columns) == [
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2), HISTORY_ITEM_IDS: (1, 2)},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6), HISTORY_ITEM_IDS: (5, 6)},
     ]
-    assert list(sequential_data.get_eval_dataset("test")) == [
-        SequentialRetrievalEvalRequest(
-            user_id=0,
-            item_id=3,
-            timestamp=4,
-            label=1.0,
-            seen_item_ids=(0, 1, 2),
-            candidate_item_ids=None,
-            history_item_ids=(0, 1, 2),
-        ),
-        SequentialRetrievalEvalRequest(
-            user_id=1,
-            item_id=7,
-            timestamp=4,
-            label=1.0,
-            seen_item_ids=(4, 5, 6),
-            candidate_item_ids=None,
-            history_item_ids=(4, 5, 6),
-        ),
+    assert _rows(sequential_data.get_eval_dataset("test"), eval_columns) == [
+        {USER_ID: 0, ITEM_ID: 4, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2, 3), HISTORY_ITEM_IDS: (1, 2, 3)},
+        {USER_ID: 1, ITEM_ID: 8, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6, 7), HISTORY_ITEM_IDS: (5, 6, 7)},
     ]
 
 
@@ -175,43 +155,12 @@ def test_sequential_retrieval_dataset_truncates_histories_without_changing_eval_
         model_config=SequentialModelConfig(name="stub", history_max_length=2),
     )
 
-    assert list(sequential_data.get_eval_dataset("valid")) == [
-        SequentialRetrievalEvalRequest(
-            user_id=0,
-            item_id=2,
-            timestamp=3,
-            label=1.0,
-            seen_item_ids=(0, 1),
-            candidate_item_ids=None,
-            history_item_ids=(0, 1),
-        ),
-        SequentialRetrievalEvalRequest(
-            user_id=1,
-            item_id=6,
-            timestamp=3,
-            label=1.0,
-            seen_item_ids=(4, 5),
-            candidate_item_ids=None,
-            history_item_ids=(4, 5),
-        ),
+    eval_columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS, HISTORY_ITEM_IDS]
+    assert _rows(sequential_data.get_eval_dataset("valid"), eval_columns) == [
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2), HISTORY_ITEM_IDS: (1, 2)},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6), HISTORY_ITEM_IDS: (5, 6)},
     ]
-    assert list(sequential_data.get_eval_dataset("test")) == [
-        SequentialRetrievalEvalRequest(
-            user_id=0,
-            item_id=3,
-            timestamp=4,
-            label=1.0,
-            seen_item_ids=(0, 1, 2),
-            candidate_item_ids=None,
-            history_item_ids=(1, 2),
-        ),
-        SequentialRetrievalEvalRequest(
-            user_id=1,
-            item_id=7,
-            timestamp=4,
-            label=1.0,
-            seen_item_ids=(4, 5, 6),
-            candidate_item_ids=None,
-            history_item_ids=(5, 6),
-        ),
+    assert _rows(sequential_data.get_eval_dataset("test"), eval_columns) == [
+        {USER_ID: 0, ITEM_ID: 4, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2, 3), HISTORY_ITEM_IDS: (2, 3)},
+        {USER_ID: 1, ITEM_ID: 8, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6, 7), HISTORY_ITEM_IDS: (6, 7)},
     ]

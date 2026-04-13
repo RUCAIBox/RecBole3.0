@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 import pandas as pd
 import torch
@@ -11,12 +11,14 @@ from recbole3.dataset import (
     DATASET_TABLE,
     BaseDatasetParser,
     DatasetSpec,
-    Interaction,
+    ITEM_ID,
+    LABEL,
+    PAD_ITEM_ID,
     ParsedData,
     RankingDataset,
     RetrievalDataset,
-    RetrievalEvalRequest,
     SplitConfig,
+    USER_ID,
 )
 from recbole3.dataset.base import DatasetConfig
 from recbole3.evaluation import EvalConfig, MetricSpec
@@ -58,18 +60,20 @@ class StubRankingDatasetConfig(DatasetConfig):
 
 class StubParser(BaseDatasetParser):
     def parse(self) -> ParsedData:
-        interactions = [
-            Interaction(user_id=0, item_id=0, timestamp=1, label=1.0),
-            Interaction(user_id=0, item_id=1, timestamp=2, label=1.0),
-            Interaction(user_id=0, item_id=2, timestamp=3, label=1.0),
-            Interaction(user_id=0, item_id=3, timestamp=4, label=1.0),
-            Interaction(user_id=1, item_id=4, timestamp=1, label=1.0),
-            Interaction(user_id=1, item_id=5, timestamp=2, label=1.0),
-            Interaction(user_id=1, item_id=6, timestamp=3, label=1.0),
-            Interaction(user_id=1, item_id=7, timestamp=4, label=1.0),
-        ]
-        users = pd.DataFrame([{"user_id": 0}, {"user_id": 1}])
-        items = pd.DataFrame([{"item_id": item_id} for item_id in range(8)])
+        interactions = pd.DataFrame(
+            [
+                {USER_ID: 0, ITEM_ID: 0, "timestamp": 1, LABEL: 1.0},
+                {USER_ID: 0, ITEM_ID: 1, "timestamp": 2, LABEL: 1.0},
+                {USER_ID: 0, ITEM_ID: 2, "timestamp": 3, LABEL: 1.0},
+                {USER_ID: 0, ITEM_ID: 3, "timestamp": 4, LABEL: 1.0},
+                {USER_ID: 1, ITEM_ID: 4, "timestamp": 1, LABEL: 1.0},
+                {USER_ID: 1, ITEM_ID: 5, "timestamp": 2, LABEL: 1.0},
+                {USER_ID: 1, ITEM_ID: 6, "timestamp": 3, LABEL: 1.0},
+                {USER_ID: 1, ITEM_ID: 7, "timestamp": 4, LABEL: 1.0},
+            ]
+        )
+        users = pd.DataFrame([{USER_ID: 0}, {USER_ID: 1}])
+        items = pd.DataFrame([{ITEM_ID: item_id} for item_id in range(8)])
         return ParsedData(interactions=interactions, user_table=users, item_table=items)
 
 
@@ -89,23 +93,20 @@ class StubModelConfig(ModelConfig):
 
 
 class StubTrainCollator(BaseCollator):
-    def __call__(self, records: Sequence[Interaction]) -> Mapping[str, Any]:
-        item_id = torch.tensor([int(record.item_id) for record in records], dtype=torch.long)
+    def __call__(self, records: pd.DataFrame) -> Mapping[str, Any]:
+        item_id = torch.as_tensor(records[ITEM_ID].to_numpy(), dtype=torch.long)
         batch = {
-            "user_id": torch.tensor([int(record.user_id) for record in records], dtype=torch.long),
-            "item_id": item_id,
-            "label": torch.tensor(
-                [float(record.label) if record.label is not None else 1.0 for record in records],
-                dtype=torch.float32,
-            ),
+            USER_ID: torch.as_tensor(records[USER_ID].to_numpy(), dtype=torch.long),
+            ITEM_ID: item_id,
+            LABEL: torch.as_tensor(pd.to_numeric(records[LABEL], errors="coerce").fillna(1.0).to_numpy(), dtype=torch.float32),
         }
-        batch["neg_item_id"] = (item_id + 1) % int(self.prepared_data.get_num_items())
+        batch["neg_item_id"] = (item_id % (int(self.prepared_data.get_num_items()) - 1)) + 1
         return batch
 
 
 class StubRetrievalEvalCollator(BaseCollator):
-    def __call__(self, records: Sequence[Any]) -> Mapping[str, Any]:
-        return {"user_id": torch.tensor([int(record.user_id) for record in records], dtype=torch.long)}
+    def __call__(self, records: pd.DataFrame) -> Mapping[str, Any]:
+        return {USER_ID: torch.as_tensor(records[USER_ID].to_numpy(), dtype=torch.long)}
 
 
 class StubModel(BaseRetrievalModel):
@@ -136,6 +137,7 @@ class StubModel(BaseRetrievalModel):
         user_ids = model_inputs["user_id"]
         item_ids = torch.arange(self.num_items, device=user_ids.device, dtype=torch.long).unsqueeze(0).expand(user_ids.shape[0], -1)
         scores = item_ids.float() * self.scale
+        scores[:, PAD_ITEM_ID] = float("-inf")
         if exclude_item_ids is not None and exclude_mask is not None and exclude_item_ids.numel() > 0:
             history_mask = torch.zeros_like(scores, dtype=torch.bool)
             history_mask.scatter_(1, exclude_item_ids, exclude_mask)
@@ -149,10 +151,10 @@ class StubRankingModelConfig(ModelConfig):
 
 
 class StubRankingEvalCollator(BaseCollator):
-    def __call__(self, records: Sequence[Interaction]) -> Mapping[str, Any]:
+    def __call__(self, records: pd.DataFrame) -> Mapping[str, Any]:
         return {
-            "user_id": torch.tensor([int(record.user_id) for record in records], dtype=torch.long),
-            "item_id": torch.tensor([int(record.item_id) for record in records], dtype=torch.long),
+            USER_ID: torch.as_tensor(records[USER_ID].to_numpy(), dtype=torch.long),
+            ITEM_ID: torch.as_tensor(records[ITEM_ID].to_numpy(), dtype=torch.long),
         }
 
 

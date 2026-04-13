@@ -9,11 +9,14 @@ import pytest
 
 import recbole3.dataset.amazon2023 as amazon2023_module
 from recbole3.dataset import (
-    Amazon2023Parser,
+    Amazon2023RetrievalParser,
     Amazon2023RetrievalConfig,
     Amazon2023RetrievalDataset,
-    Interaction,
-    RetrievalEvalRequest,
+    ITEM_ID,
+    LABEL,
+    SEEN_ITEM_IDS,
+    TIMESTAMP,
+    USER_ID,
     SplitConfig,
     get_dataset_spec,
 )
@@ -133,7 +136,7 @@ def _build_config(root: Path, *, download_source: str, metadata_mode: str = "sen
 @pytest.mark.parametrize("download_source", ["huggingface", "modelscope"])
 def test_parser_writes_raw_and_parsed_caches(monkeypatch: pytest.MonkeyPatch, download_source: str, tmp_path: Path) -> None:
     calls = _install_fake_remote_loaders(monkeypatch)
-    parser = Amazon2023Parser(_build_config(tmp_path, download_source=download_source))
+    parser = Amazon2023RetrievalParser(_build_config(tmp_path, download_source=download_source))
 
     parsed = parser.parse()
 
@@ -146,32 +149,36 @@ def test_parser_writes_raw_and_parsed_caches(monkeypatch: pytest.MonkeyPatch, do
 
 def test_parser_reuses_parsed_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _install_fake_remote_loaders(monkeypatch)
-    parser = Amazon2023Parser(_build_config(tmp_path, download_source="huggingface"))
+    parser = Amazon2023RetrievalParser(_build_config(tmp_path, download_source="huggingface"))
     first = parser.parse()
     monkeypatch.setattr(
-        Amazon2023Parser,
+        Amazon2023RetrievalParser,
         "_build_parsed_data",
         lambda self: (_ for _ in ()).throw(AssertionError("should reuse parsed cache")),
     )
     second = parser.parse()
-    assert second.interactions == first.interactions
+    first_interactions = first.interactions.copy()
+    second_interactions = second.interactions.copy()
+    first_interactions[LABEL] = pd.to_numeric(first_interactions[LABEL], errors="coerce")
+    second_interactions[LABEL] = pd.to_numeric(second_interactions[LABEL], errors="coerce")
+    pd.testing.assert_frame_equal(second_interactions, first_interactions, check_dtype=False)
 
 
-def test_parser_remaps_ids_and_materializes_metadata_text(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_parser_returns_raw_ids_and_materializes_metadata_text(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _install_fake_remote_loaders(monkeypatch)
-    parsed = Amazon2023Parser(_build_config(tmp_path, download_source="huggingface")).parse()
+    parsed = Amazon2023RetrievalParser(_build_config(tmp_path, download_source="huggingface")).parse()
 
-    assert [(record.user_id, record.item_id) for record in parsed.interactions] == [
-        (0, 0),
-        (0, 1),
-        (0, 2),
-        (1, 1),
-        (1, 3),
-        (1, 4),
+    assert parsed.interactions[[USER_ID, ITEM_ID]].to_records(index=False).tolist() == [
+        ("u1", "A"),
+        ("u1", "B"),
+        ("u1", "C"),
+        ("u2", "B"),
+        ("u2", "D"),
+        ("u2", "E"),
     ]
-    assert parsed.user_table["raw_user_id"].tolist() == ["u1", "u2"]
-    assert parsed.item_table["raw_item_id"].tolist() == ["A", "B", "C", "D", "E"]
-    first_metadata_text = parsed.item_table.loc[parsed.item_table["item_id"] == 0, "metadata_text"].item()
+    assert parsed.user_table[USER_ID].tolist() == ["u1", "u2"]
+    assert parsed.item_table[ITEM_ID].tolist() == ["A", "B", "C", "D", "E"]
+    first_metadata_text = parsed.item_table.loc[parsed.item_table[ITEM_ID] == "A", "metadata_text"].item()
     assert "<b>" not in first_metadata_text
     assert "Alpha Pi" in first_metadata_text
     assert "Line1 Line2" in first_metadata_text
@@ -182,23 +189,23 @@ def test_prepare_builds_retrieval_records_in_chronological_order(monkeypatch: py
     dataset = Amazon2023RetrievalDataset(_build_config(tmp_path, download_source="huggingface", metadata_mode="none"))
     prepared = dataset.prepare(eval_config=_full_eval_config())
 
-    assert list(prepared.get_train_dataset()) == [
-        Interaction(user_id=0, item_id=0, timestamp=1, label=None),
-        Interaction(user_id=1, item_id=1, timestamp=1, label=None),
+    assert prepared.get_train_dataset().frame[[USER_ID, ITEM_ID, TIMESTAMP]].to_dict("records") == [
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1},
+        {USER_ID: 1, ITEM_ID: 2, TIMESTAMP: 1},
     ]
-    assert list(prepared.get_eval_dataset("valid")) == [
-        RetrievalEvalRequest(user_id=0, item_id=1, timestamp=2, label=None, seen_item_ids=(0,)),
-        RetrievalEvalRequest(user_id=1, item_id=3, timestamp=2, label=None, seen_item_ids=(1,)),
+    assert prepared.get_eval_dataset("valid").frame[[USER_ID, ITEM_ID, TIMESTAMP, SEEN_ITEM_IDS]].to_dict("records") == [
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, SEEN_ITEM_IDS: (1,)},
+        {USER_ID: 1, ITEM_ID: 4, TIMESTAMP: 2, SEEN_ITEM_IDS: (2,)},
     ]
-    assert list(prepared.get_eval_dataset("test")) == [
-        RetrievalEvalRequest(user_id=0, item_id=2, timestamp=3, label=None, seen_item_ids=(0, 1)),
-        RetrievalEvalRequest(user_id=1, item_id=4, timestamp=3, label=None, seen_item_ids=(1, 3)),
+    assert prepared.get_eval_dataset("test").frame[[USER_ID, ITEM_ID, TIMESTAMP, SEEN_ITEM_IDS]].to_dict("records") == [
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, SEEN_ITEM_IDS: (1, 2)},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 3, SEEN_ITEM_IDS: (2, 4)},
     ]
 
 
 def test_metadata_mode_none_skips_metadata_download(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls = _install_fake_remote_loaders(monkeypatch)
-    parsed = Amazon2023Parser(_build_config(tmp_path, download_source="huggingface", metadata_mode="none")).parse()
+    parsed = Amazon2023RetrievalParser(_build_config(tmp_path, download_source="huggingface", metadata_mode="none")).parse()
     assert calls == [("huggingface", "full_rating_only_Books")]
     assert "metadata_text" not in parsed.item_table.columns
 
@@ -208,7 +215,7 @@ def test_metadata_mode_none_skips_metadata_download(monkeypatch: pytest.MonkeyPa
     [("NotARealCategory", "full", "not available"), ("Appliances", "5core", "does not provide 5-core")],
 )
 def test_invalid_source_config_raises(category: str, kcore: str, match: str, tmp_path: Path) -> None:
-    parser = Amazon2023Parser(
+    parser = Amazon2023RetrievalParser(
         Amazon2023RetrievalConfig(
             category=category,
             kcore=kcore,
@@ -330,7 +337,7 @@ def test_table_and_run_experiment_support_amazon2023(monkeypatch: pytest.MonkeyP
 
     result = run_experiment(compose_config(config_dir=config_dir))
     assert result["prepared_data"].get_num_users() == 2
-    assert result["prepared_data"].get_num_items() == 5
+    assert result["prepared_data"].get_num_items() == 6
     assert len(result["prepared_data"].get_train_dataset()) == 2
     assert len(result["prepared_data"].get_eval_dataset("valid")) == 2
     assert len(result["prepared_data"].get_eval_dataset("test")) == 2

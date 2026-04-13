@@ -5,9 +5,11 @@ from collections.abc import Callable, Mapping
 from typing import Any, Sequence
 
 import numpy as np
+import pandas as pd
 import torch
 
 from recbole3.dataset.base import BaseTaskDataset
+from recbole3.dataset import ITEM_ID
 from recbole3.evaluation.metric import (
     BaseRankingMetric,
     BaseRetrievalMetric,
@@ -31,7 +33,7 @@ class BaseEvaluationMethod(ABC):
         self,
         model: BaseModel,
         model_inputs: Any,
-        records: Sequence[Any],
+        records: Sequence[Any] | pd.DataFrame,
     ) -> RankingEvalData | RetrievalEvalData:
         ...
 
@@ -51,18 +53,20 @@ class BaseEvaluationMethod(ABC):
     def build_eval_collate_fn(
         self,
         model: BaseModel,
-        prepared_data: BaseTaskDataset[Any, Any],
-    ) -> Callable[[Sequence[Any]], tuple[Any, list[Any]]]:
+        prepared_data: BaseTaskDataset,
+    ) -> Callable[[Sequence[Any] | pd.DataFrame], tuple[Any, Sequence[Any] | pd.DataFrame]]:
         input_collator = model.build_eval_collator(prepared_data)
 
-        def collate_fn(samples: Sequence[Any]) -> tuple[Any, list[Any]]:
-            eval_records = list(samples)
+        def collate_fn(samples: Sequence[Any] | pd.DataFrame) -> tuple[Any, Sequence[Any] | pd.DataFrame]:
+            eval_records = samples if isinstance(samples, pd.DataFrame) else list(samples)
             return input_collator(eval_records), eval_records
 
         return collate_fn
 
     @staticmethod
     def _record_value(record: Any, key: str) -> Any:
+        if isinstance(record, pd.Series):
+            return record[key]
         if isinstance(record, Mapping):
             return record[key]
         return getattr(record, key)
@@ -77,23 +81,28 @@ class BaseEvaluationMethod(ABC):
     @classmethod
     def _tensor_1d(
         cls,
-        records: Sequence[Any],
+        records: Sequence[Any] | pd.DataFrame,
         key: str,
         dtype: torch.dtype,
         *,
         device: torch.device | None = None,
     ) -> torch.Tensor:
+        if isinstance(records, pd.DataFrame):
+            return torch.as_tensor(records[key].to_numpy(), dtype=dtype, device=device)
         return torch.tensor([cls._record_value(record, key) for record in records], dtype=dtype, device=device)
 
     @classmethod
     def _pad_int_lists(
         cls,
-        records: Sequence[Any],
+        records: Sequence[Any] | pd.DataFrame,
         key: str,
         *,
         device: torch.device | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        rows = [cls._record_list(record, key) for record in records]
+        if isinstance(records, pd.DataFrame):
+            rows = [() if values is None else values for values in records[key].tolist()]
+        else:
+            rows = [cls._record_list(record, key) for record in records]
         width = max((len(row) for row in rows), default=0)
         values = torch.zeros((len(rows), width), dtype=torch.long, device=device)
         mask = torch.zeros((len(rows), width), dtype=torch.bool, device=device)
@@ -109,11 +118,11 @@ class BaseEvaluationMethod(ABC):
     @classmethod
     def _single_target_tensors(
         cls,
-        records: Sequence[Any],
+        records: Sequence[Any] | pd.DataFrame,
         *,
         device: torch.device | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        target_item_ids = cls._tensor_1d(records, "item_id", torch.long, device=device).reshape(-1, 1)
+        target_item_ids = cls._tensor_1d(records, ITEM_ID, torch.long, device=device).reshape(-1, 1)
         target_mask = torch.ones(target_item_ids.shape, dtype=torch.bool, device=device)
         return target_item_ids, target_mask
 
@@ -187,6 +196,20 @@ class BaseEvaluationMethod(ABC):
             offset = next_offset
         return result
 
+    @staticmethod
+    def _concat_2d(values: Sequence[np.ndarray], *, dtype: Any, name: str) -> np.ndarray:
+        if not values:
+            return np.empty((0, 0), dtype=dtype)
+        arrays = [np.asarray(value, dtype=dtype) for value in values]
+        for array in arrays:
+            if array.ndim != 2:
+                raise ValueError(f"Expected {name} batch arrays to be 2D, got shape {array.shape}.")
+        width = int(arrays[0].shape[1])
+        mismatched = [tuple(array.shape) for array in arrays if int(array.shape[1]) != width]
+        if mismatched:
+            raise ValueError(f"Expected {name} batch arrays to have the same width, got shapes {mismatched}.")
+        return np.concatenate(arrays, axis=0)
+
 
 class BaseRankingEvaluationMethod(BaseEvaluationMethod):
     def compute_metrics(
@@ -228,7 +251,7 @@ class BaseRetrievalEvaluationMethod(BaseEvaluationMethod):
         self,
         model: BaseModel,
         model_inputs: Any,
-        records: Sequence[Any],
+        records: Sequence[Any] | pd.DataFrame,
     ) -> RetrievalEvalData:
         return self._collect_retrieval_batch(
             model=model,
@@ -242,7 +265,7 @@ class BaseRetrievalEvaluationMethod(BaseEvaluationMethod):
         self,
         model: BaseModel,
         model_inputs: Any,
-        records: Sequence[Any],
+        records: Sequence[Any] | pd.DataFrame,
         max_k: int,
     ) -> RetrievalEvalData:
         ...
@@ -263,9 +286,9 @@ class BaseRetrievalEvaluationMethod(BaseEvaluationMethod):
             target_mask.append(np.asarray(batch_data.target_mask))
 
         eval_data = RetrievalEvalData(
-            pred_item_ids=self._concat_padded_2d(pred_item_ids, fill_value=-1, dtype=np.int64),
-            target_item_ids=self._concat_padded_2d(target_item_ids, fill_value=0, dtype=np.int64),
-            target_mask=self._concat_padded_2d(target_mask, fill_value=False, dtype=bool),
+            pred_item_ids=self._concat_2d(pred_item_ids, dtype=np.int64, name="pred_item_ids"),
+            target_item_ids=self._concat_2d(target_item_ids, dtype=np.int64, name="target_item_ids"),
+            target_mask=self._concat_2d(target_mask, dtype=bool, name="target_mask"),
         )
         results: dict[str, float] = {}
         for metric in retrieval_metrics:

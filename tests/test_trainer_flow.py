@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from recbole3.evaluation import EvalConfig, MetricSpec, RankingEvalData, RetrievalEvalData
+from recbole3.dataset import CANDIDATE_ITEM_IDS, ITEM_ID
 from recbole3.trainer import CheckpointConfig, EarlyStoppingConfig, OptimizerConfig, SchedulerConfig, Trainer, TrainerConfig
 from tests.test_helpers import (
     StubDataset,
@@ -47,7 +48,7 @@ def _mock_eval_result(split: str, metric_name: str, value: float) -> dict[str, A
         "loss": None,
         "metrics": {metric_name: value},
         "num_batches": 1,
-        "data_stats": {"num_users": 2, "num_items": 8},
+        "data_stats": {"num_users": 2, "num_items": 9},
     }
 
 
@@ -72,8 +73,8 @@ def test_train_dataloader_uses_prepared_split_dataset() -> None:
     train_loader = trainer.build_dataloader(train_dataset, model.build_train_collator(prepared), shuffle=False)
     train_batch = next(iter(train_loader))
 
-    assert train_dataset[0] == list(prepared.get_train_dataset())[0]
-    assert train_batch["item_id"].tolist() == [0, 1]
+    assert train_dataset[0] == prepared.get_train_dataset()[0]
+    assert train_batch["item_id"].tolist() == [1, 2]
     assert "neg_item_id" in train_batch
 
     valid_method = trainer.create_evaluation_method(prepared)
@@ -83,8 +84,8 @@ def test_train_dataloader_uses_prepared_split_dataset() -> None:
         shuffle=False,
     )
     model_inputs, records = next(iter(valid_loader))
-    assert model_inputs["item_id"].tolist() == [2, 6]
-    assert [record.item_id for record in records] == [2, 6]
+    assert model_inputs["item_id"].tolist() == [3, 7]
+    assert records[ITEM_ID].tolist() == [3, 7]
     assert "neg_item_id" not in model_inputs
 
 
@@ -114,7 +115,7 @@ def test_retrieval_method_owns_metric_aggregation() -> None:
     )
     result = trainer.create_evaluation_method().compute_metrics(
         [
-            RetrievalEvalData(pred_item_ids=np.array([[3, 2, -1]]), target_item_ids=np.array([[2]]), target_mask=np.array([[True]])),
+            RetrievalEvalData(pred_item_ids=np.array([[3, 2, 4]]), target_item_ids=np.array([[2]]), target_mask=np.array([[True]])),
             RetrievalEvalData(pred_item_ids=np.array([[5, 4, 1]]), target_item_ids=np.array([[1]]), target_mask=np.array([[True]])),
         ]
     )
@@ -141,8 +142,8 @@ def test_sampled_evaluation_uses_dataset_prepared_candidates() -> None:
 
     assert result["protocol"] == "sampled"
     assert result["metrics"]["recall@3"] == 1.0
-    sampled_records = list(prepared.get_eval_dataset("test"))
-    assert [len(record.candidate_item_ids or ()) for record in sampled_records] == [3, 3]
+    sampled_records = prepared.get_eval_dataset("test").frame
+    assert [len(values) for values in sampled_records[CANDIDATE_ITEM_IDS]] == [3, 3]
 
 
 

@@ -49,7 +49,7 @@ class Trainer:
     def build_dataloader(
         self,
         dataset: Dataset[Any],
-        collate_fn: Callable[[Sequence[Any]], Any] | BaseCollator,
+        collate_fn: Callable[[Any], Any] | BaseCollator,
         *,
         shuffle: bool,
     ) -> DataLoader:
@@ -62,7 +62,7 @@ class Trainer:
             collate_fn=collate_fn,
         )
 
-    def create_evaluation_method(self, prepared_data: BaseTaskDataset[Any, Any] | None = None) -> BaseEvaluationMethod:
+    def create_evaluation_method(self, prepared_data: BaseTaskDataset | None = None) -> BaseEvaluationMethod:
         from recbole3.evaluation.methods import create_evaluation_method as build_evaluation_method
 
         return build_evaluation_method(self.config.eval)
@@ -103,7 +103,7 @@ class Trainer:
     def fit(
         self,
         model: BaseModel,
-        prepared_data: BaseTaskDataset[Any, Any],
+        prepared_data: BaseTaskDataset,
         *,
         output_dir: str | Path | None = None,
     ) -> Any:
@@ -209,7 +209,7 @@ class Trainer:
             "checkpoint_paths": {key: (str(path) if path is not None else None) for key, path in checkpoint_paths.items()},
         }
 
-    def evaluate(self, model: BaseModel, prepared_data: BaseTaskDataset[Any, Any], split: EvalSplitName = "valid") -> dict[str, Any]:
+    def evaluate(self, model: BaseModel, prepared_data: BaseTaskDataset, split: EvalSplitName = "valid") -> dict[str, Any]:
         accelerator = self.create_accelerator()
         return self._run_evaluation(
             model,
@@ -222,7 +222,7 @@ class Trainer:
     def run(
         self,
         model: BaseModel,
-        prepared_data: BaseTaskDataset[Any, Any],
+        prepared_data: BaseTaskDataset,
         *,
         output_dir: str | Path | None = None,
     ) -> dict[str, Any]:
@@ -240,7 +240,7 @@ class Trainer:
     def _run_evaluation(
         self,
         model: BaseModel,
-        prepared_data: BaseTaskDataset[Any, Any],
+        prepared_data: BaseTaskDataset,
         split: EvalSplitName,
         accelerator: Any,
         model_is_prepared: bool,
@@ -274,7 +274,7 @@ class Trainer:
             "data_stats": self._build_result_data_stats(prepared_data),
         }
 
-    def _resolve_monitor(self, prepared_data: BaseTaskDataset[Any, Any]) -> MonitorSpec | None:
+    def _resolve_monitor(self, prepared_data: BaseTaskDataset) -> MonitorSpec | None:
         monitor_name = str(self.config.monitor or "").strip()
         requires_monitor = bool(self.config.early_stopping.enabled or self.config.checkpoint.save_best)
         if self._scheduler_requires_monitor():
@@ -403,7 +403,7 @@ class Trainer:
         }
 
     @staticmethod
-    def _build_result_data_stats(prepared_data: BaseTaskDataset[Any, Any]) -> dict[str, int]:
+    def _build_result_data_stats(prepared_data: BaseTaskDataset) -> dict[str, int]:
         return {
             "num_users": int(prepared_data.get_num_users()),
             "num_items": int(prepared_data.get_num_items()),

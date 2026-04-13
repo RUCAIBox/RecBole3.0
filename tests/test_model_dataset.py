@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from recbole3.dataset import RecordsDataset
+from recbole3.dataset import FrameDataset
 from recbole3.evaluation import EvalConfig
 from recbole3.model import BaseRetrievalModelDataset, ModelConfig, ModelDatasets
 from tests.test_helpers import StubDataset, StubDatasetConfig
@@ -16,8 +16,8 @@ def _full_eval_config() -> EvalConfig:
 
 class PartialUpdateModelDataset(BaseRetrievalModelDataset[Any, Any]):
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[Any, Any]:
-        train_records = list(self.get_train_dataset())[:-1]
-        return ModelDatasets(train_dataset=RecordsDataset(train_records))
+        train_frame = self.get_train_dataset().frame.iloc[:-1].copy()
+        return ModelDatasets(train_dataset=FrameDataset(train_frame))
 
 
 class MetadataOnlyModelDataset(BaseRetrievalModelDataset[Any, Any]):

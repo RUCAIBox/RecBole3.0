@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+import pandas as pd
 import torch
 
-from recbole3.dataset import RetrievalEvalRequest
+from recbole3.dataset import CANDIDATE_ITEM_IDS, PAD_ITEM_ID
 from recbole3.evaluation.metric import MetricSpec, RetrievalEvalData
 from recbole3.evaluation.methods.base import BaseRetrievalEvaluationMethod
 from recbole3.model.base import BaseModel, BaseRetrievalModel
@@ -20,40 +21,43 @@ class SampledEvaluationMethod(BaseRetrievalEvaluationMethod):
         self,
         model: BaseModel,
         model_inputs: Any,
-        records: Sequence[RetrievalEvalRequest],
+        records: Sequence[Any] | pd.DataFrame,
         max_k: int,
     ) -> RetrievalEvalData:
         if not isinstance(model, BaseRetrievalModel):
             raise TypeError("Sampled evaluation requires BaseRetrievalModel.")
-        if any(record.candidate_item_ids is None for record in records):
+        if isinstance(records, pd.DataFrame):
+            missing_candidates = CANDIDATE_ITEM_IDS not in records.columns or records[CANDIDATE_ITEM_IDS].isna().any()
+        else:
+            missing_candidates = any(self._record_value(record, CANDIDATE_ITEM_IDS) is None for record in records)
+        if missing_candidates:
             raise TypeError("Sampled evaluation requires retrieval records with non-null candidate_item_ids.")
 
         device = self._infer_device(model_inputs)
         target_item_ids, target_mask = self._single_target_tensors(records)
-        if max_k <= 0:
+        if len(records) == 0:
+            pred_item_ids = torch.empty((0, max(0, max_k)), dtype=torch.long)
+        elif max_k <= 0:
             pred_item_ids = torch.empty((len(records), 0), dtype=torch.long)
         else:
-            candidate_item_ids, candidate_mask = self._pad_int_lists(records, "candidate_item_ids", device=device)
-            candidate_count = int(candidate_item_ids.shape[1])
-            prediction_k = min(max_k, candidate_count)
-            if prediction_k == 0:
-                pred_item_ids = torch.empty((len(records), 0), dtype=torch.long)
-            else:
-                pred_item_ids = model.predict(
-                    model_inputs,
-                    k=prediction_k,
-                    candidate_item_ids=candidate_item_ids,
+            candidate_item_ids, candidate_mask = self._pad_int_lists(records, CANDIDATE_ITEM_IDS, device=device)
+            valid_candidate_count = torch.sum(candidate_mask, dim=1)
+            if torch.any(valid_candidate_count != valid_candidate_count[0]):
+                raise ValueError("Sampled evaluation requires equal candidate counts in every row.")
+            candidate_count = int(valid_candidate_count[0].item()) if len(valid_candidate_count) > 0 else 0
+            if candidate_count < max_k:
+                raise ValueError(
+                    "Sampled evaluation requires at least k candidates per row. "
+                    f"Got k={max_k} with candidate count {candidate_count}."
                 )
-                pred_item_ids = self._normalize_pred_item_ids(pred_item_ids, len(records), prediction_k)
-                pred_item_ids = self._pad_prediction_width(pred_item_ids, max_k)
-
-                if candidate_count > 0:
-                    valid_candidate_count = torch.sum(candidate_mask, dim=1)
-                    if torch.any(valid_candidate_count < prediction_k):
-                        raise ValueError(
-                            "Sampled evaluation requires at least k valid candidates per row. "
-                            f"Got k={prediction_k} with candidate counts {valid_candidate_count.tolist()}."
-                        )
+            if candidate_count > 0 and torch.any(candidate_item_ids == PAD_ITEM_ID):
+                raise ValueError("Sampled evaluation candidate_item_ids must not contain PAD_ITEM_ID=0.")
+            pred_item_ids = model.predict(
+                model_inputs,
+                k=max_k,
+                candidate_item_ids=candidate_item_ids,
+            )
+            pred_item_ids = self._normalize_pred_item_ids(pred_item_ids, len(records), max_k)
 
         return RetrievalEvalData(
             pred_item_ids=self._to_numpy(pred_item_ids),
@@ -69,11 +73,3 @@ class SampledEvaluationMethod(BaseRetrievalEvaluationMethod):
                 f"Got {tuple(pred_item_ids.shape)} for expected {(batch_size, width)}."
             )
         return pred_item_ids.to(dtype=torch.long)
-
-    @staticmethod
-    def _pad_prediction_width(pred_item_ids: torch.Tensor, width: int) -> torch.Tensor:
-        if pred_item_ids.shape[1] == width:
-            return pred_item_ids
-        padded = torch.full((pred_item_ids.shape[0], width), -1, dtype=torch.long, device=pred_item_ids.device)
-        padded[:, : pred_item_ids.shape[1]] = pred_item_ids
-        return padded

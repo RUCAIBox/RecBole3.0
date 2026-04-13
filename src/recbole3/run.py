@@ -99,10 +99,10 @@ def _normalize_runtime_device(device: str | None) -> str:
 
 
 def _build_model_data(
-    prepared_data: BaseTaskDataset[Any, Any],
+    prepared_data: BaseTaskDataset,
     model_spec: ModelSpec,
     model_config: Any,
-) -> BaseTaskDataset[Any, Any]:
+) -> BaseTaskDataset:
     model_data_cls = model_spec.model_data_cls
     if model_data_cls is None:
         return prepared_data
@@ -119,7 +119,7 @@ def _build_model_data(
     return model_data
 
 
-def _serialize_prepared_data(prepared_data: BaseTaskDataset[Any, Any]) -> dict[str, Any]:
+def _serialize_prepared_data(prepared_data: BaseTaskDataset) -> dict[str, Any]:
     """Render one prepared dataset into a printable summary."""
 
     return {

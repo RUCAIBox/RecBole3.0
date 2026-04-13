@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+import pandas as pd
 import torch
 
-from recbole3.dataset import RetrievalEvalRequest
+from recbole3.dataset import SEEN_ITEM_IDS
 from recbole3.evaluation.metric import MetricSpec, RetrievalEvalData
 from recbole3.evaluation.methods.base import BaseRetrievalEvaluationMethod
 from recbole3.model.base import BaseModel, BaseRetrievalModel
@@ -21,21 +22,23 @@ class FullEvaluationMethod(BaseRetrievalEvaluationMethod):
         self,
         model: BaseModel,
         model_inputs: Any,
-        records: Sequence[RetrievalEvalRequest],
+        records: Sequence[Any] | pd.DataFrame,
         max_k: int,
     ) -> RetrievalEvalData:
         if not isinstance(model, BaseRetrievalModel):
             raise TypeError("Full evaluation requires BaseRetrievalModel.")
 
         target_item_ids, target_mask = self._single_target_tensors(records)
-        if max_k <= 0:
+        if len(records) == 0:
+            pred_item_ids = torch.empty((0, max(0, max_k)), dtype=torch.long)
+        elif max_k <= 0:
             pred_item_ids = torch.empty((len(records), 0), dtype=torch.long)
         else:
             device = self._infer_device(model_inputs)
             exclude_item_ids = None
             exclude_mask = None
             if self.exclude_history:
-                exclude_item_ids, exclude_mask = self._pad_int_lists(records, "seen_item_ids", device=device)
+                exclude_item_ids, exclude_mask = self._pad_int_lists(records, SEEN_ITEM_IDS, device=device)
             pred_item_ids = model.predict(
                 model_inputs,
                 k=max_k,
