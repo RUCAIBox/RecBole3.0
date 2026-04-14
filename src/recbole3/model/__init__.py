@@ -16,18 +16,16 @@ from recbole3.model.base import (
     ModelDatasets,
 )
 from recbole3.model.hstu import (
+    HISTORY_TIMESTAMPS,
     HSTUConfig,
-    HSTUInteraction,
     HSTUModel,
     HSTUModelDataset,
-    HSTURetrievalEvalRequest,
 )
 from recbole3.model.sequential import (
     BaseSequentialRankingModelDataset,
     BaseSequentialRetrievalModelDataset,
+    HISTORY_ITEM_IDS,
     SequentialModelConfig,
-    SequentialInteraction,
-    SequentialRetrievalEvalRequest,
     build_history_item_ids,
 )
 from recbole3.trainer import Trainer
@@ -74,18 +72,16 @@ __all__ = [
     "BaseRetrievalModelDataset",
     "BaseSequentialRankingModelDataset",
     "BaseSequentialRetrievalModelDataset",
+    "HISTORY_ITEM_IDS",
+    "HISTORY_TIMESTAMPS",
     "HSTUConfig",
-    "HSTUInteraction",
     "HSTUModel",
     "HSTUModelDataset",
-    "HSTURetrievalEvalRequest",
     "MODEL_TABLE",
     "ModelConfig",
     "ModelDatasets",
     "ModelSpec",
     "SequentialModelConfig",
-    "SequentialInteraction",
-    "SequentialRetrievalEvalRequest",
     "build_history_item_ids",
     "get_model_spec",
 ]

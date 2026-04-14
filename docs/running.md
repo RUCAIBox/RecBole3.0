@@ -45,6 +45,27 @@ Each model config file provides:
 - the top-level `model` block
 - the top-level `trainer` defaults bound to that model
 
+The built-in Amazon 2023 retrieval config at `configs/dataset/amazon2023_retrieval.yaml` selects:
+
+- `category: All_Beauty`
+- `kcore: 5core`
+- `metadata_mode: sentence`
+- `download_source: modelscope`
+- `download_dir: data/raw`
+- `processed_dir: data/processed`
+- leave-one-out chronological per-user splitting
+
+Amazon 2023 dataset fields:
+
+- `category` chooses one Amazon Reviews 2023 category.
+- `kcore` is `full` or `5core`; not every category has a 5-core subset.
+- `metadata_mode=sentence` downloads item metadata and stores `metadata_text` in the item table; `metadata_mode=none` skips metadata download.
+- `download_source` is `modelscope` or `huggingface`, and the matching optional dependency must be installed.
+- `download_dir` stores parser-managed raw snapshots.
+- `processed_dir` stores parser-managed parsed DataFrame caches.
+- `refresh_cache=true` rebuilds the parser-managed raw and parsed caches.
+- `split` controls ordering and train/valid/test split generation before task-specific eval frames are built.
+
 ## 3. Minimal Run Command
 
 Run from the repository root:
@@ -79,6 +100,9 @@ Common patterns:
 
 - select a config group: `model=hstu`
 - override a nested field: `trainer.optimizer.kwargs.lr=1e-4`
+- switch the Amazon source: `dataset.download_source=huggingface`
+- skip Amazon item metadata download: `dataset.metadata_mode=none`
+- rebuild parser caches: `dataset.refresh_cache=true`
 - change a runtime setting: `runtime.device=cpu`
 
 Each override must be passed as one shell argument. If your shell would interpret special characters, quote that single override token.
@@ -121,6 +145,14 @@ If checkpoint saving is enabled, checkpoints are written under:
 `download_source='modelscope'` or `download_source='huggingface'` fails
 
 - Install the matching dataset extra: `.[modelscope]` or `.[huggingface]`
+
+`Category '...' does not provide 5-core reviews`
+
+- Use `dataset.kcore=full` or choose a category with a 5-core subset.
+
+`metadata_mode=sentence` takes longer than expected
+
+- The parser downloads the metadata subset and builds `metadata_text`; use `dataset.metadata_mode=none` when item metadata is not needed.
 
 ## 7. Python API
 

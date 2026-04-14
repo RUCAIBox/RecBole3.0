@@ -8,10 +8,11 @@ import pytest
 import torch
 from torch import nn
 
-from recbole3.dataset import BaseDatasetParser, Interaction, ParsedData, RetrievalDataset, SplitConfig
+from recbole3.dataset import ITEM_ID, LABEL, SEEN_ITEM_IDS, TIMESTAMP, USER_ID, BaseDatasetParser, ParsedData, RetrievalDataset, SplitConfig
 from recbole3.dataset.base import DatasetConfig
 from recbole3.evaluation import EvalConfig, MetricSpec
-from recbole3.model import HSTUConfig, HSTUInteraction, HSTUModel, HSTUModelDataset, HSTURetrievalEvalRequest, get_model_spec
+from recbole3.model import HISTORY_ITEM_IDS, HISTORY_TIMESTAMPS, HSTUConfig, HSTUModel, HSTUModelDataset, get_model_spec
+from recbole3.model.hstu.config import HSTU_PADDING_ITEM_ID
 from recbole3.model.hstu.data import HSTUEvalCollator, HSTUTrainCollator
 from recbole3.run import compose_config, run_experiment
 from recbole3.trainer import Trainer, TrainerConfig
@@ -38,13 +39,15 @@ class MissingTimestampDatasetConfig(DatasetConfig):
 
 class MissingTimestampParser(BaseDatasetParser):
     def parse(self) -> ParsedData:
-        interactions = [
-            Interaction(user_id=0, item_id=0, timestamp=None, label=1.0),
-            Interaction(user_id=0, item_id=1, timestamp=2, label=1.0),
-            Interaction(user_id=0, item_id=2, timestamp=3, label=1.0),
-        ]
-        users = pd.DataFrame([{"user_id": 0}])
-        items = pd.DataFrame([{"item_id": 0}, {"item_id": 1}, {"item_id": 2}])
+        interactions = pd.DataFrame(
+            [
+                {USER_ID: 0, ITEM_ID: 0, TIMESTAMP: None, LABEL: 1.0},
+                {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 2, LABEL: 1.0},
+                {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, LABEL: 1.0},
+            ]
+        )
+        users = pd.DataFrame([{USER_ID: 0}])
+        items = pd.DataFrame([{ITEM_ID: 0}, {ITEM_ID: 1}, {ITEM_ID: 2}])
         return ParsedData(interactions=interactions, user_table=users, item_table=items)
 
 
@@ -61,55 +64,22 @@ def test_hstu_model_dataset_builds_histories_with_timestamps_across_splits() -> 
         model_config=HSTUConfig(history_max_length=2),
     )
 
-    assert list(hstu_data.get_train_dataset()) == [
-        HSTUInteraction(user_id=0, item_id=0, timestamp=1, label=1.0, history_item_ids=(), history_timestamps=()),
-        HSTUInteraction(user_id=0, item_id=1, timestamp=2, label=1.0, history_item_ids=(0,), history_timestamps=(1.0,)),
-        HSTUInteraction(user_id=1, item_id=4, timestamp=1, label=1.0, history_item_ids=(), history_timestamps=()),
-        HSTUInteraction(user_id=1, item_id=5, timestamp=2, label=1.0, history_item_ids=(4,), history_timestamps=(1.0,)),
+    assert hstu_data.get_train_dataset().frame[
+        [USER_ID, ITEM_ID, TIMESTAMP, LABEL, HISTORY_ITEM_IDS, HISTORY_TIMESTAMPS]
+    ].to_dict("records") == [
+        {USER_ID: 0, ITEM_ID: 0, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: (), HISTORY_TIMESTAMPS: ()},
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (0,), HISTORY_TIMESTAMPS: (1.0,)},
+        {USER_ID: 1, ITEM_ID: 4, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: (), HISTORY_TIMESTAMPS: ()},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (4,), HISTORY_TIMESTAMPS: (1.0,)},
     ]
-    assert list(hstu_data.get_eval_dataset("valid")) == [
-        HSTURetrievalEvalRequest(
-            user_id=0,
-            item_id=2,
-            timestamp=3,
-            label=1.0,
-            seen_item_ids=(0, 1),
-            candidate_item_ids=None,
-            history_item_ids=(0, 1),
-            history_timestamps=(1.0, 2.0),
-        ),
-        HSTURetrievalEvalRequest(
-            user_id=1,
-            item_id=6,
-            timestamp=3,
-            label=1.0,
-            seen_item_ids=(4, 5),
-            candidate_item_ids=None,
-            history_item_ids=(4, 5),
-            history_timestamps=(1.0, 2.0),
-        ),
+    eval_columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS, HISTORY_ITEM_IDS, HISTORY_TIMESTAMPS]
+    assert hstu_data.get_eval_dataset("valid").frame[eval_columns].to_dict("records") == [
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (0, 1), HISTORY_ITEM_IDS: (0, 1), HISTORY_TIMESTAMPS: (1.0, 2.0)},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (4, 5), HISTORY_ITEM_IDS: (4, 5), HISTORY_TIMESTAMPS: (1.0, 2.0)},
     ]
-    assert list(hstu_data.get_eval_dataset("test")) == [
-        HSTURetrievalEvalRequest(
-            user_id=0,
-            item_id=3,
-            timestamp=4,
-            label=1.0,
-            seen_item_ids=(0, 1, 2),
-            candidate_item_ids=None,
-            history_item_ids=(1, 2),
-            history_timestamps=(2.0, 3.0),
-        ),
-        HSTURetrievalEvalRequest(
-            user_id=1,
-            item_id=7,
-            timestamp=4,
-            label=1.0,
-            seen_item_ids=(4, 5, 6),
-            candidate_item_ids=None,
-            history_item_ids=(5, 6),
-            history_timestamps=(2.0, 3.0),
-        ),
+    assert hstu_data.get_eval_dataset("test").frame[eval_columns].to_dict("records") == [
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (0, 1, 2), HISTORY_ITEM_IDS: (1, 2), HISTORY_TIMESTAMPS: (2.0, 3.0)},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (4, 5, 6), HISTORY_ITEM_IDS: (5, 6), HISTORY_TIMESTAMPS: (2.0, 3.0)},
     ]
 
 
@@ -123,10 +93,10 @@ def test_hstu_model_dataset_rejects_missing_timestamps() -> None:
 def test_hstu_collators_pad_history_sequences() -> None:
     prepared = StubDataset(StubDatasetConfig()).prepare(eval_config=_full_eval_config())
     hstu_data = HSTUModelDataset.from_task_dataset(prepared, model_config=HSTUConfig(history_max_length=2))
-    train_records = list(hstu_data.get_train_dataset())
-    eval_records = list(hstu_data.get_eval_dataset("test"))
+    train_records = hstu_data.get_train_dataset().frame.iloc[:2].reset_index(drop=True)
+    eval_records = hstu_data.get_eval_dataset("test").frame
 
-    train_batch = HSTUTrainCollator(HSTUConfig(history_max_length=2), prepared_data=hstu_data)(train_records[:2])
+    train_batch = HSTUTrainCollator(HSTUConfig(history_max_length=2), prepared_data=hstu_data)(train_records)
     eval_batch = HSTUEvalCollator(HSTUConfig(history_max_length=2), prepared_data=hstu_data)(eval_records)
 
     assert train_batch["history_lengths"].tolist() == [0, 1]
@@ -154,12 +124,13 @@ def test_hstu_model_requires_fbgemm_gpu_dependency() -> None:
 def test_hstu_predict_supports_sampled_and_full_modes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(HSTUModel, "_require_runtime_support", lambda self: None)
     model = HSTUModel(HSTUConfig(history_max_length=2, normalize_embeddings=False, temperature=1.0))
-    model._num_items = 4
-    model._item_embeddings = nn.Embedding(5, 2, padding_idx=0)
+    model._num_items = 5
+    model._item_embeddings = nn.Embedding(6, 2, padding_idx=HSTU_PADDING_ITEM_ID)
     with torch.no_grad():
         model._item_embeddings.weight.copy_(
             torch.tensor(
                 [
+                    [0.0, 0.0],
                     [0.0, 0.0],
                     [4.0, 1.0],
                     [3.0, 0.0],
@@ -180,16 +151,16 @@ def test_hstu_predict_supports_sampled_and_full_modes(monkeypatch: pytest.Monkey
         "history_lengths": torch.zeros(2, dtype=torch.long),
     }
 
-    sampled_pred = model.predict(batch, k=2, candidate_item_ids=torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long))
+    sampled_pred = model.predict(batch, k=2, candidate_item_ids=torch.tensor([[0, 1, 2], [0, 3, 4]], dtype=torch.long))
     full_pred = model.predict(
         batch,
         k=2,
-        exclude_item_ids=torch.tensor([[0], [2]], dtype=torch.long),
+        exclude_item_ids=torch.tensor([[1], [3]], dtype=torch.long),
         exclude_mask=torch.tensor([[True], [True]], dtype=torch.bool),
     )
 
-    assert sampled_pred.tolist() == [[0, 1], [2, 3]]
-    assert full_pred.tolist() == [[1, 2], [3, 0]]
+    assert sampled_pred.tolist() == [[1, 2], [3, 4]]
+    assert full_pred.tolist() == [[2, 3], [4, 1]]
 
 
 def test_run_experiment_with_hstu_fails_fast_without_fbgemm_gpu(tmp_path: Path) -> None:
@@ -206,7 +177,6 @@ def test_run_experiment_with_hstu_fails_fast_without_fbgemm_gpu(tmp_path: Path) 
                 "  - model: hstu",
                 "  - _self_",
                 "runtime:",
-                "  seed: 7",
                 "  device: cpu",
                 f"  output_dir: {(tmp_path / 'outputs').as_posix()}",
             ]

@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from dataclasses import MISSING, Field, dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from types import UnionType
 from typing import Any, Mapping, TypeVar, Union, get_args, get_origin, get_type_hints
@@ -12,7 +12,6 @@ from omegaconf import DictConfig, OmegaConf
 class RuntimeConfig:
     """Runtime-only settings shared by all experiments."""
 
-    seed: int = field(default=42, metadata={"help": "Random seed for the whole run."})
     device: str = field(
         default="auto",
         metadata={"help": "Accelerate device override, such as auto, cpu, cuda, or cuda:0."},
@@ -28,17 +27,6 @@ class AppConfig:
     dataset: dict[str, Any] | None = field(default=None)
     model: dict[str, Any] | None = field(default=None)
     trainer: dict[str, Any] | None = field(default=None)
-
-
-@dataclass(frozen=True, slots=True)
-class ParameterDoc:
-    """Rendered description of one config field for docs or CLI help."""
-
-    name: str
-    type_name: str
-    default: Any
-    help_text: str
-    required: bool
 
 
 ConfigT = TypeVar("ConfigT")
@@ -74,27 +62,6 @@ def instantiate_dataclass(config_cls: type[ConfigT], config: Mapping[str, Any] |
         if item.name in values
     }
     return config_cls(**normalized_values)
-
-
-def parameter_docs(config_cls: type[Any]) -> list[ParameterDoc]:
-    """Collect normalized parameter docs from a config dataclass."""
-
-    if not is_dataclass(config_cls):
-        raise TypeError(f"{config_cls!r} is not a dataclass type.")
-
-    type_hints = get_type_hints(config_cls)
-    docs: list[ParameterDoc] = []
-    for item in fields(config_cls):
-        docs.append(
-            ParameterDoc(
-                name=item.name,
-                type_name=_type_name(type_hints.get(item.name, item.type)),
-                default=_field_default(item),
-                help_text=str(item.metadata.get("help", "")).strip(),
-                required=_is_required(item),
-            )
-        )
-    return docs
 
 
 def _normalize_mapping(config: Mapping[str, Any] | DictConfig | None) -> dict[str, Any]:
@@ -144,27 +111,3 @@ def _coerce_value(type_hint: Any, value: Any) -> Any:
         return value
 
     return value
-
-
-def _field_default(item: Field[Any]) -> Any:
-    """Return a printable default marker for one dataclass field."""
-
-    if item.default_factory is not MISSING:  # type: ignore[attr-defined]
-        return "<factory>"
-    if item.default is MISSING:
-        return "<required>"
-    return item.default
-
-
-def _is_required(item: Field[Any]) -> bool:
-    """Return whether the field must be supplied by the caller."""
-
-    return item.default is MISSING and item.default_factory is MISSING  # type: ignore[attr-defined]
-
-
-def _type_name(type_hint: Any) -> str:
-    """Render a readable type name for documentation output."""
-
-    if hasattr(type_hint, "__name__"):
-        return type_hint.__name__
-    return str(type_hint).replace("typing.", "")

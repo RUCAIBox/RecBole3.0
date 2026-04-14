@@ -32,6 +32,7 @@ from recbole3.dataset import DatasetConfig
 class MyDatasetConfig(DatasetConfig):
     name: str = field(default="my_retrieval_dataset", metadata={"help": "Dataset name."})
     source_path: str = field(default="data/raw/my_dataset.csv", metadata={"help": "Raw source path."})
+    processed_dir: str = field(default="data/processed/my_retrieval_dataset", metadata={"help": "Parsed cache path."})
     refresh_cache: bool = field(default=False, metadata={"help": "Whether to rebuild parser cache."})
 ```
 
@@ -45,41 +46,51 @@ Parser responsibilities:
 - download raw data if needed
 - manage source-specific cache files
 - normalize raw fields
-- remap raw ids to contiguous `user_id` and `item_id`
 - return `interactions`, `user_table`, and `item_table`
 
-```python
-from dataclasses import dataclass
+For JSONL-backed parser caches, use `from recbole3.dataset.cache import DatasetCache`. Keep source-specific path layout in your parser, and use the cache helper for DataFrame and `ParsedData` read/write.
 
+```python
 import pandas as pd
 
-from recbole3.dataset import BaseDatasetParser, Interaction, ParsedData
+from recbole3.dataset.cache import DatasetCache
+from recbole3.dataset import BaseDatasetParser, ITEM_ID, LABEL, TIMESTAMP, USER_ID, ParsedData
 
 
 class MyDatasetParser(BaseDatasetParser):
     config: MyDatasetConfig
 
     def parse(self) -> ParsedData:
+        cache = DatasetCache(self.config.processed_dir)
+        if not self.config.refresh_cache and cache.parsed_exists():
+            return cache.read_parsed()
+
         frame = pd.read_csv(self.config.source_path)
 
-        user_index = pd.Index(pd.unique(frame["raw_user_id"]), name="raw_user_id")
-        item_index = pd.Index(pd.unique(frame["raw_item_id"]), name="raw_item_id")
-        user_id_map = pd.Series(range(len(user_index)), index=user_index)
-        item_id_map = pd.Series(range(len(item_index)), index=item_index)
-
-        interactions = [
-            Interaction(
-                user_id=int(user_id_map[row.raw_user_id]),
-                item_id=int(item_id_map[row.raw_item_id]),
-                timestamp=int(row.timestamp),
-                label=float(row.label),
-            )
-            for row in frame.itertuples(index=False)
-        ]
-        user_table = pd.DataFrame({"user_id": range(len(user_index)), "raw_user_id": user_index})
-        item_table = pd.DataFrame({"item_id": range(len(item_index)), "raw_item_id": item_index})
-        return ParsedData(interactions=interactions, user_table=user_table, item_table=item_table)
+        interactions = pd.DataFrame(
+            {
+                USER_ID: frame["reviewer_id"],
+                ITEM_ID: frame["asin"],
+                TIMESTAMP: frame["timestamp"],
+                LABEL: frame["label"],
+            }
+        )
+        user_table = frame.loc[:, ["reviewer_id"]].drop_duplicates("reviewer_id")
+        user_table = user_table.rename(columns={"reviewer_id": USER_ID})
+        item_table = frame.loc[:, ["asin", "title", "category"]].drop_duplicates("asin")
+        item_table = item_table.rename(columns={"asin": ITEM_ID})
+        parsed = ParsedData(interactions=interactions, user_table=user_table, item_table=item_table)
+        cache.write_parsed(parsed)
+        return parsed
 ```
+
+`ParsedData.interactions` must be a pandas DataFrame with `user_id` and `item_id`. At parser output time those two columns are raw source ids and may be strings or other hashable keys, but they must be non-null.
+
+`user_table` and `item_table` are optional. If you provide them, they must contain unique non-null raw `user_id` / `item_id` values. Missing entity rows are appended from interactions before framework id remapping, so sparse metadata tables are allowed.
+
+`BaseTaskDataset.prepare(...)` remaps raw ids into framework ids. Both `user_id` and `item_id` start at `0`, and dataset `item_id` values always refer to real items. `timestamp` and `label` are optional; extra columns are allowed and preserved in prepared frames.
+
+Retrieval eval frames use tuple-valued `seen_item_ids`; sampled retrieval also uses tuple-valued `candidate_item_ids` with the target item first and the same tuple length in every row.
 
 ### Step 3: Bind It to One Task Dataset
 
@@ -108,7 +119,6 @@ from recbole3.dataset import DATASET_TABLE, DatasetSpec
 DATASET_TABLE["my_retrieval_dataset"] = DatasetSpec(
     dataset_cls=MyRetrievalDataset,
     config_cls=MyDatasetConfig,
-    task="retrieval",
 )
 ```
 
@@ -119,11 +129,12 @@ Your parser should do:
 - source download
 - source cache
 - raw cleanup
-- id remapping
-- user and item table construction
+- DataFrame construction for interactions and optional entity metadata
+- user and item table construction when source metadata is available
 
 Your parser should not do:
 
+- framework id remapping
 - train negative sampling
 - padding, masking, truncation, sequence packing
 - model-specific feature engineering
@@ -154,7 +165,9 @@ After `prepare(eval_config=...)`, the public API is:
 - `get_num_users()`
 - `get_num_items()`
 
-All three splits are `torch.utils.data.Dataset` instances.
+All three splits are `FrameDataset` instances backed by pandas DataFrames. A single integer index returns one row as a dictionary, while DataLoader batch fetching returns one DataFrame to the collator.
+
+Prepared frames and entity tables use framework ids, not raw source ids. `get_item_table()` contains only real item rows, and item ids start at `0`. Models that need a padding id reserve and map it internally. DataFrame metadata accessors return copies.
 
 ## Split Config
 
@@ -184,6 +197,8 @@ dataset:
     valid_ratio: 1
     test_ratio: 1
 ```
+
+Ratio values are normalized as weights and rounded with a deterministic largest-remainder rule. Leave-one-out holdout counts are clamped to the available group size. `order=chronological` uses `timestamp` only when every row in the group has one; otherwise parser order is preserved. `order=random` is deterministic for the same `seed`.
 
 ## Model in 3 Steps
 
@@ -241,9 +256,9 @@ Rules for model-side datasets:
 
 If your model needs `history_item_ids`, prefer the built-in sequential bases instead of rebuilding sequence logic in the collator.
 
-- `BaseSequentialRankingModelDataset` converts all three splits into `SequentialInteraction`
-- `BaseSequentialRetrievalModelDataset` converts `train` into `SequentialInteraction` and `valid`/`test` into `SequentialRetrievalEvalRequest`
-- `build_history_item_ids(...)` is the shared helper that constructs one prefix history per record
+- `BaseSequentialRankingModelDataset` adds `history_item_ids` to all three split DataFrames
+- `BaseSequentialRetrievalModelDataset` adds `history_item_ids` to train, valid, and test split DataFrames
+- `build_history_item_ids(...)` is the shared helper that constructs one prefix history per row
 
 Minimal retrieval example:
 
@@ -319,7 +334,21 @@ Each model should have one YAML file under:
 
 - `configs/model/`
 
-Example:
+Dataset file example:
+
+```yaml
+name: my_retrieval_dataset
+source_path: data/raw/my_dataset.csv
+processed_dir: data/processed/my_retrieval_dataset
+split:
+  strategy: leave_one_out
+  order: chronological
+  per_user: true
+  valid_holdout_num: 1
+  test_holdout_num: 1
+```
+
+Model file example:
 
 ```yaml
 # @package _global_
@@ -347,10 +376,11 @@ Model-data parameters belong in the `model` block because they are model-specifi
 
 Before adding one new dataset, check these points:
 
-- parser output uses contiguous `user_id` and `item_id`
-- `user_table` contains `user_id`
-- `item_table` contains `item_id`
+- parser output `interactions` is a DataFrame with non-null raw `user_id` and `item_id`
+- optional `user_table` contains unique non-null raw `user_id`
+- optional `item_table` contains unique non-null raw `item_id`
+- retrieval datasets produce only positive eval requests and valid `seen_item_ids` histories
+- sampled retrieval candidates are equal-width tuples and target-first
 - dataset class inherits the correct task base
 - dataset name is added to `DATASET_TABLE`
 - YAML `dataset.name` matches the table key exactly
-

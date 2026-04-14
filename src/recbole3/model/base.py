@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Generic, Self, Sequence, TypeVar
+from typing import Any, Generic, Self, TypeVar
 
 import torch
 from torch import nn
@@ -34,12 +34,12 @@ class ModelDatasets(Generic[TModelTrain, TModelEval]):
 class BaseCollator(ABC):
     """Turn model-produced feature records into model-ready batches via DataLoader.collate_fn."""
 
-    def __init__(self, config: ModelConfig, prepared_data: BaseTaskDataset[Any, Any]):
+    def __init__(self, config: ModelConfig, prepared_data: BaseTaskDataset):
         self.config = config
         self.prepared_data = prepared_data
 
     @abstractmethod
-    def __call__(self, feature_records: Sequence[Any]) -> Any:
+    def __call__(self, feature_records: Any) -> Any:
         """Build a model-ready batch from model feature records."""
 
 
@@ -51,11 +51,11 @@ class BaseModel(nn.Module, ABC):
         self.config = config
 
     @abstractmethod
-    def build_train_collator(self, prepared_data: BaseTaskDataset[Any, Any]) -> BaseCollator:
+    def build_train_collator(self, prepared_data: BaseTaskDataset) -> BaseCollator:
         """Return the collator used for training batches."""
 
     @abstractmethod
-    def build_eval_collator(self, prepared_data: BaseTaskDataset[Any, Any]) -> BaseCollator:
+    def build_eval_collator(self, prepared_data: BaseTaskDataset) -> BaseCollator:
         """Return the collator used to pack evaluation model inputs."""
 
     @abstractmethod
@@ -97,7 +97,7 @@ class BaseModelDataset(ABC, Generic[TModelTrain, TModelEval]):
     @classmethod
     def from_task_dataset(
         cls,
-        dataset: BaseTaskDataset[Any, Any],
+        dataset: BaseTaskDataset,
         *,
         model_config: ModelConfig,
     ) -> Self:
@@ -108,7 +108,7 @@ class BaseModelDataset(ABC, Generic[TModelTrain, TModelEval]):
 
     @classmethod
     @abstractmethod
-    def _clone_task_dataset(cls, dataset: BaseTaskDataset[Any, Any]) -> Self:
+    def _clone_task_dataset(cls, dataset: BaseTaskDataset) -> Self:
         """Clone one prepared task dataset into the model-side dataset type."""
 
     @abstractmethod
@@ -116,13 +116,13 @@ class BaseModelDataset(ABC, Generic[TModelTrain, TModelEval]):
         """Return model-side prepared split replacements for one model."""
 
     @staticmethod
-    def _copy_task_dataset_state(target: BaseTaskDataset[Any, Any], source: BaseTaskDataset[Any, Any]) -> None:
+    def _copy_task_dataset_state(target: BaseTaskDataset, source: BaseTaskDataset) -> None:
         source._require_prepared()
         target.config = source.config
         target._parser = source._parser
         target._eval_config = source._eval_config
         target._is_prepared = source._is_prepared
-        target._interactions = list(source.get_interactions())
+        target._interactions = source.get_interactions().copy()
         target._user_table = source.get_user_table().copy()
         target._item_table = source.get_item_table().copy()
         target._num_users = source.get_num_users()
@@ -160,7 +160,7 @@ class BaseRankingModelDataset(BaseModelDataset[TModelTrain, TModelEval], Ranking
     """Model-side dataset extension for ranking tasks."""
 
     @classmethod
-    def _clone_task_dataset(cls, dataset: BaseTaskDataset[Any, Any]) -> Self:
+    def _clone_task_dataset(cls, dataset: BaseTaskDataset) -> Self:
         if not isinstance(dataset, RankingDataset):
             raise TypeError(f"{cls.__name__} requires a prepared RankingDataset.")
         model_dataset = cls.__new__(cls)
@@ -172,7 +172,7 @@ class BaseRetrievalModelDataset(BaseModelDataset[TModelTrain, TModelEval], Retri
     """Model-side dataset extension for retrieval tasks."""
 
     @classmethod
-    def _clone_task_dataset(cls, dataset: BaseTaskDataset[Any, Any]) -> Self:
+    def _clone_task_dataset(cls, dataset: BaseTaskDataset) -> Self:
         if not isinstance(dataset, RetrievalDataset):
             raise TypeError(f"{cls.__name__} requires a prepared RetrievalDataset.")
         model_dataset = cls.__new__(cls)
