@@ -616,10 +616,6 @@ class RetrievalDataset(BaseTaskDataset):
         target_item_id = int(target_item_id)
         return tuple(range(0, target_item_id)) + tuple(range(target_item_id + 1, self._num_items))
 
-    def _build_negative_pool(self, target_item_id: int) -> np.ndarray:
-        negative_pool = np.arange(0, self._num_items, dtype=np.int64)
-        return negative_pool[negative_pool != int(target_item_id)]
-
     def _negative_sample_size(self, available_count: int) -> int:
         eval_config = self._require_eval_config()
         return min(max(0, int(eval_config.neg_sampling_num)), available_count)
