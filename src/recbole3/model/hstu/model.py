@@ -7,10 +7,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from recbole3.dataset import ITEM_ID, PAD_ITEM_ID
+from recbole3.dataset import ITEM_ID
 from recbole3.model.base import BaseCollator, BaseRetrievalModel
-from recbole3.model.hstu.config import HSTUConfig
-from recbole3.model.hstu.data import HISTORY_TIMESTAMPS, HSTUEvalCollator, HSTUTrainCollator
+from recbole3.model.hstu.config import HSTUConfig, HSTU_PADDING_ITEM_ID, ITEM_ID_OFFSET
+from recbole3.model.hstu.data import (
+    HISTORY_TIMESTAMPS,
+    HSTUEvalCollator,
+    HSTUTrainCollator,
+)
 from recbole3.model.sequential import HISTORY_ITEM_IDS
 
 
@@ -296,13 +300,11 @@ class HSTUModel(BaseRetrievalModel):
         if k <= 0:
             return torch.empty((user_embeddings.shape[0], 0), dtype=torch.long, device=user_embeddings.device)
         candidate_item_ids = candidate_item_ids.to(device=user_embeddings.device, dtype=torch.long)
-        if torch.any(candidate_item_ids == PAD_ITEM_ID):
-            raise ValueError("HSTU candidate_item_ids must not contain PAD_ITEM_ID=0.")
         if k > int(candidate_item_ids.shape[1]):
             raise ValueError(
                 f"HSTU cannot return k={k} sampled predictions from {int(candidate_item_ids.shape[1])} candidates."
             )
-        candidate_embeddings = self._item_embedding_module()(candidate_item_ids)
+        candidate_embeddings = self._item_embedding_module()(self._to_model_item_ids(candidate_item_ids))
         scores = self._score_embeddings(user_embeddings, candidate_embeddings)
         topk_indices = torch.topk(scores, k=k, dim=1).indices
         pred_item_ids = torch.gather(candidate_item_ids, 1, topk_indices)
@@ -311,16 +313,13 @@ class HSTUModel(BaseRetrievalModel):
     def _topk_item_ids(self, scores: torch.Tensor, *, k: int) -> torch.Tensor:
         if k <= 0:
             return torch.empty((scores.shape[0], 0), dtype=torch.long, device=scores.device)
-        available_items = max(0, int(scores.shape[1]) - 1)
+        available_items = int(scores.shape[1])
         if k > available_items:
             raise ValueError(f"HSTU cannot return k={k} full predictions from {available_items} real items.")
         return torch.topk(scores, k=k, dim=1).indices.to(dtype=torch.long)
 
     def _score_all_items(self, user_embeddings: torch.Tensor) -> torch.Tensor:
-        scores = self._score_embeddings(user_embeddings, self._item_embedding_module().weight)
-        if scores.shape[1] > PAD_ITEM_ID:
-            scores[:, PAD_ITEM_ID] = float("-inf")
-        return scores
+        return self._score_embeddings(user_embeddings, self._item_embedding_module().weight[ITEM_ID_OFFSET:])
 
     def _score_embeddings(self, user_embeddings: torch.Tensor, item_embeddings: torch.Tensor) -> torch.Tensor:
         if self.config.normalize_embeddings:
@@ -348,7 +347,12 @@ class HSTUModel(BaseRetrievalModel):
             )
         positions = torch.arange(sequence_length, device=history_lengths.device, dtype=torch.long)
         valid_mask = positions.view(1, sequence_length) < history_lengths.view(batch_size, 1)
-        masked_history_item_ids = torch.where(valid_mask, history_item_ids, torch.zeros_like(history_item_ids))
+        model_history_item_ids = self._to_model_item_ids(history_item_ids)
+        masked_history_item_ids = torch.where(
+            valid_mask,
+            model_history_item_ids,
+            torch.full_like(history_item_ids, HSTU_PADDING_ITEM_ID),
+        )
         dense_embeddings = item_embeddings(masked_history_item_ids)
         _, processed_embeddings, _ = input_preprocessor(
             past_lengths=history_lengths,
@@ -385,7 +389,11 @@ class HSTUModel(BaseRetrievalModel):
             return
 
         self._num_items = int(num_items)
-        self._item_embeddings = nn.Embedding(self._num_items, self.config.embedding_dim, padding_idx=PAD_ITEM_ID)
+        self._item_embeddings = nn.Embedding(
+            self._num_items + ITEM_ID_OFFSET,
+            self.config.embedding_dim,
+            padding_idx=HSTU_PADDING_ITEM_ID,
+        )
         self._input_preprocessor = LearnablePositionalEmbeddingInputFeaturesPreprocessor(
             max_sequence_length=int(self.config.history_max_length),
             embedding_dim=self.config.embedding_dim,
@@ -415,8 +423,19 @@ class HSTUModel(BaseRetrievalModel):
         item_embeddings = self._item_embedding_module()
         truncated_normal(item_embeddings.weight, mean=0.0, std=0.02)
         with torch.no_grad():
-            item_embeddings.weight[PAD_ITEM_ID].zero_()
+            item_embeddings.weight[HSTU_PADDING_ITEM_ID].zero_()
         truncated_normal(self._empty_history_parameter(), mean=0.0, std=0.02)
+
+    def _to_model_item_ids(self, item_ids: torch.Tensor) -> torch.Tensor:
+        if self._num_items is None:
+            raise RuntimeError("HSTUModel must be initialized with prepared_data before it can map item ids.")
+        if item_ids.numel() > 0:
+            invalid = (item_ids < 0) | (item_ids >= self._num_items)
+            if torch.any(invalid):
+                raise ValueError(
+                    f"HSTU received item ids outside dataset range [0, {self._num_items - 1}]."
+                )
+        return item_ids + ITEM_ID_OFFSET
 
     def _item_embedding_module(self) -> nn.Embedding:
         if self._item_embeddings is None:

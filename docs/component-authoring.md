@@ -88,9 +88,9 @@ class MyDatasetParser(BaseDatasetParser):
 
 `user_table` and `item_table` are optional. If you provide them, they must contain unique non-null raw `user_id` / `item_id` values. Missing entity rows are appended from interactions before framework id remapping, so sparse metadata tables are allowed.
 
-`BaseTaskDataset.prepare(...)` remaps raw ids into framework ids, reserves `item_id=0` for padding, and makes real items start at `1`. `timestamp` and `label` are optional; extra columns are allowed and preserved in prepared frames.
+`BaseTaskDataset.prepare(...)` remaps raw ids into framework ids. Both `user_id` and `item_id` start at `0`, and dataset `item_id` values always refer to real items. `timestamp` and `label` are optional; extra columns are allowed and preserved in prepared frames.
 
-Retrieval eval frames use tuple-valued `seen_item_ids`; sampled retrieval also uses tuple-valued `candidate_item_ids` with the target item first, the same tuple length in every row, and no `item_id=0`.
+Retrieval eval frames use tuple-valued `seen_item_ids`; sampled retrieval also uses tuple-valued `candidate_item_ids` with the target item first and the same tuple length in every row.
 
 ### Step 3: Bind It to One Task Dataset
 
@@ -135,7 +135,6 @@ Your parser should do:
 Your parser should not do:
 
 - framework id remapping
-- padding item insertion
 - train negative sampling
 - padding, masking, truncation, sequence packing
 - model-specific feature engineering
@@ -168,7 +167,7 @@ After `prepare(eval_config=...)`, the public API is:
 
 All three splits are `FrameDataset` instances backed by pandas DataFrames. A single integer index returns one row as a dictionary, while DataLoader batch fetching returns one DataFrame to the collator.
 
-Prepared frames and entity tables use framework ids, not raw source ids. `get_item_table()` includes the padding row at `item_id=0`; real items start at `1`. DataFrame metadata accessors return copies.
+Prepared frames and entity tables use framework ids, not raw source ids. `get_item_table()` contains only real item rows, and item ids start at `0`. Models that need a padding id reserve and map it internally. DataFrame metadata accessors return copies.
 
 ## Split Config
 
@@ -381,7 +380,7 @@ Before adding one new dataset, check these points:
 - optional `user_table` contains unique non-null raw `user_id`
 - optional `item_table` contains unique non-null raw `item_id`
 - retrieval datasets produce only positive eval requests and valid `seen_item_ids` histories
-- sampled retrieval candidates are equal-width tuples, target-first, and exclude `item_id=0`
+- sampled retrieval candidates are equal-width tuples and target-first
 - dataset class inherits the correct task base
 - dataset name is added to `DATASET_TABLE`
 - YAML `dataset.name` matches the table key exactly

@@ -12,6 +12,7 @@ from recbole3.dataset import ITEM_ID, LABEL, SEEN_ITEM_IDS, TIMESTAMP, USER_ID, 
 from recbole3.dataset.base import DatasetConfig
 from recbole3.evaluation import EvalConfig, MetricSpec
 from recbole3.model import HISTORY_ITEM_IDS, HISTORY_TIMESTAMPS, HSTUConfig, HSTUModel, HSTUModelDataset, get_model_spec
+from recbole3.model.hstu.config import HSTU_PADDING_ITEM_ID
 from recbole3.model.hstu.data import HSTUEvalCollator, HSTUTrainCollator
 from recbole3.run import compose_config, run_experiment
 from recbole3.trainer import Trainer, TrainerConfig
@@ -66,19 +67,19 @@ def test_hstu_model_dataset_builds_histories_with_timestamps_across_splits() -> 
     assert hstu_data.get_train_dataset().frame[
         [USER_ID, ITEM_ID, TIMESTAMP, LABEL, HISTORY_ITEM_IDS, HISTORY_TIMESTAMPS]
     ].to_dict("records") == [
-        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: (), HISTORY_TIMESTAMPS: ()},
-        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (1,), HISTORY_TIMESTAMPS: (1.0,)},
-        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: (), HISTORY_TIMESTAMPS: ()},
-        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (5,), HISTORY_TIMESTAMPS: (1.0,)},
+        {USER_ID: 0, ITEM_ID: 0, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: (), HISTORY_TIMESTAMPS: ()},
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (0,), HISTORY_TIMESTAMPS: (1.0,)},
+        {USER_ID: 1, ITEM_ID: 4, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: (), HISTORY_TIMESTAMPS: ()},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (4,), HISTORY_TIMESTAMPS: (1.0,)},
     ]
     eval_columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS, HISTORY_ITEM_IDS, HISTORY_TIMESTAMPS]
     assert hstu_data.get_eval_dataset("valid").frame[eval_columns].to_dict("records") == [
-        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2), HISTORY_ITEM_IDS: (1, 2), HISTORY_TIMESTAMPS: (1.0, 2.0)},
-        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6), HISTORY_ITEM_IDS: (5, 6), HISTORY_TIMESTAMPS: (1.0, 2.0)},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (0, 1), HISTORY_ITEM_IDS: (0, 1), HISTORY_TIMESTAMPS: (1.0, 2.0)},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (4, 5), HISTORY_ITEM_IDS: (4, 5), HISTORY_TIMESTAMPS: (1.0, 2.0)},
     ]
     assert hstu_data.get_eval_dataset("test").frame[eval_columns].to_dict("records") == [
-        {USER_ID: 0, ITEM_ID: 4, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2, 3), HISTORY_ITEM_IDS: (2, 3), HISTORY_TIMESTAMPS: (2.0, 3.0)},
-        {USER_ID: 1, ITEM_ID: 8, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6, 7), HISTORY_ITEM_IDS: (6, 7), HISTORY_TIMESTAMPS: (2.0, 3.0)},
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (0, 1, 2), HISTORY_ITEM_IDS: (1, 2), HISTORY_TIMESTAMPS: (2.0, 3.0)},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (4, 5, 6), HISTORY_ITEM_IDS: (5, 6), HISTORY_TIMESTAMPS: (2.0, 3.0)},
     ]
 
 
@@ -99,12 +100,12 @@ def test_hstu_collators_pad_history_sequences() -> None:
     eval_batch = HSTUEvalCollator(HSTUConfig(history_max_length=2), prepared_data=hstu_data)(eval_records)
 
     assert train_batch["history_lengths"].tolist() == [0, 1]
-    assert train_batch["history_item_ids"].tolist() == [[0], [1]]
+    assert train_batch["history_item_ids"].tolist() == [[0], [0]]
     assert train_batch["history_timestamps"].tolist() == [[0.0], [1.0]]
-    assert train_batch["item_id"].tolist() == [1, 2]
+    assert train_batch["item_id"].tolist() == [0, 1]
 
     assert eval_batch["history_lengths"].tolist() == [2, 2]
-    assert eval_batch["history_item_ids"].tolist() == [[2, 3], [6, 7]]
+    assert eval_batch["history_item_ids"].tolist() == [[1, 2], [5, 6]]
     assert eval_batch["history_timestamps"].tolist() == [[2.0, 3.0], [2.0, 3.0]]
 
 
@@ -124,11 +125,12 @@ def test_hstu_predict_supports_sampled_and_full_modes(monkeypatch: pytest.Monkey
     monkeypatch.setattr(HSTUModel, "_require_runtime_support", lambda self: None)
     model = HSTUModel(HSTUConfig(history_max_length=2, normalize_embeddings=False, temperature=1.0))
     model._num_items = 5
-    model._item_embeddings = nn.Embedding(5, 2, padding_idx=0)
+    model._item_embeddings = nn.Embedding(6, 2, padding_idx=HSTU_PADDING_ITEM_ID)
     with torch.no_grad():
         model._item_embeddings.weight.copy_(
             torch.tensor(
                 [
+                    [0.0, 0.0],
                     [0.0, 0.0],
                     [4.0, 1.0],
                     [3.0, 0.0],
@@ -149,7 +151,7 @@ def test_hstu_predict_supports_sampled_and_full_modes(monkeypatch: pytest.Monkey
         "history_lengths": torch.zeros(2, dtype=torch.long),
     }
 
-    sampled_pred = model.predict(batch, k=2, candidate_item_ids=torch.tensor([[1, 2, 3], [2, 3, 4]], dtype=torch.long))
+    sampled_pred = model.predict(batch, k=2, candidate_item_ids=torch.tensor([[0, 1, 2], [0, 3, 4]], dtype=torch.long))
     full_pred = model.predict(
         batch,
         k=2,

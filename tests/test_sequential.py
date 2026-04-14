@@ -85,18 +85,18 @@ def test_sequential_ranking_dataset_builds_prefix_histories_across_splits() -> N
 
     columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL, HISTORY_ITEM_IDS]
     assert _rows(sequential_data.get_train_dataset(), columns) == [
-        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
-        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (1,)},
-        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
-        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (5,)},
+        {USER_ID: 0, ITEM_ID: 0, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (0,)},
+        {USER_ID: 1, ITEM_ID: 4, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (4,)},
     ]
     assert _rows(sequential_data.get_eval_dataset("valid"), columns) == [
-        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (1, 2)},
-        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (5, 6)},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (0, 1)},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (4, 5)},
     ]
     assert _rows(sequential_data.get_eval_dataset("test"), columns) == [
-        {USER_ID: 0, ITEM_ID: 4, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (1, 2, 3)},
-        {USER_ID: 1, ITEM_ID: 8, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (5, 6, 7)},
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (0, 1, 2)},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (4, 5, 6)},
     ]
 
 
@@ -110,18 +110,18 @@ def test_sequential_ranking_dataset_truncates_prefix_histories_across_splits() -
 
     columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL, HISTORY_ITEM_IDS]
     assert _rows(sequential_data.get_train_dataset(), columns) == [
-        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
-        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (1,)},
-        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
-        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (5,)},
+        {USER_ID: 0, ITEM_ID: 0, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (0,)},
+        {USER_ID: 1, ITEM_ID: 4, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (4,)},
     ]
     assert _rows(sequential_data.get_eval_dataset("valid"), columns) == [
-        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (1, 2)},
-        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (5, 6)},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (0, 1)},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 3, LABEL: 1.0, HISTORY_ITEM_IDS: (4, 5)},
     ]
     assert _rows(sequential_data.get_eval_dataset("test"), columns) == [
-        {USER_ID: 0, ITEM_ID: 4, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (2, 3)},
-        {USER_ID: 1, ITEM_ID: 8, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (6, 7)},
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (1, 2)},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 4, LABEL: 1.0, HISTORY_ITEM_IDS: (5, 6)},
     ]
 
 
@@ -131,19 +131,19 @@ def test_sequential_retrieval_dataset_preserves_eval_contract_and_histories() ->
     sequential_data = StubSequentialRetrievalDataset.from_task_dataset(prepared, model_config=ModelConfig(name="stub"))
 
     assert _rows(sequential_data.get_train_dataset(), [USER_ID, ITEM_ID, TIMESTAMP, LABEL, HISTORY_ITEM_IDS]) == [
-        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
-        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (1,)},
-        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
-        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (5,)},
+        {USER_ID: 0, ITEM_ID: 0, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (0,)},
+        {USER_ID: 1, ITEM_ID: 4, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: ()},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (4,)},
     ]
     eval_columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS, HISTORY_ITEM_IDS]
     assert _rows(sequential_data.get_eval_dataset("valid"), eval_columns) == [
-        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2), HISTORY_ITEM_IDS: (1, 2)},
-        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6), HISTORY_ITEM_IDS: (5, 6)},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (0, 1), HISTORY_ITEM_IDS: (0, 1)},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (4, 5), HISTORY_ITEM_IDS: (4, 5)},
     ]
     assert _rows(sequential_data.get_eval_dataset("test"), eval_columns) == [
-        {USER_ID: 0, ITEM_ID: 4, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2, 3), HISTORY_ITEM_IDS: (1, 2, 3)},
-        {USER_ID: 1, ITEM_ID: 8, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6, 7), HISTORY_ITEM_IDS: (5, 6, 7)},
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (0, 1, 2), HISTORY_ITEM_IDS: (0, 1, 2)},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (4, 5, 6), HISTORY_ITEM_IDS: (4, 5, 6)},
     ]
 
 
@@ -157,10 +157,10 @@ def test_sequential_retrieval_dataset_truncates_histories_without_changing_eval_
 
     eval_columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS, HISTORY_ITEM_IDS]
     assert _rows(sequential_data.get_eval_dataset("valid"), eval_columns) == [
-        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2), HISTORY_ITEM_IDS: (1, 2)},
-        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6), HISTORY_ITEM_IDS: (5, 6)},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (0, 1), HISTORY_ITEM_IDS: (0, 1)},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (4, 5), HISTORY_ITEM_IDS: (4, 5)},
     ]
     assert _rows(sequential_data.get_eval_dataset("test"), eval_columns) == [
-        {USER_ID: 0, ITEM_ID: 4, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2, 3), HISTORY_ITEM_IDS: (2, 3)},
-        {USER_ID: 1, ITEM_ID: 8, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6, 7), HISTORY_ITEM_IDS: (6, 7)},
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (0, 1, 2), HISTORY_ITEM_IDS: (1, 2)},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (4, 5, 6), HISTORY_ITEM_IDS: (5, 6)},
     ]

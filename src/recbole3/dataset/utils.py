@@ -5,7 +5,6 @@ from typing import Any
 
 import pandas as pd
 
-PAD_ITEM_ID = 0
 USER_ID = "user_id"
 ITEM_ID = "item_id"
 TIMESTAMP = "timestamp"
@@ -83,7 +82,6 @@ __all__ = [
     "FrameSchema",
     "ITEM_ID",
     "LABEL",
-    "PAD_ITEM_ID",
     "SEEN_ITEM_IDS",
     "TIMESTAMP",
     "USER_ID",

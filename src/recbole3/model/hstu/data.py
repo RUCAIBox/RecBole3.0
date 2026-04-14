@@ -9,7 +9,7 @@ from torch.utils.data import Dataset
 
 from recbole3.dataset import FrameDataset, ITEM_ID, LABEL, TIMESTAMP, USER_ID
 from recbole3.model.base import BaseCollator, BaseRetrievalModelDataset, ModelDatasets
-from recbole3.model.hstu.config import HSTUConfig
+from recbole3.model.hstu.config import HSTUConfig, HSTU_PADDING_ITEM_ID
 from recbole3.model.sequential import HISTORY_ITEM_IDS
 
 
@@ -131,7 +131,7 @@ def _build_hstu_history_batch(records: pd.DataFrame) -> dict[str, torch.Tensor]:
     history_lengths = torch.tensor([len(values) for values in history_items], dtype=torch.long)
     batch_size = len(records)
     max_length = int(torch.max(history_lengths).item()) if batch_size > 0 else 0
-    history_item_ids = torch.zeros((batch_size, max_length), dtype=torch.long)
+    history_item_ids = torch.full((batch_size, max_length), HSTU_PADDING_ITEM_ID, dtype=torch.long)
     history_timestamps = torch.zeros((batch_size, max_length), dtype=torch.float32)
     for row_index, (item_history, time_history) in enumerate(zip(history_items, history_times, strict=True)):
         row_length = len(item_history)

@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from recbole3.model.sequential import SequentialModelConfig
 
 
+HSTU_PADDING_ITEM_ID = 0
+ITEM_ID_OFFSET = 1
+
+
 @dataclass(slots=True)
 class HSTUConfig(SequentialModelConfig):
     """Configuration for the HSTU retrieval model."""
@@ -28,3 +32,10 @@ class HSTUConfig(SequentialModelConfig):
         metadata={"help": "Whether to L2-normalize user and item embeddings before scoring."},
     )
     num_time_buckets: int = field(default=128, metadata={"help": "Bucket count used by relative time bias."})
+
+
+__all__ = [
+    "HSTUConfig",
+    "HSTU_PADDING_ITEM_ID",
+    "ITEM_ID_OFFSET",
+]

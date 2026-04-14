@@ -190,16 +190,16 @@ def test_prepare_builds_retrieval_records_in_chronological_order(monkeypatch: py
     prepared = dataset.prepare(eval_config=_full_eval_config())
 
     assert prepared.get_train_dataset().frame[[USER_ID, ITEM_ID, TIMESTAMP]].to_dict("records") == [
-        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1},
-        {USER_ID: 1, ITEM_ID: 2, TIMESTAMP: 1},
+        {USER_ID: 0, ITEM_ID: 0, TIMESTAMP: 1},
+        {USER_ID: 1, ITEM_ID: 1, TIMESTAMP: 1},
     ]
     assert prepared.get_eval_dataset("valid").frame[[USER_ID, ITEM_ID, TIMESTAMP, SEEN_ITEM_IDS]].to_dict("records") == [
-        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, SEEN_ITEM_IDS: (1,)},
-        {USER_ID: 1, ITEM_ID: 4, TIMESTAMP: 2, SEEN_ITEM_IDS: (2,)},
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 2, SEEN_ITEM_IDS: (0,)},
+        {USER_ID: 1, ITEM_ID: 3, TIMESTAMP: 2, SEEN_ITEM_IDS: (1,)},
     ]
     assert prepared.get_eval_dataset("test").frame[[USER_ID, ITEM_ID, TIMESTAMP, SEEN_ITEM_IDS]].to_dict("records") == [
-        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, SEEN_ITEM_IDS: (1, 2)},
-        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 3, SEEN_ITEM_IDS: (2, 4)},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, SEEN_ITEM_IDS: (0, 1)},
+        {USER_ID: 1, ITEM_ID: 4, TIMESTAMP: 3, SEEN_ITEM_IDS: (1, 3)},
     ]
 
 
@@ -337,7 +337,7 @@ def test_table_and_run_experiment_support_amazon2023(monkeypatch: pytest.MonkeyP
 
     result = run_experiment(compose_config(config_dir=config_dir))
     assert result["prepared_data"].get_num_users() == 2
-    assert result["prepared_data"].get_num_items() == 6
+    assert result["prepared_data"].get_num_items() == 5
     assert len(result["prepared_data"].get_train_dataset()) == 2
     assert len(result["prepared_data"].get_eval_dataset("valid")) == 2
     assert len(result["prepared_data"].get_eval_dataset("test")) == 2

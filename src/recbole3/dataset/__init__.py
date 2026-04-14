@@ -20,7 +20,7 @@ from recbole3.dataset.parser import (
 )
 from recbole3.dataset.utils import (
     FrameSchema,
-    require_columns, PAD_ITEM_ID, USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS, CANDIDATE_ITEM_IDS,
+    require_columns, USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS, CANDIDATE_ITEM_IDS,
 )
 
 
@@ -63,7 +63,6 @@ __all__ = [
     "FrameSchema",
     "ITEM_ID",
     "LABEL",
-    "PAD_ITEM_ID",
     "PARSER_INTERACTIONS_SCHEMA",
     "PREPARED_INTERACTIONS_SCHEMA",
     "ParsedData",

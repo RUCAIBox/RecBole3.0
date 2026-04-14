@@ -47,7 +47,6 @@ If `user_table` or `item_table` is omitted, `BaseTaskDataset` derives the missin
 - validating parser output DataFrame schemas
 - deriving missing entity tables
 - remapping raw interaction and entity-table ids into framework ids
-- reserving `item_id=0` as the padding item id
 - interaction ordering
 - ratio and leave-one-out split helpers
 - exposing prepared train and eval datasets through method accessors
@@ -70,6 +69,7 @@ If `user_table` or `item_table` is omitted, `BaseTaskDataset` derives the missin
 Dataset code does not own:
 
 - model-specific negative sampling for training
+- model-specific padding ids
 - tensor padding or masking
 - architecture-specific feature packing
 - runtime metric computation
@@ -174,7 +174,7 @@ The public prepared-data access pattern is method-based:
 - `get_num_users()`
 - `get_num_items()`
 
-Prepared datasets expose split datasets through `get_train_dataset()` and `get_eval_dataset(...)`. `get_interactions()`, entity tables, and split frames use framework ids, not raw source ids. `get_item_table()` includes the padding row at `item_id=0`; all real interaction items are in `[1, get_num_items() - 1]`. Accessors return copies for DataFrame metadata views.
+Prepared datasets expose split datasets through `get_train_dataset()` and `get_eval_dataset(...)`. `get_interactions()`, entity tables, and split frames use framework ids, not raw source ids. `get_item_table()` contains only real item rows; interaction items are in `[0, get_num_items() - 1]`. Accessors return copies for DataFrame metadata views.
 
 ## Data Contracts
 
@@ -196,7 +196,7 @@ Extra columns are allowed and are preserved through the prepared interaction fra
 
 Optional `user_table` and `item_table` use the same raw id columns. Provided entity tables must have unique non-null ids. Missing tables are synthesized from interaction ids; missing rows in provided tables are appended.
 
-After `BaseTaskDataset.prepare(...)`, `user_id` and `item_id` are framework ids. `user_id` starts at `0`. `item_id=0` is reserved for padding, real items start at `1`, and `get_num_items()` includes the padding row.
+After `BaseTaskDataset.prepare(...)`, `user_id` and `item_id` are framework ids. Both start at `0`, and `get_num_items()` counts only real items. Models that need a padding item id reserve and map it internally.
 
 ### Retrieval
 
@@ -213,7 +213,7 @@ Retrieval eval DataFrames contain:
 Protocol semantics are:
 
 - `full`: `candidate_item_ids` is absent or null
-- `sampled`: `candidate_item_ids` is non-null, starts with the target item, has the same tuple length in every row, contains the request candidate set, and never contains `item_id=0`
+- `sampled`: `candidate_item_ids` is non-null, starts with the target item, has the same tuple length in every row, and contains the request candidate set
 
 ### Model-side Sequential Records
 

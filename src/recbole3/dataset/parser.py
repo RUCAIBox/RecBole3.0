@@ -15,7 +15,7 @@ class ParsedData:
     `interactions` must be a pandas DataFrame with raw `user_id` and `item_id`
     columns. `timestamp` and `label` are optional, and extra columns are
     preserved. `BaseTaskDataset.prepare(...)` remaps raw ids into framework ids:
-    users start at 0, item 0 is padding, and real items start at 1.
+    users and items both start at 0. Any padding ids are owned by the model.
 
     `user_table` and `item_table` are optional metadata DataFrames. When
     provided, their `user_id` / `item_id` columns are raw keys.

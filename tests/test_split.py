@@ -38,18 +38,18 @@ def test_ratio_split_with_chronological_order_and_per_user_groups() -> None:
 
     columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL]
     assert _rows(prepared.get_train_dataset(), columns) == [
-        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1, LABEL: 1.0},
-        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, LABEL: 1.0},
-        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 1, LABEL: 1.0},
-        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 2, LABEL: 1.0},
+        {USER_ID: 0, ITEM_ID: 0, TIMESTAMP: 1, LABEL: 1.0},
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 2, LABEL: 1.0},
+        {USER_ID: 1, ITEM_ID: 4, TIMESTAMP: 1, LABEL: 1.0},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 2, LABEL: 1.0},
     ]
     assert _rows(prepared.get_eval_dataset("valid"), columns) == [
-        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0},
-        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, LABEL: 1.0},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 3, LABEL: 1.0},
     ]
     assert _rows(prepared.get_eval_dataset("test"), columns) == [
-        {USER_ID: 0, ITEM_ID: 4, TIMESTAMP: 4, LABEL: 1.0},
-        {USER_ID: 1, ITEM_ID: 8, TIMESTAMP: 4, LABEL: 1.0},
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 4, LABEL: 1.0},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 4, LABEL: 1.0},
     ]
 
 
@@ -67,9 +67,9 @@ def test_ratio_split_uses_all_three_ratios() -> None:
         )
     ).prepare(eval_config=_labeled_eval_config())
 
-    assert prepared.get_train_dataset().frame[ITEM_ID].tolist() == [1, 5, 2, 6]
-    assert prepared.get_eval_dataset("valid").frame[ITEM_ID].tolist() == [3, 7]
-    assert prepared.get_eval_dataset("test").frame[ITEM_ID].tolist() == [4, 8]
+    assert prepared.get_train_dataset().frame[ITEM_ID].tolist() == [0, 4, 1, 5]
+    assert prepared.get_eval_dataset("valid").frame[ITEM_ID].tolist() == [2, 6]
+    assert prepared.get_eval_dataset("test").frame[ITEM_ID].tolist() == [3, 7]
 
 
 def test_random_per_user_split_is_deterministic_for_same_seed() -> None:
@@ -104,18 +104,18 @@ def test_retrieval_prepare_builds_request_level_eval_records() -> None:
     ).prepare(eval_config=_full_eval_config())
 
     assert _rows(prepared.get_train_dataset(), [USER_ID, ITEM_ID, TIMESTAMP, LABEL]) == [
-        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1, LABEL: 1.0},
-        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, LABEL: 1.0},
-        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 1, LABEL: 1.0},
-        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 2, LABEL: 1.0},
+        {USER_ID: 0, ITEM_ID: 0, TIMESTAMP: 1, LABEL: 1.0},
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 2, LABEL: 1.0},
+        {USER_ID: 1, ITEM_ID: 4, TIMESTAMP: 1, LABEL: 1.0},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 2, LABEL: 1.0},
     ]
     assert _rows(prepared.get_eval_dataset("valid"), [USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS]) == [
-        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2)},
-        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6)},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (0, 1)},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (4, 5)},
     ]
     assert _rows(prepared.get_eval_dataset("test"), [USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS]) == [
-        {USER_ID: 0, ITEM_ID: 4, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2, 3)},
-        {USER_ID: 1, ITEM_ID: 8, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6, 7)},
+        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (0, 1, 2)},
+        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 4, LABEL: 1.0, SEEN_ITEM_IDS: (4, 5, 6)},
     ]
 
 
@@ -133,10 +133,10 @@ def test_retrieval_prepare_expands_seen_history_within_split() -> None:
     ).prepare(eval_config=_full_eval_config())
 
     assert _rows(prepared.get_eval_dataset("valid"), [USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS]) == [
-        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 2, LABEL: 1.0, SEEN_ITEM_IDS: (1,)},
-        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (1, 2)},
-        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 2, LABEL: 1.0, SEEN_ITEM_IDS: (5,)},
-        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (5, 6)},
+        {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 2, LABEL: 1.0, SEEN_ITEM_IDS: (0,)},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (0, 1)},
+        {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 2, LABEL: 1.0, SEEN_ITEM_IDS: (4,)},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 3, LABEL: 1.0, SEEN_ITEM_IDS: (4, 5)},
     ]
 
 
@@ -177,19 +177,21 @@ def test_prepared_dataset_exposes_runtime_views() -> None:
     valid_dataset = prepared.get_eval_dataset("valid")
     interactions = prepared.get_interactions()
 
-    assert train_dataset[0] == {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 1, LABEL: 1.0}
+    assert prepared.get_item_table()[ITEM_ID].tolist() == list(range(8))
+    assert prepared.get_num_items() == 8
+    assert train_dataset[0] == {USER_ID: 0, ITEM_ID: 0, TIMESTAMP: 1, LABEL: 1.0}
     assert _rows(valid_dataset, [USER_ID, ITEM_ID, TIMESTAMP, LABEL]) == [
-        {USER_ID: 0, ITEM_ID: 3, TIMESTAMP: 3, LABEL: 1.0},
-        {USER_ID: 1, ITEM_ID: 7, TIMESTAMP: 3, LABEL: 1.0},
+        {USER_ID: 0, ITEM_ID: 2, TIMESTAMP: 3, LABEL: 1.0},
+        {USER_ID: 1, ITEM_ID: 6, TIMESTAMP: 3, LABEL: 1.0},
     ]
-    assert interactions.loc[0, ITEM_ID] == 1
+    assert interactions.loc[0, ITEM_ID] == 0
 
 
-def test_sampled_candidates_are_equal_width_and_skip_pad_item() -> None:
+def test_sampled_candidates_are_equal_width_and_allow_zero_item_id() -> None:
     prepared = StubDataset(StubDatasetConfig()).prepare(eval_config=EvalConfig(protocol="sampled", neg_sampling_num=2))
     candidates = prepared.get_eval_dataset("test").frame[CANDIDATE_ITEM_IDS].tolist()
 
     assert all(isinstance(values, tuple) for values in candidates)
     assert [len(values) for values in candidates] == [3, 3]
-    assert all(0 not in values for values in candidates)
-    assert candidates == [(4, 5, 6), (8, 5, 1)]
+    assert any(0 in values for values in candidates)
+    assert candidates == [(3, 4, 5), (7, 4, 0)]

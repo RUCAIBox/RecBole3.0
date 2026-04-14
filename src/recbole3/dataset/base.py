@@ -16,7 +16,6 @@ from recbole3.dataset.utils import (
     CANDIDATE_ITEM_IDS,
     ITEM_ID,
     LABEL,
-    PAD_ITEM_ID,
     SEEN_ITEM_IDS,
     TIMESTAMP,
     USER_ID,
@@ -187,12 +186,6 @@ class BaseTaskDataset(ABC):
         return {key: index for index, key in enumerate(keys.tolist(), start=start)}
 
     @staticmethod
-    def _prepend_padding_row(frame: pd.DataFrame, *, key_column: str, padding_id: int) -> pd.DataFrame:
-        pad_row = {column: None for column in frame.columns}
-        pad_row[key_column] = padding_id
-        return pd.concat([pd.DataFrame([pad_row]), frame], ignore_index=True, sort=False)
-
-    @staticmethod
     def _unique_values(values: pd.Series) -> list[Any]:
         return list(pd.unique(values))
 
@@ -224,14 +217,14 @@ class BaseTaskDataset(ABC):
             name="ParsedData.item_table",
         )
         user_id_map = self._build_id_map(raw_user_table[USER_ID], start=0, name=USER_ID)
-        item_id_map = self._build_id_map(raw_item_table[ITEM_ID], start=1, name=ITEM_ID)
+        item_id_map = self._build_id_map(raw_item_table[ITEM_ID], start=0, name=ITEM_ID)
 
         self._user_table = raw_user_table.copy()
         self._user_table[USER_ID] = self._user_table[USER_ID].map(user_id_map).astype("int64")
 
         item_table = raw_item_table.copy()
         item_table[ITEM_ID] = item_table[ITEM_ID].map(item_id_map).astype("int64")
-        self._item_table = self._prepend_padding_row(item_table, key_column=ITEM_ID, padding_id=PAD_ITEM_ID)
+        self._item_table = item_table
 
         self._num_users = int(len(self._user_table))
         self._num_items = int(len(self._item_table))
@@ -412,9 +405,9 @@ class BaseTaskDataset(ABC):
                 f"Prepared interactions user_id range exceeds user_table size: min user_id={min_user_id}, "
                 f"max user_id={max_user_id}, num_users={self._num_users}."
             )
-        if min_item_id <= PAD_ITEM_ID or max_item_id >= self._num_items:
+        if min_item_id < 0 or max_item_id >= self._num_items:
             raise ValueError(
-                f"Prepared interactions item_id range must be real item ids in [1, {self._num_items - 1}], "
+                f"Prepared interactions item_id range must be real item ids in [0, {self._num_items - 1}], "
                 f"got min item_id={min_item_id}, max item_id={max_item_id}."
             )
 
@@ -605,7 +598,7 @@ class RetrievalDataset(BaseTaskDataset):
         record_index: int,
     ) -> tuple[int, ...]:
         target_item_id = int(target_item_id)
-        available_count = max(0, self._num_items - 2)
+        available_count = max(0, self._num_items - 1)
         sample_size = self._negative_sample_size(available_count)
         if sample_size == 0:
             return ()
@@ -615,16 +608,16 @@ class RetrievalDataset(BaseTaskDataset):
         sampled_offsets = np.random.default_rng(
             self._sample_seed(user_id=user_id, split=split, record_index=record_index)
         ).choice(available_count, size=sample_size, replace=False)
-        sampled_negative_item_ids = sampled_offsets + PAD_ITEM_ID + 1
+        sampled_negative_item_ids = sampled_offsets
         sampled_negative_item_ids[sampled_negative_item_ids >= target_item_id] += 1
         return tuple(int(item_id) for item_id in sampled_negative_item_ids.tolist())
 
     def _all_negative_item_ids(self, target_item_id: int) -> tuple[int, ...]:
         target_item_id = int(target_item_id)
-        return tuple(range(PAD_ITEM_ID + 1, target_item_id)) + tuple(range(target_item_id + 1, self._num_items))
+        return tuple(range(0, target_item_id)) + tuple(range(target_item_id + 1, self._num_items))
 
     def _build_negative_pool(self, target_item_id: int) -> np.ndarray:
-        negative_pool = np.arange(PAD_ITEM_ID + 1, self._num_items, dtype=np.int64)
+        negative_pool = np.arange(0, self._num_items, dtype=np.int64)
         return negative_pool[negative_pool != int(target_item_id)]
 
     def _negative_sample_size(self, available_count: int) -> int:
@@ -660,10 +653,6 @@ class RetrievalDataset(BaseTaskDataset):
         counts = requests[CANDIDATE_ITEM_IDS].map(len)
         if counts.nunique(dropna=False) > 1:
             raise ValueError("Sampled evaluation requires each candidate_item_ids row to have the same length.")
-        contains_pad = requests[CANDIDATE_ITEM_IDS].map(lambda values: PAD_ITEM_ID in values)
-        if bool(contains_pad.any()):
-            raise ValueError("Sampled evaluation candidates must not contain PAD_ITEM_ID=0.")
-
 
 __all__ = [
     "BaseDatasetParser",

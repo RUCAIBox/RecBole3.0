@@ -13,7 +13,6 @@ from recbole3.dataset import (
     DatasetSpec,
     ITEM_ID,
     LABEL,
-    PAD_ITEM_ID,
     ParsedData,
     RankingDataset,
     RetrievalDataset,
@@ -100,7 +99,8 @@ class StubTrainCollator(BaseCollator):
             ITEM_ID: item_id,
             LABEL: torch.as_tensor(pd.to_numeric(records[LABEL], errors="coerce").fillna(1.0).to_numpy(), dtype=torch.float32),
         }
-        batch["neg_item_id"] = (item_id % (int(self.prepared_data.get_num_items()) - 1)) + 1
+        num_items = max(int(self.prepared_data.get_num_items()), 1)
+        batch["neg_item_id"] = (item_id + 1) % num_items
         return batch
 
 
@@ -137,7 +137,6 @@ class StubModel(BaseRetrievalModel):
         user_ids = model_inputs["user_id"]
         item_ids = torch.arange(self.num_items, device=user_ids.device, dtype=torch.long).unsqueeze(0).expand(user_ids.shape[0], -1)
         scores = item_ids.float() * self.scale
-        scores[:, PAD_ITEM_ID] = float("-inf")
         if exclude_item_ids is not None and exclude_mask is not None and exclude_item_ids.numel() > 0:
             history_mask = torch.zeros_like(scores, dtype=torch.bool)
             history_mask.scatter_(1, exclude_item_ids, exclude_mask)

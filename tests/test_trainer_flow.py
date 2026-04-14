@@ -74,7 +74,7 @@ def test_train_dataloader_uses_prepared_split_dataset() -> None:
     train_batch = next(iter(train_loader))
 
     assert train_dataset[0] == prepared.get_train_dataset()[0]
-    assert train_batch["item_id"].tolist() == [1, 2]
+    assert train_batch["item_id"].tolist() == [0, 1]
     assert "neg_item_id" in train_batch
 
     valid_method = trainer.create_evaluation_method(prepared)
@@ -84,8 +84,8 @@ def test_train_dataloader_uses_prepared_split_dataset() -> None:
         shuffle=False,
     )
     model_inputs, records = next(iter(valid_loader))
-    assert model_inputs["item_id"].tolist() == [3, 7]
-    assert records[ITEM_ID].tolist() == [3, 7]
+    assert model_inputs["item_id"].tolist() == [2, 6]
+    assert records[ITEM_ID].tolist() == [2, 6]
     assert "neg_item_id" not in model_inputs
 
 

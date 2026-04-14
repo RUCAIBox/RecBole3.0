@@ -5,7 +5,7 @@ from typing import Any, Sequence
 import pandas as pd
 import torch
 
-from recbole3.dataset import CANDIDATE_ITEM_IDS, PAD_ITEM_ID
+from recbole3.dataset import CANDIDATE_ITEM_IDS
 from recbole3.evaluation.metric import MetricSpec, RetrievalEvalData
 from recbole3.evaluation.methods.base import BaseRetrievalEvaluationMethod
 from recbole3.model.base import BaseModel, BaseRetrievalModel
@@ -50,8 +50,6 @@ class SampledEvaluationMethod(BaseRetrievalEvaluationMethod):
                     "Sampled evaluation requires at least k candidates per row. "
                     f"Got k={max_k} with candidate count {candidate_count}."
                 )
-            if candidate_count > 0 and torch.any(candidate_item_ids == PAD_ITEM_ID):
-                raise ValueError("Sampled evaluation candidate_item_ids must not contain PAD_ITEM_ID=0.")
             pred_item_ids = model.predict(
                 model_inputs,
                 k=max_k,
