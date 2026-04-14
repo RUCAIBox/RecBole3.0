@@ -239,7 +239,7 @@ The built-in Amazon 2023 parser is the reference example:
 
 - raw reviews are cached under `download_dir/amazon2023/<download_source>/<category>/<kcore>/reviews.jsonl`
 - raw metadata is cached beside reviews as `meta.jsonl` when `metadata_mode=sentence`
-- parsed DataFrames are cached under `processed_dir/<dataset.name>/schema_v2/<download_source>/<category>/<kcore>/<metadata_mode>/`
+- parsed DataFrames are cached under `processed_dir/<dataset.name>/<download_source>/<category>/<kcore>/<metadata_mode>/`
 - `refresh_cache=true` rebuilds both raw and parsed parser-managed cache files
 
 ## Split Strategy
