@@ -27,12 +27,12 @@ class Amazon2023BaseConfig(DatasetConfig):
         default="full",
         metadata={"help": "Amazon 2023 review subset to download."},
     )
-    metadata_mode: Literal["none", "sentence"] = field(
+    metadata_mode: Literal["none", "sentence", "fields"] = field(
         default="sentence",
         metadata={"help": "How to materialize item metadata in the item table."},
     )
     download_source: Literal["huggingface", "modelscope"] = field(
-        default="huggingface",
+        default="modelscope",
         metadata={"help": "Remote source used to snapshot Amazon 2023 raw data."},
     )
 
@@ -83,10 +83,12 @@ class Amazon2023BaseParser(BaseDatasetParser):
         item_table = pd.DataFrame({ITEM_ID: item_index.astype(object)})
         if not self._metadata_enabled():
             return item_table
+        if self.config.metadata_mode == "fields":
+            return self._attach_metadata_fields(item_table, item_index)
         return self._attach_metadata_text(item_table, item_index)
 
     def _metadata_enabled(self) -> bool:
-        return self.config.metadata_mode == "sentence"
+        return self.config.metadata_mode in ("sentence", "fields")
 
     def _attach_metadata_text(self, item_table: pd.DataFrame, item_index: pd.Index) -> pd.DataFrame:
         metadata = self._load_raw_metadata_frame()
@@ -100,6 +102,33 @@ class Amazon2023BaseParser(BaseDatasetParser):
             right_on="parent_asin",
         ).drop(columns=["parent_asin"])
         merged["metadata_text"] = merged["metadata_text"].fillna("")
+        return merged
+
+    def _attach_metadata_fields(self, item_table: pd.DataFrame, item_index: pd.Index) -> pd.DataFrame:
+        """Attach individual metadata columns (title, description) to the item table."""
+        metadata = self._load_raw_metadata_frame()
+        metadata = metadata.loc[metadata["parent_asin"].isin(set(item_index))].copy()
+        metadata = metadata.drop_duplicates(subset=["parent_asin"], keep="first")
+        # Clean title using feature_to_sentence which handles list/str types
+        metadata["title"] = metadata["title"].apply(amazon2023_utils.feature_to_sentence)
+        # Build combined description from categories, features, and description
+        metadata["description"] = metadata.apply(
+            lambda row: " ".join(filter(None, [
+                amazon2023_utils.feature_to_sentence(row.get("categories", "")),
+                amazon2023_utils.feature_to_sentence(row.get("features", "")),
+                amazon2023_utils.feature_to_sentence(row.get("description", "")),
+            ])).strip(),
+            axis=1,
+        )
+        keep_cols = ["parent_asin", "title", "description"]
+        merged = item_table.merge(
+            metadata[keep_cols],
+            how="left",
+            left_on=ITEM_ID,
+            right_on="parent_asin",
+        ).drop(columns=["parent_asin"])
+        merged["title"] = merged["title"].fillna("")
+        merged["description"] = merged["description"].fillna("")
         return merged
 
     def _load_parsed_data(self) -> ParsedData:
@@ -157,7 +186,7 @@ class Amazon2023BaseParser(BaseDatasetParser):
             )
         if self.config.kcore == "5core" and self.config.category in amazon2023_utils.AMAZON2023_UNSUPPORTED_5CORE_CATEGORIES:
             raise ValueError(f"Category '{self.config.category}' does not provide 5-core reviews.")
-        if self.config.metadata_mode not in {"none", "sentence"}:
+        if self.config.metadata_mode not in {"none", "sentence", "fields"}:
             raise ValueError(f"Unsupported metadata_mode '{self.config.metadata_mode}'.")
         if self.config.download_source not in {"huggingface", "modelscope"}:
             raise ValueError(f"Unsupported download_source '{self.config.download_source}'.")
@@ -174,6 +203,11 @@ class Amazon2023BaseParser(BaseDatasetParser):
             / self.config.kcore
             / self.config.metadata_mode
         )
+
+    @property
+    def data_dir(self) -> Path:
+        """Return the root directory for processed data files."""
+        return self._parsed_root_dir()
 
     def _hf_cache_dir(self) -> Path:
         return Path(self.config.download_dir) / "_hf_cache" / "amazon2023"

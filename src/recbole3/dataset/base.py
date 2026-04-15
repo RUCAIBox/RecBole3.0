@@ -545,6 +545,8 @@ class RetrievalDataset(BaseTaskDataset):
                 columns.append(SEEN_ITEM_IDS)
             return pd.DataFrame(columns=columns)
         result = positive_interactions.copy()
+        # ToDo
+        # Do we need to unique the seen history?
         seen_histories = self._group_unique_item_sequences(seen_history_interactions)
         item_ids = result[ITEM_ID].to_numpy()
         seen_item_ids: list[tuple[int, ...]] = [()] * len(result)

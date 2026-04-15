@@ -21,6 +21,12 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
+from recbole3.model.rqvae import (
+    RQVAEConfig,
+    RQVAEModel,
+    RQVAEModelDataset,
+    RQVAETrainer,
+)
 from recbole3.model.sequential import (
     BaseSequentialRankingModelDataset,
     BaseSequentialRetrievalModelDataset,
@@ -51,6 +57,13 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_cls=Trainer,
         trainer_config_cls=TrainerConfig,
     ),
+    "rqvae": ModelSpec(
+        model_cls=RQVAEModel,
+        config_cls=RQVAEConfig,
+        model_data_cls=RQVAEModelDataset,
+        trainer_cls=RQVAETrainer,
+        trainer_config_cls=TrainerConfig,
+    ),
 }
 
 
@@ -78,6 +91,10 @@ __all__ = [
     "HSTUModel",
     "HSTUModelDataset",
     "MODEL_TABLE",
+    "RQVAEConfig",
+    "RQVAEModel",
+    "RQVAEModelDataset",
+    "RQVAETrainer",
     "ModelConfig",
     "ModelDatasets",
     "ModelSpec",

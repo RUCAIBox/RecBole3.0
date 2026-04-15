@@ -23,6 +23,6 @@ class EvalConfig:
         metadata={"help": "Seed used when generating sampled evaluation candidates."},
     )
     exclude_history: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Whether full retrieval evaluation filters items present in seen_item_ids."},
     )

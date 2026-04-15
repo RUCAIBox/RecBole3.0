@@ -12,6 +12,7 @@ from omegaconf import DictConfig, OmegaConf
 class RuntimeConfig:
     """Runtime-only settings shared by all experiments."""
 
+    seed: int = field(default=42, metadata={"help": "Random seed for the whole run."})
     device: str = field(
         default="auto",
         metadata={"help": "Accelerate device override, such as auto, cpu, cuda, or cuda:0."},

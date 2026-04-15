@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
 
@@ -33,6 +34,17 @@ class BaseDatasetParser(ABC):
 
     def __init__(self, config: DatasetConfig):
         self.config = config
+
+    @property
+    def data_dir(self) -> Path:
+        """Return the root directory for processed data files.
+
+        Subclasses that manage local data files should override this property.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement data_dir. "
+            "Subclasses that manage local data files must override this property."
+        )
 
     @abstractmethod
     def parse(self) -> ParsedData:

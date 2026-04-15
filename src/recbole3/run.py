@@ -11,7 +11,10 @@ from omegaconf import DictConfig, OmegaConf
 from recbole3.config import RuntimeConfig, configs_dir, instantiate_dataclass
 from recbole3.dataset import BaseTaskDataset, get_dataset_spec
 from recbole3.model import BaseModelDataset, ModelSpec, get_model_spec
+import logging
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def run_experiment(cfg: DictConfig) -> dict[str, Any]:
     """Instantiate configured components and execute one trainer run."""
@@ -41,6 +44,49 @@ def run_experiment(cfg: DictConfig) -> dict[str, Any]:
     }
 
 
+
+def run_lcrec(cfg: DictConfig) -> dict[str, Any]:
+    """Run LCRec model training or evaluation using HuggingFace Trainer."""
+    from recbole3.evaluation.config import EvalConfig
+    from recbole3.model.lcrec.config import LCRecConfig
+    from recbole3.model.lcrec.trainer import LCRecTrainer
+
+    runtime_cfg = instantiate_dataclass(RuntimeConfig, cfg.get("runtime"))
+    dataset_cfg = _require_component_cfg(cfg, "dataset")
+    model_cfg = _require_component_cfg(cfg, "model")
+
+    # Load dataset
+    dataset_name = _require_component_name(dataset_cfg, "dataset")
+    dataset_spec = get_dataset_spec(dataset_name)
+    dataset = dataset_spec.dataset_cls(instantiate_dataclass(dataset_spec.config_cls, dataset_cfg))
+
+    # Load LCRec config
+    lcrec_config = instantiate_dataclass(LCRecConfig, model_cfg)
+
+    # Prepare data
+    eval_config = EvalConfig(protocol="full")
+    task_data = dataset.prepare(eval_config=eval_config)
+
+    # Create and run trainer
+    trainer = LCRecTrainer(lcrec_config)
+    output_dir = runtime_cfg.output_dir
+    os.makedirs(output_dir, exist_ok=True)
+
+    if lcrec_config.pipeline_stage == "training":
+        result = trainer.run(task_data, output_dir=output_dir)
+    elif lcrec_config.pipeline_stage == "evaluation":
+        if not lcrec_config.model_checkpoint_path:
+            raise ValueError("model_checkpoint_path must be set for evaluation stage.")
+        result = trainer.evaluate(
+            task_data,
+            checkpoint_path=lcrec_config.model_checkpoint_path
+        )
+    else:
+        raise ValueError(f"Unknown pipeline_stage: {lcrec_config.pipeline_stage}")
+
+    logger.info("LCRec run completed. Output dir: %s", output_dir)
+    return result
+
 def compose_config(overrides: Sequence[str] | None = None, config_dir: str | Path | None = None) -> DictConfig:
     """Compose the root Hydra config from a config directory and override list."""
 
@@ -55,6 +101,12 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     """CLI entrypoint that composes config, runs the experiment, and prints a summary."""
 
     cfg = compose_config(overrides=list(argv if argv is not None else sys.argv[1:]))
+
+    model_cfg = _require_component_cfg(cfg, "model")
+    model_name = _require_component_name(model_cfg, "model")
+    if model_name == "lcrec":
+        return run_lcrec(cfg)
+
     result = run_experiment(cfg)
     printable = {
         "prepared_data": _serialize_prepared_data(result["prepared_data"]),
