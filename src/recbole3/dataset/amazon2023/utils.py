@@ -121,8 +121,8 @@ def feature_to_sentence(value: Any) -> str:
 def build_metadata_text(row: pd.Series) -> str:
     sentences = [
         feature_to_sentence(row.get("title")),
-        feature_to_sentence(row.get("features")),
         feature_to_sentence(row.get("categories")),
+        feature_to_sentence(row.get("features")),
         feature_to_sentence(row.get("description")),
     ]
     return " ".join(sentence for sentence in sentences if sentence).strip()

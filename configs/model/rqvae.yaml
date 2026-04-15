@@ -1,0 +1,41 @@
+# @package _global_
+
+model:
+  name: rqvae
+  hidden_sizes: [2048, 1024, 512, 256]
+  codebook_num: 3
+  codebook_size: 256
+  codebook_dim: 128
+  dropout: 0.0
+  beta: 0.25
+  sk_epsilon: -1
+  sk_iters: -1
+  vq_type: ema
+  ema_decay: 0.99
+  fix_code_embs: false
+  sem_emb_file: sentence_t5.npy
+  sem_emb_pca: 128
+  text_field: metadata_text
+  sent_emb_model: /media/public/models/huggingface/sentence-transformers/sentence-t5-base
+  sent_emb_batch_size: 32
+  sid_collision_handling: extend # extend or sinkhorn
+  sid_output_file: item_sids.json
+
+trainer:
+  batch_size: 2048
+  shuffle: true
+  max_epochs: 20
+  monitor: recon_loss  # RQ-VAE uses reconstruction loss for early stopping
+  early_stopping:
+    enabled: false
+    patience: 5
+    min_delta: 0.001
+  checkpoint:
+    save_best: true
+    save_last: true
+  optimizer:
+    name: Adagrad
+    kwargs:
+      lr: 0.001
+  eval:
+    protocol: full

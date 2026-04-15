@@ -1,0 +1,64 @@
+# @package _global_
+
+model:
+  name: lcrec
+
+  # SID mapping
+  sid_file: "/home/zhengbowen/Project/Bole3-all/RecBole3.0/src/outputs/item_sids.json"           # Path to item_sids.json (required)
+
+  # LLM backbone
+  model_name_or_path: "/home/zhengbowen/Qwen2.5-1.5B/" # HuggingFace model path (required)
+  attn_implementation: "flash_attention_2"
+  torch_dtype: bfloat16
+
+  # LoRA
+  use_lora: false
+  lora_r: 8
+  lora_alpha: 32
+  lora_target_modules:
+    - q_proj
+    - k_proj
+  lora_modules_to_save:
+    - embed_tokens
+    - lm_head
+  lora_dropout: 0.05
+
+  # SFT data format
+  max_source_length: 1024
+  max_target_length: 512
+  max_item_seq_len: 20
+  his_sep: ", "
+
+  # HF Trainer parameters
+  train_batch_size: 1
+  eval_batch_size: 32
+  gradient_accumulation_steps: 2
+  warmup_ratio: 0.05
+  num_train_epochs: 4
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  gradient_checkpointing: true
+  deepspeed: null
+  lr_scheduler_type: cosine
+  optim: adamw_torch
+  logging_steps: 10
+  bf16: true
+
+  # Evaluation
+  num_beams: 20
+  test_prompt_ids: "0,1"   # "all" or JSON list e.g. "[0, 1, 2]"
+  metrics:
+    - recall
+    - ndcg
+  topk:
+    - 5
+    - 10
+    - 20
+
+  # Pipeline control
+  pipeline_stage: training  # "training" or "evaluation"
+  model_checkpoint_path: null
+
+  # Item metadata field names (columns in item_table)
+  item_title_field: title
+  item_description_field: description
