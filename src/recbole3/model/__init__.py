@@ -36,6 +36,7 @@ from recbole3.model.sequential import (
 )
 from recbole3.trainer import Trainer
 from recbole3.trainer_config import TrainerConfig
+from recbole3.pipeline import Pipeline
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,7 @@ class ModelSpec:
     model_data_cls: type[BaseModelDataset[Any, Any]] | None = None
     trainer_cls: type[Trainer] = Trainer
     trainer_config_cls: type[TrainerConfig] = TrainerConfig
+    pipeline_cls: type[Pipeline] = Pipeline
 
 
 MODEL_TABLE: dict[str, ModelSpec] = {
@@ -56,6 +58,7 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         model_data_cls=HSTUModelDataset,
         trainer_cls=Trainer,
         trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
     ),
     "rqvae": ModelSpec(
         model_cls=RQVAEModel,
@@ -63,6 +66,7 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         model_data_cls=RQVAEModelDataset,
         trainer_cls=RQVAETrainer,
         trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
     ),
 }
 

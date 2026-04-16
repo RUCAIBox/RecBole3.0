@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from recbole3.run import _accelerate_runtime_device, compose_config, run_experiment
+from recbole3.run import compose_config, run_experiment
 from tests.test_helpers import StubModelDataset, ensure_stub_tables
 
 
@@ -151,20 +151,3 @@ def test_run_wraps_task_dataset_with_model_data_class(tmp_path: Path) -> None:
     assert result["prepared_data"].model_name == "stub_model_with_data"
     assert len(result["prepared_data"].get_train_dataset()) == 4
 
-
-def test_runtime_device_sets_accelerate_env_temporarily(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("LOCAL_RANK", raising=False)
-    monkeypatch.delenv("ACCELERATE_TORCH_DEVICE", raising=False)
-
-    with _accelerate_runtime_device("cuda:0"):
-        assert os.environ["ACCELERATE_TORCH_DEVICE"] == "cuda:0"
-
-    assert "ACCELERATE_TORCH_DEVICE" not in os.environ
-
-
-
-def test_runtime_device_rejects_distributed_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LOCAL_RANK", "0")
-    with pytest.raises(ValueError, match="runtime.device"):
-        with _accelerate_runtime_device("cuda:0"):
-            pass
