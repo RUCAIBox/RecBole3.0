@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Any
 
+from transformers import PreTrainedModel
+
 from recbole3.dataset import DatasetTask
 from recbole3.model.base import (
     BaseCollator,
@@ -21,6 +23,8 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
+from recbole3.model.lcrec import LCRecConfig
+from recbole3.model.lcrec.pipeline import LCRecPipeline
 from recbole3.model.rqvae import (
     RQVAEConfig,
     RQVAEModel,
@@ -43,7 +47,7 @@ from recbole3.pipeline import Pipeline
 class ModelSpec:
     """Static model table entry."""
 
-    model_cls: type[BaseModel]
+    model_cls: type[BaseModel] | Any
     config_cls: type[ModelConfig]
     model_data_cls: type[BaseModelDataset[Any, Any]] | None = None
     trainer_cls: type[Trainer] = Trainer
@@ -67,6 +71,11 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_cls=RQVAETrainer,
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
+    ),
+    "lcrec": ModelSpec(
+        model_cls=PreTrainedModel,
+        config_cls=LCRecConfig,
+        pipeline_cls=LCRecPipeline,
     ),
 }
 

@@ -11,10 +11,7 @@ from omegaconf import DictConfig, OmegaConf
 from recbole3.config import configs_dir
 from recbole3.model import get_model_spec
 from recbole3.utils import require_component_name, require_component_cfg
-import logging
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 def run_experiment(cfg: DictConfig) -> dict[str, Any]:
