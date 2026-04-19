@@ -229,7 +229,7 @@ class Trainer:
         fit_result = self.fit(model, prepared_data, output_dir=output_dir)
         best_checkpoint = fit_result["checkpoint_paths"].get("best")
         if best_checkpoint:
-            state_dict = torch.load(best_checkpoint, map_location="cpu")
+            state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
             model.load_state_dict(state_dict)
         test_result = self.evaluate(model, prepared_data, split="test")
         return {

@@ -18,6 +18,8 @@ model:
   lora_target_modules:
     - q_proj
     - k_proj
+    - v_proj
+    - out_proj
   lora_modules_to_save:
     - embed_tokens
     - lm_head

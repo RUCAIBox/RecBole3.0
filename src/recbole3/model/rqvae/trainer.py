@@ -75,14 +75,6 @@ class RQVAETrainer(Trainer):
         train_dataset = prepared_data.get_train_dataset()
         train_dataloader = self.build_dataloader(train_dataset, collator, shuffle=self.config.shuffle)
 
-        # Initialize codebook using K-means clustering on entire training data
-        all_embeddings = []
-        with torch.no_grad():
-            for batch in tqdm(train_dataloader, desc="Collecting embeddings for codebook init"):
-                all_embeddings.append(batch["item_embeddings"].cpu())
-        all_embeddings = torch.cat(all_embeddings, dim=0)
-        model.init_codebook(all_embeddings)
-
         optimizer = self.build_optimizer(model)
         monitor_name = str(self.config.monitor or "").strip()
         monitor = MonitorSpec(name=monitor_name, higher_is_better=False) if monitor_name else None
@@ -105,6 +97,14 @@ class RQVAETrainer(Trainer):
                 train_dataloader,
                 scheduler,
             )
+
+        # Initialize codebook using K-means clustering on entire training data
+        all_embeddings = []
+        with torch.no_grad():
+            for batch in tqdm(train_dataloader, desc="Collecting embeddings for codebook init"):
+                all_embeddings.append(batch["item_embeddings"])
+        all_embeddings = torch.cat(all_embeddings, dim=0)
+        model.init_codebook(all_embeddings)
 
         train_history: list[dict[str, Any]] = []
         valid_history: list[dict[str, Any]] = []
