@@ -4,6 +4,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from recbole3.dataset.amazon2023 import Amazon2023Parser, Amazon2023RetrievalConfig, Amazon2023RetrievalDataset
+from recbole3.dataset.llmrank_atomic import (
+    GamesLLMRankDatasetConfig,
+    GamesLLMRankRetrievalDataset,
+    LLMRankAtomicDatasetConfig,
+    LLMRankAtomicParser,
+    LLMRankAtomicRetrievalDataset,
+    ML1MLLMRankDatasetConfig,
+    ML1MLLMRankRetrievalDataset,
+)
 from recbole3.dataset.base import (
     BaseDatasetParser,
     BaseTaskDataset,
@@ -35,6 +44,14 @@ DATASET_TABLE: dict[str, DatasetSpec] = {
         dataset_cls=Amazon2023RetrievalDataset,
         config_cls=Amazon2023RetrievalConfig,
     ),
+    "ml1m_llmrank": DatasetSpec(
+        dataset_cls=ML1MLLMRankRetrievalDataset,
+        config_cls=ML1MLLMRankDatasetConfig,
+    ),
+    "games_llmrank": DatasetSpec(
+        dataset_cls=GamesLLMRankRetrievalDataset,
+        config_cls=GamesLLMRankDatasetConfig,
+    ),
 }
 
 
@@ -56,7 +73,14 @@ __all__ = [
     "DatasetConfig",
     "DatasetSpec",
     "DatasetTask",
+    "GamesLLMRankDatasetConfig",
+    "GamesLLMRankRetrievalDataset",
     "Interaction",
+    "LLMRankAtomicDatasetConfig",
+    "LLMRankAtomicParser",
+    "LLMRankAtomicRetrievalDataset",
+    "ML1MLLMRankDatasetConfig",
+    "ML1MLLMRankRetrievalDataset",
     "ParsedData",
     "RankingDataset",
     "RecordsDataset",

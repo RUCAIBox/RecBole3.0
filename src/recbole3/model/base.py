@@ -2,7 +2,12 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Generic, Self, Sequence, TypeVar
+from typing import Any, Generic, Sequence, TypeVar
+
+try:
+    from typing import Self
+except ImportError:  # pragma: no cover - Python < 3.11
+    from typing_extensions import Self
 
 import torch
 from torch import nn

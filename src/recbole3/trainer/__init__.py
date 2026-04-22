@@ -10,6 +10,7 @@ from recbole3.trainer.base import (
     Trainer,
     TrainerConfig,
 )
+from recbole3.trainer.llmrank import LLMRankTrainer, LLMRankTrainerConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +26,10 @@ TRAINER_TABLE: dict[str, TrainerSpec] = {
         trainer_cls=Trainer,
         config_cls=TrainerConfig,
     ),
+    "llmrank": TrainerSpec(
+        trainer_cls=LLMRankTrainer,
+        config_cls=LLMRankTrainerConfig,
+    ),
 }
 
 
@@ -39,6 +44,8 @@ def get_trainer_spec(name: str) -> TrainerSpec:
 __all__ = [
     "CheckpointConfig",
     "EarlyStoppingConfig",
+    "LLMRankTrainer",
+    "LLMRankTrainerConfig",
     "OptimizerConfig",
     "SchedulerConfig",
     "TRAINER_TABLE",

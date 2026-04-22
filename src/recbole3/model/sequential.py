@@ -3,10 +3,13 @@ from __future__ import annotations
 from abc import ABC
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from recbole3.dataset import Interaction, RecordsDataset, RetrievalEvalRequest
 from recbole3.model.base import BaseRankingModelDataset, BaseRetrievalModelDataset, ModelConfig, ModelDatasets
-from recbole3.model.hstu.config import HSTUConfig
+
+if TYPE_CHECKING:
+    from recbole3.model.hstu.config import HSTUConfig
 
 
 @dataclass(slots=True)
@@ -86,7 +89,7 @@ class BaseSequentialRankingModelDataset(
 ):
     """Model-side ranking dataset that adds history_item_ids to every split."""
 
-    def _build_model_datasets(self, *, model_config: HSTUConfig) -> ModelDatasets[SequentialInteraction, SequentialInteraction]:
+    def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[SequentialInteraction, SequentialInteraction]:
         history_max_length = _get_history_max_length(model_config)
         train_records, history_state = self._build_sequential_interactions(
             list(self.get_train_dataset()),

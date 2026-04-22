@@ -22,6 +22,11 @@ from recbole3.model.hstu import (
     HSTUModelDataset,
     HSTURetrievalEvalRequest,
 )
+from recbole3.model.llmrank import (
+    LLMRankConfig,
+    LLMRankModel,
+    LLMRankModelDataset,
+)
 from recbole3.model.sequential import (
     BaseSequentialRankingModelDataset,
     BaseSequentialRetrievalModelDataset,
@@ -46,6 +51,11 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         model_cls=HSTUModel,
         config_cls=HSTUConfig,
         model_data_cls=HSTUModelDataset,
+    ),
+    "llmrank": ModelSpec(
+        model_cls=LLMRankModel,
+        config_cls=LLMRankConfig,
+        model_data_cls=LLMRankModelDataset,
     ),
 }
 
@@ -73,6 +83,9 @@ __all__ = [
     "HSTUModel",
     "HSTUModelDataset",
     "HSTURetrievalEvalRequest",
+    "LLMRankConfig",
+    "LLMRankModel",
+    "LLMRankModelDataset",
     "MODEL_TABLE",
     "ModelConfig",
     "ModelDatasets",

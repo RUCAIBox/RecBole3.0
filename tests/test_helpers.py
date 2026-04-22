@@ -69,7 +69,19 @@ class StubParser(BaseDatasetParser):
             Interaction(user_id=1, item_id=7, timestamp=4, label=1.0),
         ]
         users = pd.DataFrame([{"user_id": 0}, {"user_id": 1}])
-        items = pd.DataFrame([{"item_id": item_id} for item_id in range(8)])
+        item_titles = (
+            "Alpha Quest",
+            "Bravo Tales",
+            "Charlie Harbor",
+            "Delta Echo",
+            "Forest Signal",
+            "Golden River",
+            "Harbor Night",
+            "Ivory Path",
+        )
+        items = pd.DataFrame(
+            [{"item_id": item_id, "metadata_text": item_titles[item_id]} for item_id in range(8)]
+        )
         return ParsedData(interactions=interactions, user_table=users, item_table=items)
 
 

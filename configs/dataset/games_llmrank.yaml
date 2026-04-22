@@ -1,0 +1,19 @@
+name: games_llmrank
+root_dir: ../llmrank/data
+dataset_dir_name: Games
+atomic_subdir: atomic
+source_format: pre_split_test
+train_filename: Games.train.inter
+valid_filename: Games.valid.inter
+test_filename: Games.test.inter
+item_filename: Games.item
+candidate_filename: Games.bm25
+candidate_budget: 20
+use_external_candidates_for_valid: false
+drop_missing_candidate_users: true
+split:
+  strategy: leave_one_out
+  order: chronological
+  per_user: true
+  valid_holdout_num: 1
+  test_holdout_num: 1
