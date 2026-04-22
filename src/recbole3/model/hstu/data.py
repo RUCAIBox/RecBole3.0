@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import Dataset
 
 from recbole3.dataset import FrameDataset, ITEM_ID, LABEL, TIMESTAMP, USER_ID
-from recbole3.model.base import BaseCollator, BaseRetrievalModelDataset, ModelDatasets
+from recbole3.model.base import BaseCollator, BaseTaskModelDataset, ModelDatasets
 from recbole3.model.hstu.config import HSTUConfig, HSTU_PADDING_ITEM_ID
 from recbole3.model.sequential import HISTORY_ITEM_IDS
 
@@ -57,7 +57,7 @@ def build_hstu_histories(
 
 
 class HSTUModelDataset(
-    BaseRetrievalModelDataset[pd.DataFrame, pd.DataFrame],
+    BaseTaskModelDataset[pd.DataFrame, pd.DataFrame],
 ):
     """Model-side retrieval dataset that adds HSTU item and timestamp histories."""
 

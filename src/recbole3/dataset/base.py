@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Literal, Self, Sequence
+from typing import TYPE_CHECKING, Any, Literal, Sequence
+from typing_extensions import Self
 
 import numpy as np
 import pandas as pd
@@ -68,7 +69,6 @@ class FrameDataset(Dataset[pd.DataFrame | dict[str, Any]]):
 class BaseTaskDataset(ABC):
     """Prepare task-aware split datasets from one dataset parser."""
 
-    task: DatasetTask
     config_cls: type[DatasetConfig] = DatasetConfig
     parser_cls: type[BaseDatasetParser] | None = None
 
@@ -455,31 +455,32 @@ class BaseTaskDataset(ABC):
         return TIMESTAMP in interactions.columns and bool(interactions[TIMESTAMP].notna().all())
 
 
-class RankingDataset(BaseTaskDataset):
-    """Task dataset that keeps row-based interaction frames for all splits."""
+class TaskDataset(BaseTaskDataset):
+    """Task dataset that prepares split datasets based on the evaluation protocol."""
 
-    task: DatasetTask = "ranking"
+    @property
+    def task(self) -> DatasetTask:
+        self._require_prepared()
+        protocol = self._eval_config.protocol if self._eval_config else ""
+        return "ranking" if protocol == "labeled" else "retrieval"
 
     def _build_split_frames(
         self,
         ordered_interactions: pd.DataFrame,
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         protocol = self._require_eval_config().protocol
-        if protocol != "labeled":
-            raise ValueError(f"Ranking datasets only support eval protocol 'labeled', got '{protocol}'.")
-        return self._split_interactions(ordered_interactions)
+        if protocol == "labeled":
+            return self._split_interactions(ordered_interactions)
+        if protocol in {"full", "sampled"}:
+            return self._build_retrieval_split_frames(ordered_interactions)
+        raise ValueError(
+            f"TaskDataset only supports eval protocols 'labeled', 'full', and 'sampled', got '{protocol}'."
+        )
 
-
-class RetrievalDataset(BaseTaskDataset):
-    """Task dataset that uses request-level frames for retrieval evaluation."""
-
-    task: DatasetTask = "retrieval"
-
-    def _build_split_frames(
+    def _build_retrieval_split_frames(
         self,
         ordered_interactions: pd.DataFrame,
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        self._require_retrieval_protocol()
         train_frame, valid_interactions, test_interactions = self._split_interactions(ordered_interactions)
         valid_frame = self._build_eval_frame(
             valid_interactions,
@@ -492,13 +493,6 @@ class RetrievalDataset(BaseTaskDataset):
             split="test",
         )
         return train_frame, valid_frame, test_frame
-
-    def _require_retrieval_protocol(self) -> None:
-        protocol = self._require_eval_config().protocol
-        if protocol not in {"full", "sampled"}:
-            raise ValueError(
-                f"Retrieval datasets only support eval protocols 'full' and 'sampled', got '{protocol}'."
-            )
 
     def _build_eval_frame(
         self,
@@ -662,9 +656,8 @@ __all__ = [
     "PARSER_INTERACTIONS_SCHEMA",
     "PREPARED_INTERACTIONS_SCHEMA",
     "ParsedData",
-    "RankingDataset",
     "RETRIEVAL_EVAL_SCHEMA",
-    "RetrievalDataset",
     "SplitConfig",
+    "TaskDataset",
     "require_columns",
 ]
