@@ -1,24 +1,45 @@
-name: llmrank
-history_max_length: 5
-item_text_field: title
-fallback_item_text_field: metadata_text
-domain: movie
-prompt_strategy: recency_focused
-backend: openai
-parsing_strategy: title
-bootstrap_rounds: 3
-candidate_shuffle: true
-random_seed: 42
-api_model_name: gpt-4o-mini
-api_base_url: https://api.openai.com/v1/chat/completions
-api_key_env: OPENAI_API_KEY
-temperature: 0.2
-max_output_tokens: 512
-request_retries: 3
-retry_backoff_sec: 2.0
-request_timeout_sec: 60.0
-enforce_candidate_constraint: true
-include_reasoning_instruction: true
-require_order_numbers: true
-system_prompt: null
-mock_responses: []
+# @package _global_
+
+model:
+  name: llmrank
+  history_max_length: 5
+  item_text_field: title
+  fallback_item_text_field: metadata_text
+  domain: movie
+  prompt_strategy: recency_focused
+  backend: openai
+  parsing_strategy: title
+  bootstrap_rounds: 3
+  candidate_shuffle: true
+  random_seed: 42
+  api_model_name: gpt-4o-mini
+  api_base_url: https://api.openai.com/v1/chat/completions
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.2
+  max_output_tokens: 512
+  request_retries: 3
+  retry_backoff_sec: 2.0
+  request_timeout_sec: 60.0
+  api_concurrency: 4
+  enforce_candidate_constraint: true
+  include_reasoning_instruction: true
+  require_order_numbers: true
+  system_prompt: null
+  mock_responses: []
+
+trainer:
+  batch_size: 8
+  shuffle: false
+  max_epochs: 0
+  checkpoint:
+    save_best: true
+    save_last: true
+  eval:
+    protocol: sampled
+    neg_sampling_num: 19
+    candidate_seed: 42
+    metrics:
+      - name: ndcg
+        ks: [10]
+      - name: recall
+        ks: [10]

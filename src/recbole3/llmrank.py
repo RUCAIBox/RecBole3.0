@@ -7,14 +7,14 @@ from typing import Any
 from recbole3.dataset import BaseTaskDataset
 from recbole3.evaluation import EvalConfig, MetricSpec
 from recbole3.model import BaseModel
-from recbole3.trainer.base import OptimizerConfig, Trainer, TrainerConfig
+from recbole3.trainer import Trainer
+from recbole3.trainer_config import OptimizerConfig, TrainerConfig
 
 
 @dataclass(slots=True)
 class LLMRankTrainerConfig(TrainerConfig):
     """Inference-only trainer config for prompt-based LLM reranking."""
 
-    name: str = field(default="llmrank", metadata={"help": "Registered trainer name."})
     batch_size: int = field(default=8, metadata={"help": "Batch size used during evaluation-only reranking."})
     shuffle: bool = field(default=False, metadata={"help": "LLM reranking keeps evaluation batches deterministic."})
     max_epochs: int = field(default=0, metadata={"help": "LLM reranking does not perform gradient-based training."})
@@ -36,10 +36,12 @@ class LLMRankTrainerConfig(TrainerConfig):
 class LLMRankTrainer(Trainer):
     """Trainer variant that skips optimization and only evaluates the reranker."""
 
+    config_cls = LLMRankTrainerConfig
+
     def fit(
         self,
         model: BaseModel,
-        prepared_data: BaseTaskDataset[Any, Any],
+        prepared_data: BaseTaskDataset,
         *,
         output_dir: str | Path | None = None,
     ) -> Any:

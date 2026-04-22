@@ -12,10 +12,13 @@ from difflib import SequenceMatcher
 from random import Random
 from typing import Any
 
+import pandas as pd
 import torch
 
+from recbole3.dataset import CANDIDATE_ITEM_IDS
 from recbole3.model.base import BaseCollator, BaseRetrievalModel
 from recbole3.model.llmrank.config import LLMRankConfig
+from recbole3.model.sequential import HISTORY_ITEM_IDS
 
 
 class LLMRankTrainCollator(BaseCollator):
@@ -32,15 +35,24 @@ class LLMRankEvalCollator(BaseCollator):
         super().__init__(config, prepared_data=prepared_data)
         self.item_text_lookup = tuple(item_text_lookup)
 
-    def __call__(self, feature_records: Sequence[Any]) -> dict[str, Any]:
+    def __call__(self, feature_records: Sequence[Any] | pd.DataFrame) -> dict[str, Any]:
+        if isinstance(feature_records, pd.DataFrame):
+            records = feature_records.reset_index(drop=True)
+            history_rows = records[HISTORY_ITEM_IDS].tolist() if HISTORY_ITEM_IDS in records.columns else [()] * len(records)
+            candidate_rows = (
+                records[CANDIDATE_ITEM_IDS].tolist()
+                if CANDIDATE_ITEM_IDS in records.columns
+                else [()] * len(records)
+            )
+        else:
+            records = list(feature_records)
+            history_rows = [_record_value(record, HISTORY_ITEM_IDS, default=()) for record in records]
+            candidate_rows = [_record_value(record, CANDIDATE_ITEM_IDS, default=()) for record in records]
         history_texts = [
-            [self.item_text_lookup[int(item_id)] for item_id in getattr(record, "history_item_ids", ())]
-            for record in feature_records
+            [self.item_text_lookup[int(item_id)] for item_id in (history_item_ids or ())]
+            for history_item_ids in history_rows
         ]
-        candidate_item_ids = [
-            list(getattr(record, "candidate_item_ids", ()) or ())
-            for record in feature_records
-        ]
+        candidate_item_ids = [list(candidate_item_ids or ()) for candidate_item_ids in candidate_rows]
         return {
             "history_texts": history_texts,
             "candidate_item_ids": candidate_item_ids,
@@ -497,6 +509,14 @@ def _movie_aliases(title: str) -> set[str]:
     if normalized_title.endswith(", An"):
         aliases.add(_normalize_text(f"An {normalized_title[:-3].strip()}"))
     return {alias for alias in aliases if alias}
+
+
+def _record_value(record: Any, key: str, *, default: Any = None) -> Any:
+    if isinstance(record, pd.Series):
+        return record[key] if key in record else default
+    if isinstance(record, dict):
+        return record.get(key, default)
+    return getattr(record, key, default)
 
 
 def _line_matches_candidate(line: str, aliases: Sequence[str]) -> bool:

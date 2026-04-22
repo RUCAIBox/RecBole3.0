@@ -18,7 +18,6 @@ The default built-in example in this repository uses:
 
 - `dataset=amazon2023_retrieval`
 - `model=hstu`
-- `trainer=retrieval`
 
 That combination also needs optional extras:
 
@@ -38,19 +37,44 @@ Hydra group selection comes from filenames under `configs/`:
 
 - `configs/dataset/amazon2023_retrieval.yaml` -> `dataset=amazon2023_retrieval`
 - `configs/model/hstu.yaml` -> `model=hstu`
-- `configs/trainer/retrieval.yaml` -> `trainer=retrieval`
 
-The root config keeps these groups optional, so a normal run should choose all three explicitly.
+The root config keeps dataset and model groups optional, so a normal run should choose both explicitly.
+
+Each model config file provides:
+
+- the top-level `model` block
+- the top-level `trainer` defaults bound to that model
+
+The built-in Amazon 2023 retrieval config at `configs/dataset/amazon2023_retrieval.yaml` selects:
+
+- `category: All_Beauty`
+- `kcore: 5core`
+- `metadata_mode: sentence`
+- `download_source: modelscope`
+- `download_dir: data/raw`
+- `processed_dir: data/processed`
+- leave-one-out chronological per-user splitting
+
+Amazon 2023 dataset fields:
+
+- `category` chooses one Amazon Reviews 2023 category.
+- `kcore` is `full` or `5core`; not every category has a 5-core subset.
+- `metadata_mode=sentence` downloads item metadata and stores `metadata_text` in the item table; `metadata_mode=none` skips metadata download.
+- `download_source` is `modelscope` or `huggingface`, and the matching optional dependency must be installed.
+- `download_dir` stores parser-managed raw snapshots.
+- `processed_dir` stores parser-managed parsed DataFrame caches.
+- `refresh_cache=true` rebuilds the parser-managed raw and parsed caches.
+- `split` controls ordering and train/valid/test split generation before task-specific eval frames are built.
 
 ## 3. Minimal Run Command
 
 Run from the repository root:
 
 ```bash
-python -m recbole3.run dataset=amazon2023_retrieval model=hstu trainer=retrieval
+python -m recbole3.run dataset=amazon2023_retrieval model=hstu
 ```
 
-This composes `configs/config.yaml` together with the selected dataset, model, and trainer group files.
+This composes `configs/config.yaml` together with the selected dataset and model files. The selected model file injects the matching `trainer` defaults.
 
 ## 4. Override Individual Fields
 
@@ -62,7 +86,6 @@ Example:
 python -m recbole3.run \
   dataset=amazon2023_retrieval \
   model=hstu \
-  trainer=retrieval \
   dataset.category=Books \
   dataset.kcore=full \
   trainer.max_epochs=10 \
@@ -77,6 +100,9 @@ Common patterns:
 
 - select a config group: `model=hstu`
 - override a nested field: `trainer.optimizer.kwargs.lr=1e-4`
+- switch the Amazon source: `dataset.download_source=huggingface`
+- skip Amazon item metadata download: `dataset.metadata_mode=none`
+- rebuild parser caches: `dataset.refresh_cache=true`
 - change a runtime setting: `runtime.device=cpu`
 
 Each override must be passed as one shell argument. If your shell would interpret special characters, quote that single override token.
@@ -91,7 +117,6 @@ Example:
 python -m recbole3.run \
   dataset=amazon2023_retrieval \
   model=hstu \
-  trainer=retrieval \
   runtime.output_dir=outputs/debug_run
 ```
 
@@ -103,10 +128,15 @@ If checkpoint saving is enabled, checkpoints are written under:
 
 ## 6. Common Issues
 
-`Missing dataset/model/trainer configuration`
+`Missing dataset/model configuration`
 
 - You did not select one of the required Hydra config groups.
-- Start from `dataset=... model=... trainer=...`.
+- Start from `dataset=... model=...`.
+
+`Could not override 'trainer'`
+
+- Trainer is no longer a standalone Hydra config group.
+- Select the model with `model=...`, then override trainer fields such as `trainer.max_epochs=...`.
 
 `model.name=hstu` fails with missing `fbgemm-gpu`
 
@@ -115,6 +145,14 @@ If checkpoint saving is enabled, checkpoints are written under:
 `download_source='modelscope'` or `download_source='huggingface'` fails
 
 - Install the matching dataset extra: `.[modelscope]` or `.[huggingface]`
+
+`Category '...' does not provide 5-core reviews`
+
+- Use `dataset.kcore=full` or choose a category with a 5-core subset.
+
+`metadata_mode=sentence` takes longer than expected
+
+- The parser downloads the metadata subset and builds `metadata_text`; use `dataset.metadata_mode=none` when item metadata is not needed.
 
 ## 7. Python API
 
@@ -127,7 +165,6 @@ cfg = compose_config(
     overrides=[
         "dataset=amazon2023_retrieval",
         "model=hstu",
-        "trainer=retrieval",
         "trainer.max_epochs=2",
     ]
 )

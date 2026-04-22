@@ -7,16 +7,10 @@ from typing import Any, Literal
 import pandas as pd
 
 from recbole3.config import project_root
-from recbole3.dataset.base import (
-    BaseDatasetParser,
-    DatasetConfig,
-    Interaction,
-    ParsedData,
-    RecordsDataset,
-    RetrievalDataset,
-    RetrievalEvalRequest,
-    SplitConfig,
-)
+from recbole3.dataset.base import FrameDataset, RetrievalDataset
+from recbole3.dataset.config import DatasetConfig, SplitConfig
+from recbole3.dataset.parser import BaseDatasetParser, ParsedData
+from recbole3.dataset.utils import CANDIDATE_ITEM_IDS, ITEM_ID, LABEL, TIMESTAMP, USER_ID
 
 
 LLMRankAtomicSource = Literal["single_inter", "pre_split_test"]
@@ -109,104 +103,90 @@ class LLMRankAtomicParser(BaseDatasetParser):
     config_cls = LLMRankAtomicDatasetConfig
     config: LLMRankAtomicDatasetConfig
 
+    @property
+    def data_dir(self) -> Path:
+        root = Path(self.config.root_dir)
+        if not root.is_absolute():
+            root = (project_root() / root).resolve()
+        return root / self.config.dataset_dir_name / self.config.atomic_subdir
+
     def parse(self) -> ParsedData:
         interactions = self._load_interactions()
         item_frame = self._load_item_frame()
-        user_index = pd.Index(
-            pd.Series([record["raw_user_id"] for record in interactions], dtype="string").drop_duplicates().astype(str),
-            name="raw_user_id",
+        user_table = self._build_user_table(interactions)
+        item_table = self._build_item_table(item_frame, interactions)
+        return ParsedData(
+            interactions=interactions,
+            user_table=user_table,
+            item_table=item_table,
         )
-        item_index = self._build_item_index(interactions, item_frame)
-        user_id_map = {raw_user_id: index for index, raw_user_id in enumerate(user_index.astype(str))}
-        item_id_map = {raw_item_id: index for index, raw_item_id in enumerate(item_index.astype(str))}
 
-        normalized_interactions = [
-            Interaction(
-                user_id=int(user_id_map[record["raw_user_id"]]),
-                item_id=int(item_id_map[record["raw_item_id"]]),
-                timestamp=record["timestamp"],
-                label=record["label"],
-            )
-            for record in interactions
-        ]
-        user_table = pd.DataFrame(
-            {
-                "user_id": range(len(user_index)),
-                "raw_user_id": user_index.astype(str),
-            }
-        )
-        item_table = self._build_item_table(item_frame, item_index=item_index, item_id_map=item_id_map)
-        return ParsedData(interactions=normalized_interactions, user_table=user_table, item_table=item_table)
-
-    def _load_interactions(self) -> list[dict[str, Any]]:
+    def _load_interactions(self) -> pd.DataFrame:
         if self.config.source_format == "single_inter":
             return self._load_single_interactions()
         if self.config.source_format == "pre_split_test":
             return self._reconstruct_interactions_from_test_split()
         raise ValueError(f"Unsupported source_format '{self.config.source_format}'.")
 
-    def _load_single_interactions(self) -> list[dict[str, Any]]:
+    def _load_single_interactions(self) -> pd.DataFrame:
         frame = _read_atomic_frame(self._require_atomic_path(self.config.interactions_filename))
-        interactions: list[dict[str, Any]] = []
-        for row in frame.itertuples(index=False):
-            interactions.append(
-                {
-                    "raw_user_id": _normalize_raw_token(getattr(row, "user_id")),
-                    "raw_item_id": _normalize_raw_token(getattr(row, "item_id")),
-                    "timestamp": _optional_numeric(getattr(row, "timestamp", None)),
-                    "label": 1.0,
-                }
-            )
-        return interactions
+        return pd.DataFrame(
+            {
+                USER_ID: [_normalize_raw_token(value) for value in frame["user_id"].tolist()],
+                ITEM_ID: [_normalize_raw_token(value) for value in frame["item_id"].tolist()],
+                TIMESTAMP: [_optional_numeric(value) for value in frame.get("timestamp", pd.Series([None] * len(frame))).tolist()],
+                LABEL: [1.0] * len(frame),
+            }
+        )
 
-    def _reconstruct_interactions_from_test_split(self) -> list[dict[str, Any]]:
+    def _reconstruct_interactions_from_test_split(self) -> pd.DataFrame:
         frame = _read_atomic_frame(self._require_atomic_path(self.config.test_filename))
-        interactions: list[dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for row in frame.itertuples(index=False):
             raw_user_id = _normalize_raw_token(getattr(row, "user_id"))
             history_item_ids = _parse_token_seq(getattr(row, "item_id_list", ""))
             target_item_id = _normalize_raw_token(getattr(row, "item_id"))
             full_sequence = [*history_item_ids, target_item_id]
-            for index, raw_item_id in enumerate(full_sequence, start=1):
-                interactions.append(
+            for position, raw_item_id in enumerate(full_sequence, start=1):
+                rows.append(
                     {
-                        "raw_user_id": raw_user_id,
-                        "raw_item_id": raw_item_id,
-                        "timestamp": index,
-                        "label": 1.0,
+                        USER_ID: raw_user_id,
+                        ITEM_ID: raw_item_id,
+                        TIMESTAMP: position,
+                        LABEL: 1.0,
                     }
                 )
-        return interactions
+        return pd.DataFrame(rows)
 
     def _load_item_frame(self) -> pd.DataFrame:
         return _read_atomic_frame(self._require_atomic_path(self.config.item_filename))
 
-    def _build_item_index(self, interactions: list[dict[str, Any]], item_frame: pd.DataFrame) -> pd.Index:
-        raw_item_ids = [
-            _normalize_raw_token(value)
-            for value in item_frame["item_id"].tolist()
-        ]
-        if raw_item_ids:
-            return pd.Index(raw_item_ids, name="raw_item_id")
-        interaction_item_ids = [_normalize_raw_token(record["raw_item_id"]) for record in interactions]
-        return pd.Index(pd.unique(interaction_item_ids), name="raw_item_id")
+    @staticmethod
+    def _build_user_table(interactions: pd.DataFrame) -> pd.DataFrame:
+        raw_user_ids = pd.Index(pd.unique(interactions[USER_ID]), name=USER_ID)
+        return pd.DataFrame(
+            {
+                USER_ID: raw_user_ids.astype(str),
+                "raw_user_id": raw_user_ids.astype(str),
+            }
+        )
 
-    def _build_item_table(
-        self,
-        item_frame: pd.DataFrame,
-        *,
-        item_index: pd.Index,
-        item_id_map: dict[str, int],
-    ) -> pd.DataFrame:
-        rows: list[dict[str, Any]] = []
+    def _build_item_table(self, item_frame: pd.DataFrame, interactions: pd.DataFrame) -> pd.DataFrame:
+        raw_item_ids = [_normalize_raw_token(value) for value in item_frame.get("item_id", pd.Series(dtype=object)).tolist()]
+        if raw_item_ids:
+            item_index = pd.Index(raw_item_ids, name=ITEM_ID)
+        else:
+            item_index = pd.Index(pd.unique(interactions[ITEM_ID]), name=ITEM_ID)
+
         item_rows = {
             _normalize_raw_token(row["item_id"]): row
             for row in item_frame.to_dict(orient="records")
         }
+        rows: list[dict[str, Any]] = []
         for raw_item_id in item_index.astype(str):
             raw_row = item_rows.get(raw_item_id, {})
-            normalized_row = {
-                "item_id": int(item_id_map[raw_item_id]),
+            normalized_row: dict[str, Any] = {
+                ITEM_ID: raw_item_id,
                 "raw_item_id": raw_item_id,
             }
             if "movie_title" in raw_row:
@@ -226,16 +206,10 @@ class LLMRankAtomicParser(BaseDatasetParser):
             rows.append(normalized_row)
         return pd.DataFrame(rows)
 
-    def _atomic_dir(self) -> Path:
-        root = Path(self.config.root_dir)
-        if not root.is_absolute():
-            root = (project_root() / root).resolve()
-        return root / self.config.dataset_dir_name / self.config.atomic_subdir
-
     def _require_atomic_path(self, filename: str | None) -> Path:
         if not filename:
             raise ValueError(f"{type(self.config).__name__} requires this atomic filename to be configured.")
-        path = self._atomic_dir() / filename
+        path = self.data_dir / filename
         if not path.exists():
             raise FileNotFoundError(f"Expected atomic dataset file at {path}.")
         return path
@@ -258,53 +232,64 @@ class LLMRankAtomicRetrievalDataset(RetrievalDataset):
         if candidate_path is None:
             return
         candidate_map = self._load_external_candidate_map(candidate_path)
-        self._test_dataset = RecordsDataset(self._records_with_external_candidates(list(self.get_eval_dataset("test")), candidate_map))
+        test_frame = self._require_frame_dataset(self.get_eval_dataset("test")).frame
+        self._test_dataset = FrameDataset(self._frame_with_external_candidates(test_frame, candidate_map))
+        valid_frame = self._require_frame_dataset(self.get_eval_dataset("valid")).frame
         if self.config.use_external_candidates_for_valid:
-            self._valid_dataset = RecordsDataset(
-                self._records_with_external_candidates(list(self.get_eval_dataset("valid")), candidate_map)
-            )
+            self._valid_dataset = FrameDataset(self._frame_with_external_candidates(valid_frame, candidate_map))
         else:
-            self._valid_dataset = RecordsDataset([])
+            self._valid_dataset = FrameDataset(self._empty_eval_frame_like(valid_frame))
 
-    def _records_with_external_candidates(
+    def _frame_with_external_candidates(
         self,
-        records: list[RetrievalEvalRequest],
+        frame: pd.DataFrame,
         candidate_map: dict[int, tuple[int, ...]],
-    ) -> list[RetrievalEvalRequest]:
-        updated_records: list[RetrievalEvalRequest] = []
-        for record in records:
-            normalized_user_id = int(record.user_id)
+    ) -> pd.DataFrame:
+        if frame.empty:
+            result = frame.copy()
+            if CANDIDATE_ITEM_IDS not in result.columns:
+                result[CANDIDATE_ITEM_IDS] = pd.Series(dtype=object)
+            return result
+
+        rows: list[dict[str, Any]] = []
+        for record in frame.to_dict(orient="records"):
+            normalized_user_id = int(record[USER_ID])
             candidate_item_ids = candidate_map.get(normalized_user_id)
             if candidate_item_ids is None:
                 if self.config.drop_missing_candidate_users:
                     continue
                 candidate_item_ids = ()
-            updated_records.append(
-                RetrievalEvalRequest(
-                    user_id=normalized_user_id,
-                    item_id=int(record.item_id),
-                    timestamp=record.timestamp,
-                    label=record.label,
-                    seen_item_ids=record.seen_item_ids,
-                    candidate_item_ids=candidate_item_ids,
-                )
-            )
-        return updated_records
+            updated = dict(record)
+            updated[CANDIDATE_ITEM_IDS] = candidate_item_ids
+            rows.append(updated)
+
+        if not rows:
+            return self._empty_eval_frame_like(frame)
+        return pd.DataFrame(rows, columns=tuple(frame.columns))
+
+    @staticmethod
+    def _empty_eval_frame_like(frame: pd.DataFrame) -> pd.DataFrame:
+        result = frame.iloc[0:0].copy()
+        if CANDIDATE_ITEM_IDS not in result.columns:
+            result[CANDIDATE_ITEM_IDS] = pd.Series(dtype=object)
+        return result
 
     def _load_external_candidate_map(self, candidate_path: Path) -> dict[int, tuple[int, ...]]:
+        user_table = self.get_user_table()
+        item_table = self.get_item_table()
         user_id_map = {
             str(raw_user_id): int(user_id)
             for user_id, raw_user_id in zip(
-                self.get_user_table()["user_id"].tolist(),
-                self.get_user_table()["raw_user_id"].astype(str).tolist(),
+                user_table[USER_ID].tolist(),
+                user_table["raw_user_id"].astype(str).tolist(),
                 strict=True,
             )
         }
         item_id_map = {
             str(raw_item_id): int(item_id)
             for item_id, raw_item_id in zip(
-                self.get_item_table()["item_id"].tolist(),
-                self.get_item_table()["raw_item_id"].astype(str).tolist(),
+                item_table[ITEM_ID].tolist(),
+                item_table["raw_item_id"].astype(str).tolist(),
                 strict=True,
             )
         }
@@ -335,11 +320,16 @@ class LLMRankAtomicRetrievalDataset(RetrievalDataset):
     def _candidate_file_path(self) -> Path | None:
         if not self.config.candidate_filename:
             return None
-        atomic_dir = self._parser._atomic_dir()
-        path = atomic_dir / self.config.candidate_filename
+        path = self._parser.data_dir / self.config.candidate_filename
         if not path.exists():
             raise FileNotFoundError(f"Expected external candidate file at {path}.")
         return path
+
+    @staticmethod
+    def _require_frame_dataset(dataset: Any) -> FrameDataset:
+        if not isinstance(dataset, FrameDataset):
+            raise TypeError(f"LLMRank external candidates require FrameDataset, got {type(dataset).__name__}.")
+        return dataset
 
 
 class ML1MLLMRankRetrievalDataset(LLMRankAtomicRetrievalDataset):

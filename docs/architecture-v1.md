@@ -23,9 +23,8 @@ The stable concepts are:
 - `BaseTaskDataset`
 - `RankingDataset`
 - `RetrievalDataset`
-- `Interaction`
-- `RetrievalEvalRequest`
-- `RecordsDataset`
+- `ParsedData`
+- `FrameDataset`
 
 `BaseDatasetParser` owns:
 
@@ -36,13 +35,18 @@ The stable concepts are:
 
 `ParsedData` contains:
 
-- `interactions: list[Interaction]`
-- `user_table`
-- `item_table`
+- `interactions: pandas.DataFrame`
+- optional `user_table`
+- optional `item_table`
+
+If `user_table` or `item_table` is omitted, `BaseTaskDataset` derives the missing table from the raw interaction ids. If a table is provided, its id column must be non-null and unique; missing interaction keys are appended before framework id remapping.
 
 `BaseTaskDataset` owns:
 
 - parser instantiation
+- validating parser output DataFrame schemas
+- deriving missing entity tables
+- remapping raw interaction and entity-table ids into framework ids
 - interaction ordering
 - ratio and leave-one-out split helpers
 - exposing prepared train and eval datasets through method accessors
@@ -51,19 +55,22 @@ The stable concepts are:
 `RankingDataset` owns:
 
 - validating `labeled` evaluation protocol usage
-- keeping row-based `Interaction` records for all three splits
+- keeping interaction DataFrames for all three splits
 
 `RetrievalDataset` owns:
 
 - validating `full` and `sampled` evaluation protocol usage
-- keeping row-based `Interaction` records for `train`
-- building request-level `RetrievalEvalRequest` records for `valid` and `test`
+- keeping an interaction DataFrame for `train`
+- building request-level eval DataFrames for `valid` and `test`
+- filtering retrieval eval rows to positive interactions
+- carrying tuple-valued `seen_item_ids` histories that grow within each eval split
 - deterministic sampled candidate generation for `sampled`
 
 Dataset code does not own:
 
 - model-specific negative sampling for training
-- padding or masking
+- model-specific padding ids
+- tensor padding or masking
 - architecture-specific feature packing
 - runtime metric computation
 
@@ -123,10 +130,8 @@ The framework also provides task-matched model-side dataset extension points:
 - `BaseRankingModelDataset`
 - `BaseRetrievalModelDataset`
 
-For sequence models, the framework provides built-in model-side logical records plus one shared history builder:
+For sequence models, the framework provides built-in model-side DataFrame transforms plus one shared history builder:
 
-- `SequentialInteraction`
-- `SequentialRetrievalEvalRequest`
 - `build_history_item_ids(...)`
 - `BaseSequentialRankingModelDataset`
 - `BaseSequentialRetrievalModelDataset`
@@ -135,13 +140,14 @@ Those sequential helpers are model-side only. They do not change dataset parser 
 
 ## Component Tables
 
-The framework uses three explicit tables rather than dynamic registration:
+The framework uses two explicit tables rather than dynamic registration:
 
 - `DATASET_TABLE`
 - `MODEL_TABLE`
-- `TRAINER_TABLE`
 
-User config still supplies strings such as `dataset.name`, `model.name`, and `trainer.name`. `run_experiment(...)` resolves those names through the tables and instantiates the matching config dataclasses and implementations.
+`MODEL_TABLE` binds each model to its model class, model config class, optional model-data class, trainer class, and trainer config class.
+
+User config still supplies strings such as `dataset.name` and `model.name`. `run_experiment(...)` resolves those names through the tables, instantiates the matching implementations, and reads trainer defaults from the selected model config.
 
 ## Prepared Dataset Contract
 
@@ -168,55 +174,73 @@ The public prepared-data access pattern is method-based:
 - `get_num_users()`
 - `get_num_items()`
 
-Prepared datasets expose split datasets through `get_train_dataset()` and `get_eval_dataset(...)`.
+Prepared datasets expose split datasets through `get_train_dataset()` and `get_eval_dataset(...)`. `get_interactions()`, entity tables, and split frames use framework ids, not raw source ids. `get_item_table()` contains only real item rows; interaction items are in `[0, get_num_items() - 1]`. Accessors return copies for DataFrame metadata views.
 
 ## Data Contracts
 
-### Interaction
+### Parser Output DataFrame
 
-`Interaction` is the shared row contract used by parsers and ranking datasets.
+`ParsedData.interactions` is the parser-facing interaction table.
 
-It contains:
+It must contain:
 
 - `user_id`
 - `item_id`
-- optional `timestamp`
-- optional `label`
 
-For v1, normalized `user_id` and `item_id` are expected to be contiguous integer ids starting at `0`.
+Optional framework-recognized columns are:
+
+- `timestamp`
+- `label`
+
+Extra columns are allowed and are preserved through the prepared interaction frames. At parser output time, `user_id` and `item_id` are raw dataset ids and may be strings or other hashable keys, but they must be non-null.
+
+Optional `user_table` and `item_table` use the same raw id columns. Provided entity tables must have unique non-null ids. Missing tables are synthesized from interaction ids; missing rows in provided tables are appended.
+
+After `BaseTaskDataset.prepare(...)`, `user_id` and `item_id` are framework ids. Both start at `0`, and `get_num_items()` counts only real items. Models that need a padding item id reserve and map it internally.
 
 ### Retrieval
 
-`RetrievalEvalRequest` contains:
+Retrieval train DataFrames preserve all interaction rows from the train split. Retrieval eval DataFrames are request-level rows built from positive interactions only; `label` is treated as positive when it is missing or greater than `0`.
 
-- inherited `Interaction` fields such as `user_id`, `item_id`, and optional `timestamp`
-- `seen_item_ids`
-- optional `candidate_item_ids`
+Retrieval eval DataFrames contain:
+
+- interaction fields such as `user_id`, `item_id`, and optional `timestamp`
+- tuple-valued `seen_item_ids`
+- optional tuple-valued `candidate_item_ids`
+
+`seen_item_ids` uses first-seen unique item histories. Validation starts from positive train interactions and grows across validation rows for each user. Test starts from positive train plus positive validation interactions and grows across test rows.
 
 Protocol semantics are:
 
-- `full`: `candidate_item_ids is None`
-- `sampled`: `candidate_item_ids` is non-null and contains the request candidate set
+- `full`: `candidate_item_ids` is absent or null
+- `sampled`: `candidate_item_ids` is non-null, starts with the target item, has the same tuple length in every row, and contains the request candidate set
 
 ### Model-side Sequential Records
 
-`SequentialInteraction` extends `Interaction` with:
+Sequential model-side DataFrames add:
 
 - `history_item_ids`
 
-`SequentialRetrievalEvalRequest` extends `RetrievalEvalRequest` with:
+HSTU model-side DataFrames also add:
 
-- `history_item_ids`
+- `history_timestamps`
 
-`build_history_item_ids(...)` constructs one prefix history per record from an ordered `Sequence[Interaction]`, optionally seeded by one user-history mapping from earlier splits.
-
-Because `RetrievalEvalRequest` extends `Interaction`, ranking and retrieval sequence models use the same history construction rule.
+`build_history_item_ids(...)` constructs one prefix history per row from an ordered interaction DataFrame, optionally seeded by one user-history mapping from earlier splits.
 
 ## Cache Ownership
 
-The framework no longer manages one common dataset cache layer.
+The framework does not manage one global dataset cache layout.
 
 Parser implementations own all dataset-specific cache paths and policies. That keeps cache layout close to the source-specific logic that produced it and avoids framework-level path coupling.
+
+For reusable local file behavior, the framework provides `recbole3.dataset.cache.DatasetCache`. It handles JSONL DataFrame read/write, force-or-missing frame creation, and standard `ParsedData` cache files. It does not download sources or choose source-specific paths.
+
+The built-in Amazon 2023 parser is the reference example:
+
+- raw reviews are cached under `download_dir/amazon2023/<download_source>/<category>/<kcore>/reviews.jsonl`
+- raw metadata is cached beside reviews as `meta.jsonl` when `metadata_mode=sentence`
+- parsed DataFrames are cached under `processed_dir/<dataset.name>/<download_source>/<category>/<kcore>/<metadata_mode>/`
+- `refresh_cache=true` rebuilds both raw and parsed parser-managed cache files
 
 ## Split Strategy
 
@@ -235,3 +259,5 @@ Supported split controls live under `DatasetConfig.split`:
 - `train_ratio`, `valid_ratio`, `test_ratio`
 - `valid_holdout_num`, `test_holdout_num`
 - `seed`
+
+`order=chronological` sorts by `timestamp` only when the whole group has timestamps; otherwise it preserves parser order. `order=random` uses `seed`. With `per_user=true`, ordering and splitting happen independently inside each user group.

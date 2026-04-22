@@ -1,9 +1,25 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from recbole3.dataset.amazon2023 import Amazon2023Parser, Amazon2023RetrievalConfig, Amazon2023RetrievalDataset
+from recbole3.dataset.amazon2023 import (
+    Amazon2023BaseConfig,
+    Amazon2023BaseParser,
+    Amazon2023RetrievalConfig,
+    Amazon2023RetrievalDataset,
+    Amazon2023RetrievalParser,
+)
+from recbole3.dataset.base import (
+    BaseTaskDataset,
+    DatasetTask,
+    FrameDataset,
+    PARSER_INTERACTIONS_SCHEMA,
+    PREPARED_INTERACTIONS_SCHEMA,
+    RankingDataset,
+    RETRIEVAL_EVAL_SCHEMA,
+    RetrievalDataset,
+)
+from recbole3.dataset.config import DatasetConfig, SplitConfig
 from recbole3.dataset.llmrank_atomic import (
     GamesLLMRankDatasetConfig,
     GamesLLMRankRetrievalDataset,
@@ -13,21 +29,16 @@ from recbole3.dataset.llmrank_atomic import (
     ML1MLLMRankDatasetConfig,
     ML1MLLMRankRetrievalDataset,
 )
-from recbole3.dataset.base import (
-    BaseDatasetParser,
-    BaseTaskDataset,
-    DatasetConfig,
-    DatasetTask,
-    Interaction,
-    ParsedData,
-    RankingDataset,
-    RecordsDataset,
-    RetrievalDataset,
-    RetrievalEvalRequest,
-    SplitConfig,
-    SplitName,
-    leave_one_out_boundaries,
-    ratio_boundaries,
+from recbole3.dataset.parser import BaseDatasetParser, ParsedData
+from recbole3.dataset.utils import (
+    CANDIDATE_ITEM_IDS,
+    ITEM_ID,
+    LABEL,
+    SEEN_ITEM_IDS,
+    TIMESTAMP,
+    USER_ID,
+    FrameSchema,
+    require_columns,
 )
 
 
@@ -35,7 +46,7 @@ from recbole3.dataset.base import (
 class DatasetSpec:
     """Static dataset table entry."""
 
-    dataset_cls: type[BaseTaskDataset[Any, Any]]
+    dataset_cls: type[BaseTaskDataset]
     config_cls: type[DatasetConfig]
 
 
@@ -64,31 +75,39 @@ def get_dataset_spec(name: str) -> DatasetSpec:
 
 
 __all__ = [
-    "Amazon2023Parser",
+    "Amazon2023BaseConfig",
+    "Amazon2023BaseParser",
     "Amazon2023RetrievalConfig",
     "Amazon2023RetrievalDataset",
+    "Amazon2023RetrievalParser",
     "BaseDatasetParser",
     "BaseTaskDataset",
+    "CANDIDATE_ITEM_IDS",
     "DATASET_TABLE",
     "DatasetConfig",
     "DatasetSpec",
     "DatasetTask",
+    "FrameDataset",
+    "FrameSchema",
     "GamesLLMRankDatasetConfig",
     "GamesLLMRankRetrievalDataset",
-    "Interaction",
+    "ITEM_ID",
+    "LABEL",
     "LLMRankAtomicDatasetConfig",
     "LLMRankAtomicParser",
     "LLMRankAtomicRetrievalDataset",
     "ML1MLLMRankDatasetConfig",
     "ML1MLLMRankRetrievalDataset",
+    "PARSER_INTERACTIONS_SCHEMA",
+    "PREPARED_INTERACTIONS_SCHEMA",
     "ParsedData",
     "RankingDataset",
-    "RecordsDataset",
+    "RETRIEVAL_EVAL_SCHEMA",
     "RetrievalDataset",
-    "RetrievalEvalRequest",
+    "SEEN_ITEM_IDS",
     "SplitConfig",
-    "SplitName",
+    "TIMESTAMP",
+    "USER_ID",
     "get_dataset_spec",
-    "leave_one_out_boundaries",
-    "ratio_boundaries",
+    "require_columns",
 ]

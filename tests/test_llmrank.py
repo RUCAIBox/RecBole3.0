@@ -6,8 +6,8 @@ import pytest
 import torch
 
 from recbole3.evaluation import EvalConfig, MetricSpec
+from recbole3.llmrank import LLMRankTrainer, LLMRankTrainerConfig
 from recbole3.model import LLMRankConfig, LLMRankModel, LLMRankModelDataset, get_model_spec
-from recbole3.trainer import LLMRankTrainer, LLMRankTrainerConfig, get_trainer_spec
 from tests.test_helpers import StubDataset, StubDatasetConfig, ensure_stub_tables
 
 
@@ -115,8 +115,9 @@ def test_llmrank_openai_backend_uses_batched_dispatch() -> None:
 
 def test_llmrank_registry_and_inference_only_run() -> None:
     ensure_stub_tables()
-    assert get_model_spec("llmrank").config_cls is LLMRankConfig
-    assert get_trainer_spec("llmrank").config_cls.__name__ == "LLMRankTrainerConfig"
+    model_spec = get_model_spec("llmrank")
+    assert model_spec.config_cls is LLMRankConfig
+    assert model_spec.trainer_config_cls is LLMRankTrainerConfig
     output_dir = Path("test_outputs") / "llmrank_run"
     output_dir.mkdir(parents=True, exist_ok=True)
 
