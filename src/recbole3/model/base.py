@@ -2,13 +2,14 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Generic, Self, TypeVar
+from typing import Any, Generic, TypeVar
+from typing_extensions import Self
 
 import torch
 from torch import nn
 from torch.utils.data import Dataset
 
-from recbole3.dataset.base import BaseTaskDataset, RankingDataset, RetrievalDataset
+from recbole3.dataset.base import BaseTaskDataset, TaskDataset
 
 
 TModelTrain = TypeVar("TModelTrain")
@@ -156,25 +157,25 @@ class BaseModelDataset(ABC, Generic[TModelTrain, TModelEval]):
         return dataset
 
 
-class BaseRankingModelDataset(BaseModelDataset[TModelTrain, TModelEval], RankingDataset, ABC):
+class BaseRankingModelDataset(BaseModelDataset[TModelTrain, TModelEval], TaskDataset, ABC):
     """Model-side dataset extension for ranking tasks."""
 
     @classmethod
     def _clone_task_dataset(cls, dataset: BaseTaskDataset) -> Self:
-        if not isinstance(dataset, RankingDataset):
-            raise TypeError(f"{cls.__name__} requires a prepared RankingDataset.")
+        if not isinstance(dataset, TaskDataset) or dataset.task != "ranking":
+            raise TypeError(f"{cls.__name__} requires a prepared TaskDataset with task='ranking'.")
         model_dataset = cls.__new__(cls)
         cls._copy_task_dataset_state(model_dataset, dataset)
         return model_dataset
 
 
-class BaseRetrievalModelDataset(BaseModelDataset[TModelTrain, TModelEval], RetrievalDataset, ABC):
+class BaseRetrievalModelDataset(BaseModelDataset[TModelTrain, TModelEval], TaskDataset, ABC):
     """Model-side dataset extension for retrieval tasks."""
 
     @classmethod
     def _clone_task_dataset(cls, dataset: BaseTaskDataset) -> Self:
-        if not isinstance(dataset, RetrievalDataset):
-            raise TypeError(f"{cls.__name__} requires a prepared RetrievalDataset.")
+        if not isinstance(dataset, TaskDataset) or dataset.task != "retrieval":
+            raise TypeError(f"{cls.__name__} requires a prepared TaskDataset with task='retrieval'.")
         model_dataset = cls.__new__(cls)
         cls._copy_task_dataset_state(model_dataset, dataset)
         return model_dataset

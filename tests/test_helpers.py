@@ -14,9 +14,8 @@ from recbole3.dataset import (
     ITEM_ID,
     LABEL,
     ParsedData,
-    RankingDataset,
-    RetrievalDataset,
     SplitConfig,
+    TaskDataset,
     USER_ID,
 )
 from recbole3.dataset.base import DatasetConfig
@@ -76,12 +75,12 @@ class StubParser(BaseDatasetParser):
         return ParsedData(interactions=interactions, user_table=users, item_table=items)
 
 
-class StubDataset(RetrievalDataset):
+class StubDataset(TaskDataset):
     config_cls = StubDatasetConfig
     parser_cls = StubParser
 
 
-class StubRankingDataset(RankingDataset):
+class StubRankingDataset(TaskDataset):
     config_cls = StubRankingDatasetConfig
     parser_cls = StubParser
 
