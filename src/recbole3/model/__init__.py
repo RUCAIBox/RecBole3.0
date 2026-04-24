@@ -23,6 +23,12 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
+from recbole3.model.letter import (
+    LETTERConfig,
+    LETTERModel,
+    LETTERModelDataset,
+    LETTERTrainer,
+)
 from recbole3.model.lcrec import LCRecConfig
 from recbole3.model.lcrec.pipeline import LCRecPipeline
 from recbole3.model.rqvae import (
@@ -72,6 +78,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),
+    "letter": ModelSpec(
+        model_cls=LETTERModel,
+        config_cls=LETTERConfig,
+        model_data_cls=LETTERModelDataset,
+        trainer_cls=LETTERTrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
     "lcrec": ModelSpec(
         model_cls=PreTrainedModel,
         config_cls=LCRecConfig,
@@ -103,6 +117,10 @@ __all__ = [
     "HSTUConfig",
     "HSTUModel",
     "HSTUModelDataset",
+    "LETTERConfig",
+    "LETTERModel",
+    "LETTERModelDataset",
+    "LETTERTrainer",
     "MODEL_TABLE",
     "RQVAEConfig",
     "RQVAEModel",

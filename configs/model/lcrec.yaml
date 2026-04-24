@@ -4,15 +4,15 @@ model:
   name: lcrec
 
   # SID mapping
-  sid_file: "/home/zhengbowen/Project/Bole3-all/RecBole3.0/src/outputs/item_sids.json"           # Path to item_sids.json (required)
+  sid_file: "/home/cce/wzc/RecBole/RecBole3.0/outputs/letter/item_sids.json"           # Path to item_sids.json (required)
 
   # LLM backbone
-  model_name_or_path: "/home/zhengbowen/Qwen2.5-1.5B/" # HuggingFace model path (required)
+  model_name_or_path: "/home/cce/wzc/Qwen2.5-1.5B" # HuggingFace model path (required)
   attn_implementation: "flash_attention_2"
   torch_dtype: bfloat16
 
   # LoRA
-  use_lora: false
+  use_lora: False
   lora_r: 8
   lora_alpha: 32
   lora_target_modules:
@@ -32,17 +32,19 @@ model:
   his_sep: ", "
 
   # HF Trainer parameters
-  train_batch_size: 1
+  train_batch_size: 16
   eval_batch_size: 32
-  gradient_accumulation_steps: 2
+  train_dataloader_num_workers: 8
+  eval_dataloader_num_workers: 0
+  gradient_accumulation_steps: 1
   warmup_ratio: 0.05
   num_train_epochs: 4
   learning_rate: 2.0e-5
   weight_decay: 0.01
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   deepspeed: null
   lr_scheduler_type: cosine
-  optim: adamw_torch
+  optim: adamw_torch_fused
   logging_steps: 10
   bf16: true
 

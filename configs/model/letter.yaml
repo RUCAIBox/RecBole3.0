@@ -1,0 +1,57 @@
+# @package _global_
+
+model:
+  name: letter
+  layers: [2048, 1024, 512, 256, 128, 64]
+  codebook_num: 4
+  codebook_size: [256, 256, 256, 256] # strict LETTER reproduction: each level must be 256
+  codebook_dim: 32
+  dropout: 0.0
+  bn: false
+  loss_type: mse
+  commit_loss_weight: 0.25
+  quant_loss_weight: 1.0
+  sk_epsilons: [0.0, 0.0, 0.0, 0.003]
+  sk_iters: 50
+
+  cf_loss_weight: 0.01
+  diversity_loss_weight: 0.0001
+
+  sem_emb_file: sentence_t5.npy
+  sem_emb_dim: 768
+  sem_emb_pca: 0
+  text_field: metadata_text
+  sent_emb_model: sentence-transformers/sentence-t5-base
+  sent_emb_batch_size: 32
+
+  # Required: collaborative embeddings loaded via torch.load (e.g., .pt).
+  # If file does not exist, generate it with:
+  # python -m recbole3.tools.generate_letter_cf_hstu --cf-emb-file cf_embeddings.pt dataset=...
+  cf_emb_file: cf_embeddings.pt
+
+  sid_collision_handling: sinkhorn # sinkhorn or extend
+  sid_output_file: item_sids.json
+
+trainer:
+  batch_size: 1024
+  shuffle: true
+  max_epochs: 20000
+  eval_step: 2000
+  # Align with HonghuiBao2000/LETTER RQ-VAE/main.py defaults: num_workers=4, pin_memory=True.
+  dataloader_num_workers: 4
+  pin_memory: true
+  monitor: recon_loss
+  early_stopping:
+    enabled: false
+    patience: 5
+    min_delta: 0.001
+  checkpoint:
+    save_best: true
+    save_last: true
+  optimizer:
+    name: AdamW
+    kwargs:
+      lr: 0.001
+      weight_decay: 0.0001
+  eval:
+    protocol: full
