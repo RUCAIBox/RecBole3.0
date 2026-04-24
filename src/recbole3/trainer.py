@@ -231,7 +231,9 @@ class Trainer:
         if best_checkpoint:
             state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
             model.load_state_dict(state_dict)
+        print("[trainer] starting test evaluation")
         test_result = self.evaluate(model, prepared_data, split="test")
+        print("[trainer] finished test evaluation")
         return {
             "fit": fit_result,
             "test": test_result,
@@ -260,10 +262,16 @@ class Trainer:
         scoring_model = accelerator.unwrap_model(prepared_model)
         batch_eval_data: list[Any] = []
         num_batches = 0
+        progress_bar = self._create_progress_bar(eval_dataloader, split=split)
         with torch.no_grad():
-            for model_inputs, records in eval_dataloader:
+            for model_inputs, records in progress_bar:
                 batch_eval_data.append(method.collect_batch(scoring_model, model_inputs, records))
                 num_batches += 1
+                if hasattr(progress_bar, "set_postfix_str"):
+                    progress_bar.set_postfix_str(f"batches={num_batches}")
+
+        if hasattr(progress_bar, "close"):
+            progress_bar.close()
 
         return {
             "split": split,
@@ -408,6 +416,17 @@ class Trainer:
             "num_users": int(prepared_data.get_num_users()),
             "num_items": int(prepared_data.get_num_items()),
         }
+
+    @staticmethod
+    def _create_progress_bar(eval_dataloader: DataLoader, *, split: str) -> Any:
+        description = f"[eval:{split}]"
+        try:
+            from tqdm.auto import tqdm
+
+            return tqdm(eval_dataloader, desc=description, total=len(eval_dataloader), leave=True)
+        except ModuleNotFoundError:
+            print(f"{description} progress logging enabled without tqdm; total_batches={len(eval_dataloader)}")
+            return eval_dataloader
 
     @staticmethod
     def _mean_or_none(values: Sequence[float]) -> float | None:

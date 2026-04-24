@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from recbole3.model.sequential import SequentialModelConfig
 
 
-LLMRankBackend = Literal["heuristic_overlap", "mock", "openai"]
+LLMRankBackend = Literal["heuristic_overlap", "mock", "openai", "local_hf"]
+LLMRankCandidateSource = Literal["random", "bm25", "hstu"]
 LLMRankPromptStrategy = Literal["sequential", "recency_focused", "in_context_learning"]
 LLMRankDomain = Literal["item", "movie", "product"]
 LLMRankParsingStrategy = Literal["title", "index"]
@@ -21,12 +22,32 @@ class LLMRankConfig(SequentialModelConfig):
         default=5,
         metadata={"help": "Maximum number of recent interactions retained in prompt history."},
     )
+    candidate_source: LLMRankCandidateSource = field(
+        default="bm25",
+        metadata={"help": "Source used to build the candidate set before LLM reranking."},
+    )
+    candidate_topk: int = field(
+        default=100,
+        metadata={"help": "Candidate set size passed into the LLM reranker, including the target item."},
+    )
+    candidate_seed: int = field(
+        default=42,
+        metadata={"help": "Deterministic seed used by candidate generation and prompt shuffling."},
+    )
+    candidate_cache_dir: str = field(
+        default="outputs/candidate_cache",
+        metadata={"help": "Root directory used to cache generated candidate sets and auto-trained backbones."},
+    )
+    refresh_candidate_cache: bool = field(
+        default=False,
+        metadata={"help": "Whether to rebuild cached candidate sets even if cache files already exist."},
+    )
     item_text_field: str = field(
-        default="metadata_text",
+        default="title",
         metadata={"help": "Preferred item-table column used as the natural-language item text."},
     )
     fallback_item_text_field: str | None = field(
-        default="raw_item_id",
+        default="metadata_text",
         metadata={"help": "Optional fallback item-table column used when item_text_field is empty."},
     )
     domain: LLMRankDomain = field(
@@ -50,12 +71,32 @@ class LLMRankConfig(SequentialModelConfig):
         metadata={"help": "Number of repeated shuffled ranking rounds used for bootstrapping."},
     )
     candidate_shuffle: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Whether to shuffle candidates before prompting even without bootstrapping."},
     )
     random_seed: int = field(
         default=42,
         metadata={"help": "Random seed used by candidate shuffling and mock backends."},
+    )
+    bm25_item_text_field: str = field(
+        default="title",
+        metadata={"help": "Primary item text field used to build BM25 documents."},
+    )
+    bm25_fallback_text_field: str | None = field(
+        default="metadata_text",
+        metadata={"help": "Fallback item text field used when bm25_item_text_field is empty."},
+    )
+    hstu_checkpoint_path: str | None = field(
+        default=None,
+        metadata={"help": "Optional checkpoint path used by candidate_source='hstu'. If unset, HSTU is trained automatically."},
+    )
+    hstu_model_overrides: dict[str, Any] = field(
+        default_factory=dict,
+        metadata={"help": "Optional overrides merged into the default HSTU model config when candidate_source='hstu'."},
+    )
+    hstu_trainer_overrides: dict[str, Any] = field(
+        default_factory=dict,
+        metadata={"help": "Optional overrides merged into the default HSTU trainer config when candidate_source='hstu'."},
     )
     api_model_name: str = field(
         default="gpt-4o-mini",
@@ -93,6 +134,54 @@ class LLMRankConfig(SequentialModelConfig):
         default=4,
         metadata={"help": "Maximum number of concurrent OpenAI-compatible ranking requests."},
     )
+    api_response_cache_path: str = field(
+        default="outputs/candidate_cache/llmrank_api_responses.jsonl",
+        metadata={"help": "JSONL cache file used to reuse OpenAI-compatible responses for identical prompts."},
+    )
+    refresh_api_response_cache: bool = field(
+        default=False,
+        metadata={"help": "Whether to ignore cached OpenAI-compatible responses and rebuild the cache."},
+    )
+    local_model_path: str | None = field(
+        default=None,
+        metadata={"help": "Filesystem path to one local Hugging Face causal LM used when backend='local_hf'."},
+    )
+    local_tokenizer_path: str | None = field(
+        default=None,
+        metadata={"help": "Optional tokenizer path; defaults to local_model_path when backend='local_hf'."},
+    )
+    local_device: str | None = field(
+        default=None,
+        metadata={"help": "Optional explicit device such as 'cuda:0' or 'cpu' for single-device local inference."},
+    )
+    local_device_map: str | None = field(
+        default="auto",
+        metadata={"help": "Optional Hugging Face device_map; use 'auto' for multi-GPU sharding or null for single-device placement."},
+    )
+    local_dtype: Literal["auto", "bfloat16", "float16", "float32"] = field(
+        default="bfloat16",
+        metadata={"help": "Torch dtype used when loading one local Hugging Face model."},
+    )
+    local_batch_size: int = field(
+        default=8,
+        metadata={"help": "Prompt batch size used for one local Hugging Face generation pass."},
+    )
+    local_max_input_tokens: int = field(
+        default=4096,
+        metadata={"help": "Maximum prompt token length for one local Hugging Face generation pass."},
+    )
+    local_trust_remote_code: bool = field(
+        default=True,
+        metadata={"help": "Whether local Hugging Face model loading may execute custom modeling code."},
+    )
+    local_attn_implementation: str | None = field(
+        default="flash_attention_2",
+        metadata={"help": "Optional attn_implementation passed to local Hugging Face models; set null to disable."},
+    )
+    local_use_chat_template: bool = field(
+        default=True,
+        metadata={"help": "Whether to wrap prompts with tokenizer.apply_chat_template when available for local Hugging Face models."},
+    )
     enforce_candidate_constraint: bool = field(
         default=True,
         metadata={"help": "Whether prompts explicitly forbid outputs outside the candidate list."},
@@ -117,6 +206,7 @@ class LLMRankConfig(SequentialModelConfig):
 
 __all__ = [
     "LLMRankBackend",
+    "LLMRankCandidateSource",
     "LLMRankConfig",
     "LLMRankDomain",
     "LLMRankParsingStrategy",

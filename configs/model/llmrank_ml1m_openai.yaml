@@ -3,8 +3,18 @@
 model:
   name: llmrank
   history_max_length: 5
+  candidate_source: bm25
+  candidate_topk: 100
+  candidate_seed: 42
+  candidate_cache_dir: outputs/candidate_cache
+  refresh_candidate_cache: false
   item_text_field: title
   fallback_item_text_field: metadata_text
+  bm25_item_text_field: title
+  bm25_fallback_text_field: metadata_text
+  hstu_checkpoint_path: null
+  hstu_model_overrides: {}
+  hstu_trainer_overrides: {}
   domain: movie
   prompt_strategy: recency_focused
   backend: openai
@@ -21,6 +31,17 @@ model:
   retry_backoff_sec: 2.0
   request_timeout_sec: 60.0
   api_concurrency: 4
+  api_response_cache_path: outputs/candidate_cache/llmrank_api_responses.jsonl
+  refresh_api_response_cache: false
+  local_model_path: null
+  local_device: null
+  local_device_map: auto
+  local_dtype: bfloat16
+  local_batch_size: 8
+  local_max_input_tokens: 4096
+  local_trust_remote_code: true
+  local_attn_implementation: flash_attention_2
+  local_use_chat_template: true
   enforce_candidate_constraint: true
   include_reasoning_instruction: true
   require_order_numbers: true
@@ -28,15 +49,16 @@ model:
   mock_responses: []
 
 trainer:
-  batch_size: 8
+  batch_size: 256
   shuffle: false
+  dataloader_num_workers: 0
   max_epochs: 0
   checkpoint:
     save_best: true
     save_last: true
   eval:
     protocol: sampled
-    neg_sampling_num: 19
+    neg_sampling_num: 99
     candidate_seed: 42
     metrics:
       - name: ndcg

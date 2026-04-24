@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import time
 from typing import TYPE_CHECKING, Any, Literal, Sequence
 
 import numpy as np
@@ -88,8 +89,14 @@ class BaseTaskDataset(ABC):
     def prepare(self, *, eval_config: EvalConfig) -> Self:
         self._reset_prepared_state()
         self._eval_config = eval_config
+        stage_start = time.perf_counter()
+        print(f"[dataset:{self.config.name}] parsing source data")
         self._load_parsed_data(self._parser.parse())
+        print(f"[dataset:{self.config.name}] parsed source data in {time.perf_counter() - stage_start:.2f}s")
+        stage_start = time.perf_counter()
+        print(f"[dataset:{self.config.name}] building prepared splits")
         self._build_prepared_datasets()
+        print(f"[dataset:{self.config.name}] built prepared splits in {time.perf_counter() - stage_start:.2f}s")
         self._is_prepared = True
         return self
 

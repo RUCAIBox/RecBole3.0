@@ -20,15 +20,6 @@ from recbole3.dataset.base import (
     RetrievalDataset,
 )
 from recbole3.dataset.config import DatasetConfig, SplitConfig
-from recbole3.dataset.llmrank_atomic import (
-    GamesLLMRankDatasetConfig,
-    GamesLLMRankRetrievalDataset,
-    LLMRankAtomicDatasetConfig,
-    LLMRankAtomicParser,
-    LLMRankAtomicRetrievalDataset,
-    ML1MLLMRankDatasetConfig,
-    ML1MLLMRankRetrievalDataset,
-)
 from recbole3.dataset.parser import BaseDatasetParser, ParsedData
 from recbole3.dataset.utils import (
     CANDIDATE_ITEM_IDS,
@@ -54,14 +45,6 @@ DATASET_TABLE: dict[str, DatasetSpec] = {
     "amazon2023_retrieval": DatasetSpec(
         dataset_cls=Amazon2023RetrievalDataset,
         config_cls=Amazon2023RetrievalConfig,
-    ),
-    "ml1m_llmrank": DatasetSpec(
-        dataset_cls=ML1MLLMRankRetrievalDataset,
-        config_cls=ML1MLLMRankDatasetConfig,
-    ),
-    "games_llmrank": DatasetSpec(
-        dataset_cls=GamesLLMRankRetrievalDataset,
-        config_cls=GamesLLMRankDatasetConfig,
     ),
 }
 
@@ -89,15 +72,8 @@ __all__ = [
     "DatasetTask",
     "FrameDataset",
     "FrameSchema",
-    "GamesLLMRankDatasetConfig",
-    "GamesLLMRankRetrievalDataset",
     "ITEM_ID",
     "LABEL",
-    "LLMRankAtomicDatasetConfig",
-    "LLMRankAtomicParser",
-    "LLMRankAtomicRetrievalDataset",
-    "ML1MLLMRankDatasetConfig",
-    "ML1MLLMRankRetrievalDataset",
     "PARSER_INTERACTIONS_SCHEMA",
     "PREPARED_INTERACTIONS_SCHEMA",
     "ParsedData",

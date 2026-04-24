@@ -3,9 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from transformers import PreTrainedModel
-
-from recbole3.llmrank import LLMRankTrainer, LLMRankTrainerConfig
 from recbole3.model.base import (
     BaseCollator,
     BaseModel,
@@ -23,15 +20,9 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
-from recbole3.model.lcrec import LCRecConfig
-from recbole3.model.lcrec.pipeline import LCRecPipeline
 from recbole3.model.llmrank import LLMRankConfig, LLMRankModel, LLMRankModelDataset
-from recbole3.model.rqvae import (
-    RQVAEConfig,
-    RQVAEModel,
-    RQVAEModelDataset,
-    RQVAETrainer,
-)
+from recbole3.model.llmrank.pipeline import LLMRankPipeline
+from recbole3.model.llmrank.trainer import LLMRankTrainer, LLMRankTrainerConfig
 from recbole3.model.sequential import (
     BaseSequentialRankingModelDataset,
     BaseSequentialRetrievalModelDataset,
@@ -42,6 +33,28 @@ from recbole3.model.sequential import (
 from recbole3.pipeline import Pipeline
 from recbole3.trainer import Trainer
 from recbole3.trainer_config import TrainerConfig
+
+try:
+    from transformers import PreTrainedModel
+    from recbole3.model.lcrec import LCRecConfig
+    from recbole3.model.lcrec.pipeline import LCRecPipeline
+except ModuleNotFoundError:
+    PreTrainedModel = None
+    LCRecConfig = None
+    LCRecPipeline = None
+
+try:
+    from recbole3.model.rqvae import (
+        RQVAEConfig,
+        RQVAEModel,
+        RQVAEModelDataset,
+        RQVAETrainer,
+    )
+except ModuleNotFoundError:
+    RQVAEConfig = None
+    RQVAEModel = None
+    RQVAEModelDataset = None
+    RQVAETrainer = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,28 +78,32 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),
-    "rqvae": ModelSpec(
-        model_cls=RQVAEModel,
-        config_cls=RQVAEConfig,
-        model_data_cls=RQVAEModelDataset,
-        trainer_cls=RQVAETrainer,
-        trainer_config_cls=TrainerConfig,
-        pipeline_cls=Pipeline,
-    ),
-    "lcrec": ModelSpec(
-        model_cls=PreTrainedModel,
-        config_cls=LCRecConfig,
-        pipeline_cls=LCRecPipeline,
-    ),
     "llmrank": ModelSpec(
         model_cls=LLMRankModel,
         config_cls=LLMRankConfig,
         model_data_cls=LLMRankModelDataset,
         trainer_cls=LLMRankTrainer,
         trainer_config_cls=LLMRankTrainerConfig,
-        pipeline_cls=Pipeline,
+        pipeline_cls=LLMRankPipeline,
     ),
 }
+
+if RQVAEConfig is not None and RQVAEModel is not None and RQVAEModelDataset is not None and RQVAETrainer is not None:
+    MODEL_TABLE["rqvae"] = ModelSpec(
+        model_cls=RQVAEModel,
+        config_cls=RQVAEConfig,
+        model_data_cls=RQVAEModelDataset,
+        trainer_cls=RQVAETrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    )
+
+if LCRecConfig is not None and LCRecPipeline is not None and PreTrainedModel is not None:
+    MODEL_TABLE["lcrec"] = ModelSpec(
+        model_cls=PreTrainedModel,
+        config_cls=LCRecConfig,
+        pipeline_cls=LCRecPipeline,
+    )
 
 
 def get_model_spec(name: str) -> ModelSpec:
@@ -119,10 +136,6 @@ __all__ = [
     "ModelConfig",
     "ModelDatasets",
     "ModelSpec",
-    "RQVAEConfig",
-    "RQVAEModel",
-    "RQVAEModelDataset",
-    "RQVAETrainer",
     "SequentialModelConfig",
     "build_history_item_ids",
     "get_model_spec",
