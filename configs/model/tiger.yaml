@@ -1,0 +1,43 @@
+# @package _global_
+
+model:
+  name: tiger
+  sid_file: item_sids.json
+  history_max_length: 20
+  n_user_tokens: 1
+  num_beams: 50
+  num_layers: 4
+  num_decoder_layers: 4
+  d_model: 128
+  d_ff: 1024
+  num_heads: 6
+  d_kv: 64
+  dropout_rate: 0.1
+  activation_function: relu
+  feed_forward_proj: relu
+
+trainer:
+  batch_size: 256
+  shuffle: true
+  max_epochs: 1
+  monitor: ndcg@10
+  early_stopping:
+    enabled: false
+    patience: 20
+    min_delta: 0.0
+  checkpoint:
+    save_best: true
+    save_last: false
+  optimizer:
+    name: AdamW
+    kwargs:
+      lr: 0.003
+      weight_decay: 0.05
+  eval:
+    protocol: full
+    exclude_history: true
+    metrics:
+      - name: recall
+        ks: [5, 10]
+      - name: ndcg
+        ks: [5, 10]
