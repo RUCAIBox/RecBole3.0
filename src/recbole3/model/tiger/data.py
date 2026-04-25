@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 
 from recbole3.dataset import ITEM_ID, USER_ID
+from recbole3.config import instantiate_dataclass
 from recbole3.model.base import BaseCollator, ModelConfig, ModelDatasets
 from recbole3.model.sequential import BaseSequentialModelDataset, HISTORY_ITEM_IDS
 from recbole3.model.tiger.config import TIGERConfig
@@ -100,7 +101,7 @@ class TIGERModelDataset(BaseSequentialModelDataset):
 
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[pd.DataFrame, pd.DataFrame]:
         if not isinstance(model_config, TIGERConfig):
-            raise TypeError(f"TIGERModelDataset requires TIGERConfig, got {type(model_config).__name__}.")
+            model_config = instantiate_dataclass(TIGERConfig, model_config)
         self.tiger_codec = TIGERSIDCodec.from_file(
             model_config.sid_file,
             num_items=int(self.get_num_items()),

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from recbole3.dataset.amazon2014 import Amazon2014RetrievalParser, Amazon2014RetrievalConfig, Amazon2014RetrievalDataset
 from recbole3.dataset.amazon2023 import Amazon2023RetrievalParser, Amazon2023RetrievalConfig, Amazon2023RetrievalDataset
 from recbole3.dataset.config import DatasetConfig, SplitConfig
 from recbole3.dataset.base import (
@@ -33,6 +34,10 @@ class DatasetSpec:
 
 
 DATASET_TABLE: dict[str, DatasetSpec] = {
+    "amazon2014_retrieval": DatasetSpec(
+        dataset_cls=Amazon2014RetrievalDataset,
+        config_cls=Amazon2014RetrievalConfig,
+    ),
     "amazon2023_retrieval": DatasetSpec(
         dataset_cls=Amazon2023RetrievalDataset,
         config_cls=Amazon2023RetrievalConfig,
@@ -49,6 +54,9 @@ def get_dataset_spec(name: str) -> DatasetSpec:
 
 
 __all__ = [
+    "Amazon2014RetrievalParser",
+    "Amazon2014RetrievalConfig",
+    "Amazon2014RetrievalDataset",
     "Amazon2023RetrievalParser",
     "Amazon2023RetrievalConfig",
     "Amazon2023RetrievalDataset",
