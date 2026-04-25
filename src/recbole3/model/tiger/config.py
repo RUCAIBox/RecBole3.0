@@ -17,6 +17,10 @@ class TIGERConfig(SequentialModelConfig):
     )
     n_user_tokens: int = field(default=1, metadata={"help": "Number of hash buckets used for user tokens."})
     num_beams: int = field(default=50, metadata={"help": "Beam width used by T5 generation."})
+    eval_topk: tuple[int, ...] = field(
+        default=(5, 10),
+        metadata={"help": "Top-k values expected during TIGER full evaluation; used to validate num_beams."},
+    )
 
     num_layers: int = field(default=4, metadata={"help": "Number of T5 encoder layers."})
     num_decoder_layers: int = field(default=4, metadata={"help": "Number of T5 decoder layers."})

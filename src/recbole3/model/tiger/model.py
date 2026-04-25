@@ -61,13 +61,18 @@ class TIGERModel(BaseRetrievalModel):
         if k <= 0:
             batch_size = int(model_inputs["input_ids"].shape[0])
             return torch.empty((batch_size, 0), dtype=torch.long, device=model_inputs["input_ids"].device)
+        if int(self.config.num_beams) < int(k):
+            raise ValueError(
+                f"TIGERConfig.num_beams ({self.config.num_beams}) must be >= requested top-k ({k}). "
+                "Increase model.num_beams or lower eval top-k."
+            )
 
         t5 = self._t5_module()
         codec = self._sid_codec()
         input_ids = model_inputs["input_ids"]
         attention_mask = model_inputs["attention_mask"]
         batch_size = int(input_ids.shape[0])
-        beam_width = max(int(self.config.num_beams), int(k))
+        beam_width = int(self.config.num_beams)
 
         generated = t5.generate(
             input_ids=input_ids,
@@ -80,6 +85,11 @@ class TIGERModel(BaseRetrievalModel):
             use_cache=True,
         )
         sequences = generated.sequences.reshape(batch_size, beam_width, -1)
+        if int(sequences.shape[-1]) < codec.n_digit + 1:
+            raise ValueError(
+                "TIGER generation returned sequences shorter than one SID tuple. "
+                f"Got width {int(sequences.shape[-1])}, expected at least {codec.n_digit + 1}."
+            )
         token_tuples = sequences[:, :, 1 : 1 + codec.n_digit]
         excluded = self._excluded_item_sets(exclude_item_ids, exclude_mask, batch_size=batch_size)
 

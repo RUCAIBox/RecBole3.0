@@ -6,6 +6,7 @@ model:
   history_max_length: 20
   n_user_tokens: 1
   num_beams: 50
+  eval_topk: [5, 10]
   num_layers: 4
   num_decoder_layers: 4
   d_model: 128
@@ -22,12 +23,12 @@ trainer:
   max_epochs: 1
   monitor: ndcg@10
   early_stopping:
-    enabled: false
+    enabled: true
     patience: 20
     min_delta: 0.0
   checkpoint:
     save_best: true
-    save_last: false
+    save_last: true
   optimizer:
     name: AdamW
     kwargs:

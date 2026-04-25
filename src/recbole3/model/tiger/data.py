@@ -28,9 +28,9 @@ class TIGERSIDCodec:
 
     @classmethod
     def from_file(cls, sid_file: str, *, num_items: int) -> "TIGERSIDCodec":
-        path = Path(sid_file)
-        if not sid_file:
+        if not str(sid_file or "").strip():
             raise ValueError("TIGERConfig.sid_file must point to an item_sids.json file.")
+        path = Path(sid_file)
         if not path.exists():
             raise FileNotFoundError(f"TIGER sid_file does not exist: {path}")
         with open(path, "r", encoding="utf-8") as file:
@@ -50,13 +50,18 @@ class TIGERSIDCodec:
                 raise ValueError(f"TIGER SID item_id {item_id} is outside dataset range [0, {num_items - 1}].")
             if not isinstance(raw_sid, list) or not raw_sid:
                 raise ValueError(f"TIGER SID for item_id {item_id} must be a non-empty list.")
-            sid = tuple(int(value) for value in raw_sid)
+            if any(not isinstance(value, int) or isinstance(value, bool) for value in raw_sid):
+                raise ValueError(f"TIGER SID for item_id {item_id} must contain only non-negative integers.")
+            sid = tuple(raw_sid)
             if any(value < 0 for value in sid):
                 raise ValueError(f"TIGER SID for item_id {item_id} contains negative values: {sid}.")
             if expected_width is None:
                 expected_width = len(sid)
             elif len(sid) != expected_width:
-                raise ValueError("All TIGER SID lists must have the same length.")
+                raise ValueError(
+                    "All TIGER SID lists must have the same length. "
+                    f"Expected {expected_width}, got {len(sid)} for item_id {item_id}."
+                )
             item_to_sid[item_id] = sid
             max_sid = max(max_sid, *sid)
 
@@ -102,11 +107,28 @@ class TIGERModelDataset(BaseSequentialModelDataset):
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[pd.DataFrame, pd.DataFrame]:
         if not isinstance(model_config, TIGERConfig):
             model_config = instantiate_dataclass(TIGERConfig, model_config)
+        _validate_num_beams(model_config)
         self.tiger_codec = TIGERSIDCodec.from_file(
             model_config.sid_file,
             num_items=int(self.get_num_items()),
         )
         return super()._build_model_datasets(model_config=model_config)
+
+
+def _validate_num_beams(config: TIGERConfig) -> None:
+    if int(config.num_beams) <= 0:
+        raise ValueError("TIGERConfig.num_beams must be a positive integer.")
+    topk = tuple(int(k) for k in config.eval_topk)
+    if not topk:
+        raise ValueError("TIGERConfig.eval_topk must contain at least one positive k.")
+    if any(k <= 0 for k in topk):
+        raise ValueError(f"TIGERConfig.eval_topk values must be positive, got {topk}.")
+    max_topk = max(topk)
+    if int(config.num_beams) < max_topk:
+        raise ValueError(
+            f"TIGERConfig.num_beams ({config.num_beams}) must be >= max(eval_topk) ({max_topk}). "
+            "Keep model.eval_topk aligned with trainer.eval.metrics."
+        )
 
 
 class _TIGERBaseCollator(BaseCollator):
