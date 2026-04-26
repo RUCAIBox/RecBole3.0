@@ -2,10 +2,10 @@
 
 model:
   name: tiger
-  sid_file: item_sids.json
+  sid_file: ""
   history_max_length: 20
   n_user_tokens: 1
-  num_beams: 50
+  num_beams: 10
   eval_topk: [5, 10]
   num_layers: 4
   num_decoder_layers: 4
