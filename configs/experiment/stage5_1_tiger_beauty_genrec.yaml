@@ -1,0 +1,66 @@
+# @package _global_
+
+# Stage 5.1 Beauty TIGER run aligned with GenRec TIGER defaults.
+# This run consumes the RQ-VAE SID file produced by stage5_1_rqvae_beauty_genrec.
+
+dataset:
+  name: amazon2014_retrieval
+  category: Beauty
+  metadata_mode: sentence
+  download_source: snap
+  download_dir: data/raw
+  processed_dir: data/processed
+  refresh_cache: false
+  split:
+    strategy: leave_one_out
+    order: chronological
+    per_user: true
+    valid_holdout_num: 1
+    test_holdout_num: 1
+
+model:
+  name: tiger
+  sid_file: outputs/stage5_1_rqvae_beauty_genrec/item_sids.json
+  history_max_length: 20
+  n_user_tokens: 1
+  num_beams: 50
+  eval_topk: [5, 10]
+  num_layers: 4
+  num_decoder_layers: 4
+  d_model: 128
+  d_ff: 1024
+  num_heads: 6
+  d_kv: 64
+  dropout_rate: 0.1
+  activation_function: relu
+  feed_forward_proj: relu
+
+trainer:
+  batch_size: 256
+  shuffle: true
+  max_epochs: 150
+  monitor: ndcg@10
+  early_stopping:
+    enabled: true
+    patience: 20
+    min_delta: 0.0
+  checkpoint:
+    save_best: true
+    save_last: true
+  optimizer:
+    name: AdamW
+    kwargs:
+      lr: 0.003
+      weight_decay: 0.05
+  eval:
+    protocol: full
+    exclude_history: true
+    metrics:
+      - name: recall
+        ks: [5, 10]
+      - name: ndcg
+        ks: [5, 10]
+
+runtime:
+  device: cuda:0
+  output_dir: outputs/stage5_1_tiger_beauty_genrec

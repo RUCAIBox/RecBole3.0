@@ -1,0 +1,67 @@
+# @package _global_
+
+# Stage 5.1 Beauty RQ-VAE run aligned with GenRec TIGER defaults.
+# This config intentionally uses the GenRec-scale RQ-VAE epoch count (10000).
+# For a shorter server dry run, override trainer.max_epochs on the CLI.
+
+dataset:
+  name: amazon2014_retrieval
+  category: Beauty
+  metadata_mode: sentence
+  download_source: snap
+  download_dir: data/raw
+  processed_dir: data/processed
+  refresh_cache: false
+  split:
+    strategy: leave_one_out
+    order: chronological
+    per_user: true
+    valid_holdout_num: 1
+    test_holdout_num: 1
+
+model:
+  name: rqvae
+  # GenRec rqvae_hidden_sizes is [2048,1024,512,256,128].
+  # RecBole3 appends codebook_dim as the latent layer, so this is equivalent.
+  hidden_sizes: [2048, 1024, 512, 256]
+  codebook_num: 3
+  codebook_size: 256
+  codebook_dim: 128
+  dropout: 0.0
+  beta: 0.25
+  sk_epsilon: -1
+  sk_iters: -1
+  vq_type: ema
+  ema_decay: 0.99
+  fix_code_embs: false
+  sem_emb_file: sentence_t5_beauty_genrec.npy
+  sem_emb_dim: 768
+  sem_emb_pca: 128
+  text_field: metadata_text
+  sent_emb_model: /media/public/models/huggingface/sentence-transformers/sentence-t5-base
+  sent_emb_batch_size: 512
+  sid_collision_handling: extend
+  sid_output_file: item_sids.json
+
+trainer:
+  batch_size: 2048
+  shuffle: true
+  max_epochs: 10000
+  monitor: recon_loss
+  early_stopping:
+    enabled: false
+    patience: 5
+    min_delta: 0.001
+  checkpoint:
+    save_best: true
+    save_last: true
+  optimizer:
+    name: Adagrad
+    kwargs:
+      lr: 0.001
+  eval:
+    protocol: full
+
+runtime:
+  device: cuda:0
+  output_dir: outputs/stage5_1_rqvae_beauty_genrec
