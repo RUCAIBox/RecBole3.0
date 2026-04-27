@@ -2,54 +2,84 @@
 
 model:
   name: llmrank
-  history_max_length: 5
-  candidate_source: bm25
-  candidate_topk: 100
+  history_max_length: 50
+  backbone_topk: 100
+  recall_budget: 20
+  candidate_source: bm25 # bm25, random, hstu
   candidate_seed: 42
   candidate_cache_dir: outputs/candidate_cache
+  candidate_file_dir: outputs/candidate_files
   refresh_candidate_cache: false
+  use_candidate_file: true
+  selected_user_count: 200
+  has_gt: false
+  fix_pos: -1     # 如果要插入ground truth, -1表示插入末尾，0表示插入开头，
+  shuffle: false  # shuffle the candidate list
+  boots: 0
   item_text_field: title
   fallback_item_text_field: metadata_text
   bm25_item_text_field: title
   bm25_fallback_text_field: metadata_text
   hstu_checkpoint_path: null
-  hstu_model_overrides: {}
-  hstu_trainer_overrides: {}
-  domain: item
-  prompt_strategy: recency_focused
-  backend: heuristic_overlap
+  hstu_model:
+    history_max_length: 50
+    embedding_dim: 64
+    num_layers: 2
+    num_heads: 2
+    attention_dim: 16
+    linear_hidden_dim: 16
+    linear_dropout_rate: 0.1
+    attn_dropout_rate: 0.0
+    temperature: 0.05
+    l2_norm_eps: 1.0e-6
+    normalize_embeddings: true
+    num_time_buckets: 128
+  hstu_trainer:
+    batch_size: 256
+    shuffle: true
+    max_epochs: 1
+    eval_steps: 5
+    optimizer:
+      name: Adam
+      kwargs:
+        lr: 0.001
+    eval:
+      protocol: full
+      exclude_history: true
+      metrics:
+        - name: recall
+          ks: [10]
+  domain: product
+  backend: openai
   parsing_strategy: title
-  bootstrap_rounds: 1
-  candidate_shuffle: true
-  random_seed: 42
-  api_model_name: gpt-4o-mini
-  api_base_url: https://api.openai.com/v1/chat/completions
+  prompt_strategy: sequential # sequential, recency_focused, in_context_learning
+  api_model_name: "/mnt/data/model/Qwen2.5-7B-Instruct"
+  api_base_url: http://localhost:8001/v1/chat/completions
   api_key_env: OPENAI_API_KEY
   temperature: 0.2
   max_output_tokens: 512
+  api_batch: 8
+  async_dispatch: true
   request_retries: 3
   retry_backoff_sec: 2.0
   request_timeout_sec: 60.0
-  api_concurrency: 4
   api_response_cache_path: outputs/candidate_cache/llmrank_api_responses.jsonl
   refresh_api_response_cache: false
   local_model_path: null
+  local_tokenizer_path: null
   local_device: null
   local_device_map: auto
   local_dtype: bfloat16
-  local_batch_size: 8
+  local_batch_size: 16
+  local_max_output_tokens: 128
   local_max_input_tokens: 4096
   local_trust_remote_code: true
   local_attn_implementation: flash_attention_2
   local_use_chat_template: true
-  enforce_candidate_constraint: true
-  include_reasoning_instruction: true
-  require_order_numbers: true
   system_prompt: null
-  mock_responses: []
 
 trainer:
-  batch_size: 256
+  batch_size: 100
   shuffle: false
   dataloader_num_workers: 0
   max_epochs: 0
@@ -57,8 +87,8 @@ trainer:
     save_best: true
     save_last: true
   eval:
-    protocol: sampled
-    neg_sampling_num: 99
+    protocol: full
+    neg_sampling_num: 0
     candidate_seed: 42
     metrics:
       - name: ndcg

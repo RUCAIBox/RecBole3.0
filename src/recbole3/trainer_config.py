@@ -69,6 +69,10 @@ class TrainerConfig:
         metadata={"help": "Number of optimizer accumulation steps handled by accelerate."},
     )
     max_epochs: int = field(default=1, metadata={"help": "Number of epochs executed by fit()."})
+    eval_steps: int = field(
+        default=5,
+        metadata={"help": "Run validation once every N training epochs."},
+    )
     optimizer: OptimizerConfig = field(
         default_factory=OptimizerConfig,
         metadata={"help": "Optimizer settings used during fit()."},

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import time
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -18,6 +19,8 @@ from recbole3.config import configs_dir, instantiate_dataclass, project_root
 from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset, ITEM_ID, SEEN_ITEM_IDS, USER_ID
 from recbole3.dataset.base import BaseTaskDataset
 from recbole3.dataset.cache import DatasetCache
+from recbole3.evaluation.methods.base import BaseEvaluationMethod
+from recbole3.evaluation.methods.full import FullEvaluationMethod
 from recbole3.model.hstu import HSTUConfig, HSTUModel, HSTUModelDataset
 from recbole3.model.llmrank.config import LLMRankConfig
 from recbole3.trainer import Trainer
@@ -62,17 +65,27 @@ class BaseCandidateGenerator(ABC):
         self.dataset_cfg = dataset_cfg
         self.trainer_cfg = trainer_cfg
         self.cache = DatasetCache(self._cache_root())
+        self._selected_user_ids = self._select_user_ids()
+        self._selected_eval_frames: dict[str, pd.DataFrame] = {}
 
     def build_split_frame(self, split: str) -> pd.DataFrame:
-        source_frame = self._eval_frame(split)
+        source_frame = self._selected_eval_frame(split)
         if source_frame.empty:
             result = source_frame.copy()
             result[CANDIDATE_ITEM_IDS] = pd.Series(dtype=object)
             return result
+
+        external_path = self._external_candidate_path(split)
+        if bool(self.model_config.use_candidate_file) and not self.model_config.refresh_candidate_cache and external_path.exists():
+            print(f"[llmrank:candidates] split={split} source={self.source_name} file=hit path={external_path}")
+            external_frame = self._read_external_candidate_frame(external_path)
+            return self._apply_cached_candidates(source_frame, external_frame, split=split)
+
         cache_path = self._cache_relative_path(split)
         if not self.model_config.refresh_candidate_cache and self.cache.exists(cache_path):
             print(f"[llmrank:candidates] split={split} source={self.source_name} cache=hit path={self.cache.path(cache_path)}")
             cached_frame = self.cache.read_frame(cache_path, required=True, description=f"{self.source_name} candidate cache")
+            self._write_external_candidate_frame(external_path, cached_frame)
             return self._apply_cached_candidates(source_frame, cached_frame, split=split)
 
         stage_start = time.perf_counter()
@@ -89,6 +102,7 @@ class BaseCandidateGenerator(ABC):
             }
         )
         self.cache.write_frame(cache_path, candidate_frame)
+        self._write_external_candidate_frame(external_path, candidate_frame)
         print(
             f"[llmrank:candidates] split={split} source={self.source_name} cache=written rows={len(candidate_frame)} "
             f"elapsed={time.perf_counter() - stage_start:.2f}s"
@@ -124,17 +138,20 @@ class BaseCandidateGenerator(ABC):
 
     def _cache_signature(self) -> str:
         payload = {
+            "implementation_version": "llmrank-candidates-v2",
             "dataset": _normalize_value(self.dataset_cfg),
             "model": _normalize_value(
                 {
                     "candidate_source": self.model_config.candidate_source,
-                    "candidate_topk": self.model_config.candidate_topk,
+                    "backbone_topk": self._backbone_topk(),
+                    "recall_budget": self._recall_budget(),
                     "candidate_seed": self.model_config.candidate_seed,
+                    "selected_user_count": self.model_config.selected_user_count,
                     "bm25_item_text_field": self.model_config.bm25_item_text_field,
                     "bm25_fallback_text_field": self.model_config.bm25_fallback_text_field,
                     "hstu_checkpoint_path": self.model_config.hstu_checkpoint_path,
-                    "hstu_model_overrides": self.model_config.hstu_model_overrides,
-                    "hstu_trainer_overrides": self.model_config.hstu_trainer_overrides,
+                    "hstu_model": self.model_config.hstu_model,
+                    "hstu_trainer": self.model_config.hstu_trainer,
                 }
             ),
         }
@@ -144,31 +161,121 @@ class BaseCandidateGenerator(ABC):
     def _cache_relative_path(self, split: str) -> str:
         return f"{split}.jsonl"
 
+    def _external_candidate_root(self) -> Path:
+        root = Path(self.model_config.candidate_file_dir)
+        if not root.is_absolute():
+            root = project_root() / root
+        return root / self.task_data.config.name / self.source_name / self._cache_signature()
+
+    def _external_candidate_path(self, split: str) -> Path:
+        return self._external_candidate_root() / f"{split}.jsonl"
+
     def _eval_frame(self, split: str) -> pd.DataFrame:
         dataset = self.task_data.get_eval_dataset(split)
         if not isinstance(dataset, FrameDataset):
             raise TypeError(f"LLMRank candidate generation requires FrameDataset, got {type(dataset).__name__}.")
         return dataset.frame.copy()
 
-    def _num_negatives(self) -> int:
-        if int(self.model_config.candidate_topk) <= 0:
-            raise ValueError("candidate_topk must be a positive integer.")
-        return int(self.model_config.candidate_topk) - 1
+    def _selected_eval_frame(self, split: str) -> pd.DataFrame:
+        cached_frame = self._selected_eval_frames.get(split)
+        if cached_frame is not None:
+            return cached_frame.copy()
+        selected_frame = self._filter_selected_users(self._eval_frame(split))
+        self._selected_eval_frames[split] = selected_frame.copy()
+        return selected_frame
 
-    def _finalize_candidates(
-        self,
-        *,
-        target_item_id: int,
-        negative_item_ids: list[int],
-    ) -> tuple[int, ...]:
-        negatives = [int(item_id) for item_id in negative_item_ids if int(item_id) != int(target_item_id)]
-        required = self._num_negatives()
-        if len(negatives) < required:
+    def _select_user_ids(self) -> tuple[int, ...]:
+        selected_user_count = int(self.model_config.selected_user_count)
+        test_frame = self._eval_frame("test")
+        ordered_user_ids: list[int] = []
+        seen_user_ids: set[int] = set()
+        for user_id in test_frame[USER_ID].tolist():
+            normalized_user_id = int(user_id)
+            if normalized_user_id in seen_user_ids:
+                continue
+            ordered_user_ids.append(normalized_user_id)
+            seen_user_ids.add(normalized_user_id)
+        if selected_user_count == -1 or selected_user_count >= len(ordered_user_ids):
+            return tuple(ordered_user_ids)
+        if selected_user_count <= 0:
+            raise ValueError("selected_user_count must be -1 or a positive integer.")
+        randomizer = random.Random(int(self.model_config.candidate_seed))
+        sampled_user_ids = randomizer.sample(ordered_user_ids, selected_user_count)
+        return tuple(int(user_id) for user_id in sampled_user_ids)
+
+    def _filter_selected_users(self, frame: pd.DataFrame) -> pd.DataFrame:
+        selected_user_ids = set(self._selected_user_ids)
+        if not selected_user_ids:
+            return frame.iloc[0:0].copy()
+        filtered = frame.loc[frame[USER_ID].map(lambda value: int(value) in selected_user_ids)].copy()
+        return filtered.reset_index(drop=True)
+
+    def _align_prepared_eval_frame(self, prepared_frame: pd.DataFrame, *, split: str) -> pd.DataFrame:
+        expected_frame = self._selected_eval_frame(split)
+        filtered_frame = self._filter_selected_users(prepared_frame)
+        if len(filtered_frame) != len(expected_frame):
             raise ValueError(
-                f"{self.source_name} produced only {len(negatives)} negatives for target {target_item_id}, "
-                f"but candidate_topk={self.model_config.candidate_topk} requires {required} negatives."
+                f"Prepared {self.source_name} eval frame for split '{split}' has {len(filtered_frame)} selected-user rows, "
+                f"but the LLMRank eval subset expects {len(expected_frame)} rows."
             )
-        return (int(target_item_id), *negatives[:required])
+        if not filtered_frame[USER_ID].reset_index(drop=True).equals(expected_frame[USER_ID].reset_index(drop=True)):
+            raise ValueError(f"Prepared {self.source_name} eval frame for split '{split}' does not match selected user order.")
+        if not filtered_frame[ITEM_ID].reset_index(drop=True).equals(expected_frame[ITEM_ID].reset_index(drop=True)):
+            raise ValueError(f"Prepared {self.source_name} eval frame for split '{split}' does not match selected target-item order.")
+        return filtered_frame.reset_index(drop=True)
+
+    def _write_external_candidate_frame(self, path: Path, candidate_frame: pd.DataFrame) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            for record in candidate_frame.to_dict(orient="records"):
+                payload = {
+                    USER_ID: int(record[USER_ID]),
+                    ITEM_ID: int(record[ITEM_ID]),
+                    CANDIDATE_ITEM_IDS: [int(item_id) for item_id in record[CANDIDATE_ITEM_IDS]],
+                }
+                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    def _read_external_candidate_frame(self, path: Path) -> pd.DataFrame:
+        rows: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                payload = json.loads(line)
+                rows.append(
+                    {
+                        USER_ID: int(payload[USER_ID]),
+                        ITEM_ID: int(payload[ITEM_ID]),
+                        CANDIDATE_ITEM_IDS: tuple(int(item_id) for item_id in payload[CANDIDATE_ITEM_IDS]),
+                    }
+                )
+        return pd.DataFrame(rows, columns=[USER_ID, ITEM_ID, CANDIDATE_ITEM_IDS])
+
+    def _backbone_topk(self) -> int:
+        configured = int(self.model_config.backbone_topk)
+        if configured <= 0:
+            raise ValueError("backbone_topk must be a positive integer.")
+        return configured
+
+    def _recall_budget(self) -> int:
+        configured = int(self.model_config.recall_budget)
+        if configured <= 0:
+            raise ValueError("recall_budget must be a positive integer.")
+        return configured
+
+    def _num_required_backbone_items(self) -> int:
+        return self._backbone_topk()
+
+    def _finalize_candidates(self, candidate_item_ids: list[int]) -> tuple[int, ...]:
+        candidates = [int(item_id) for item_id in candidate_item_ids if int(item_id) >= 0]
+        required = self._num_required_backbone_items()
+        if len(candidates) < required:
+            raise ValueError(
+                f"{self.source_name} produced only {len(candidates)} candidates, "
+                f"but backbone_topk={required} requires at least {required} items."
+            )
+        return tuple(candidates[:required])
 
 
 class RandomCandidateGenerator(BaseCandidateGenerator):
@@ -181,18 +288,21 @@ class RandomCandidateGenerator(BaseCandidateGenerator):
         split_offset = 0 if split == "valid" else 10_000
         print(f"[llmrank:candidates] generating random candidates for split={split} rows={len(eval_frame)}")
         for row_index, record in enumerate(_progress_records(eval_frame, desc=f"[random:{split}]")):
-            target_item_id = int(record[ITEM_ID])
-            seen_item_ids = {int(item_id) for item_id in record.get(SEEN_ITEM_IDS, ())}
-            available_mask = np.ones(num_items, dtype=bool)
-            if seen_item_ids:
-                available_mask[list(seen_item_ids)] = False
-            available_mask[target_item_id] = False
-            available_item_ids = all_item_ids[available_mask]
-            rng = np.random.default_rng(
-                int(self.model_config.candidate_seed) + int(record[USER_ID]) + split_offset + int(row_index)
-            )
-            sampled = rng.choice(available_item_ids, size=self._num_negatives(), replace=False).tolist()
-            candidate_rows.append(self._finalize_candidates(target_item_id=target_item_id, negative_item_ids=sampled))
+            user_id = int(record[USER_ID])
+            masked_item_ids = set(record.get(SEEN_ITEM_IDS, ()))
+            available_item_ids = [int(item_id) for item_id in all_item_ids.tolist() if int(item_id) not in masked_item_ids]
+            if len(available_item_ids) < self._num_required_backbone_items():
+                raise ValueError(
+                    f"random candidate generation only has {len(available_item_ids)} unmasked items for user {user_id}, "
+                    f"but backbone_topk={self._num_required_backbone_items()} is required."
+                )
+            rng = np.random.default_rng(int(self.model_config.candidate_seed) + user_id + split_offset + int(row_index))
+            sampled = rng.choice(
+                np.asarray(available_item_ids, dtype=np.int64),
+                size=self._num_required_backbone_items(),
+                replace=False,
+            ).tolist()
+            candidate_rows.append(self._finalize_candidates(sampled))
         return candidate_rows
 
 
@@ -230,25 +340,23 @@ class BM25CandidateGenerator(BaseCandidateGenerator):
         self._all_item_ids = np.arange(int(self.task_data.get_num_items()), dtype=np.int64)
 
     def _generate_candidates(self, eval_frame: pd.DataFrame, *, split: str) -> list[tuple[int, ...]]:
-        del split
         candidate_rows: list[tuple[int, ...]] = []
         print(f"[llmrank:candidates] generating bm25 candidates rows={len(eval_frame)}")
-        for record in _progress_records(eval_frame, desc="[bm25]"):
-            target_item_id = int(record[ITEM_ID])
-            seen_item_ids = tuple(int(item_id) for item_id in record.get(SEEN_ITEM_IDS, ()))
+        for record in _progress_records(eval_frame, desc=f"[bm25:{split}]"):
+            seen_item_ids = record.get(SEEN_ITEM_IDS, ())
             query_tokens: list[str] = []
             for item_id in seen_item_ids:
                 query_tokens.extend(self._encoded_item_text[int(item_id)])
             forbidden_mask = np.zeros(len(self._all_item_ids), dtype=bool)
-            if seen_item_ids:
-                forbidden_mask[list(seen_item_ids)] = True
-            forbidden_mask[target_item_id] = True
+            for item_id in seen_item_ids:
+                if 0 <= int(item_id) < len(forbidden_mask):
+                    forbidden_mask[int(item_id)] = True
             filtered_item_ids = self._bm25_model.get_topk_item_ids(
                 query_tokens,
                 forbidden_mask=forbidden_mask,
-                limit=self._num_negatives(),
+                limit=self._num_required_backbone_items(),
             )
-            candidate_rows.append(self._finalize_candidates(target_item_id=target_item_id, negative_item_ids=filtered_item_ids))
+            candidate_rows.append(self._finalize_candidates(filtered_item_ids))
         return candidate_rows
 
     @staticmethod
@@ -294,8 +402,8 @@ class HSTUCandidateGenerator(BaseCandidateGenerator):
             trainer_cfg=trainer_cfg,
         )
         self._hstu_model_config, self._hstu_trainer_config = _load_hstu_defaults(
-            model_overrides=model_config.hstu_model_overrides,
-            trainer_overrides=model_config.hstu_trainer_overrides,
+            model_overrides=model_config.hstu_model,
+            trainer_overrides=model_config.hstu_trainer,
         )
         self._hstu_prepared_data = HSTUModelDataset.from_task_dataset(task_data, model_config=self._hstu_model_config)
         self._hstu_model = HSTUModel(self._hstu_model_config)
@@ -306,31 +414,38 @@ class HSTUCandidateGenerator(BaseCandidateGenerator):
         prepared_split = self._hstu_prepared_data.get_eval_dataset(split)
         if not isinstance(prepared_split, FrameDataset):
             raise TypeError(f"HSTU candidate generation requires FrameDataset, got {type(prepared_split).__name__}.")
-        records = prepared_split.frame.reset_index(drop=True)
-        collator = model.build_eval_collator(self._hstu_prepared_data)
-        batch_size = int(self._hstu_trainer_config.batch_size)
+        records = self._align_prepared_eval_frame(prepared_split.frame, split=split)
+        eval_collate_fn = FullEvaluationMethod(metric_specs=tuple(), exclude_history=True).build_eval_collate_fn(
+            model,
+            self._hstu_prepared_data,
+            device=next(model.parameters()).device
+        )
+        eval_dataloader = Trainer(self._hstu_trainer_config).build_dataloader(
+            FrameDataset(records),
+            eval_collate_fn,
+            shuffle=False,
+        )
         candidate_rows: list[tuple[int, ...]] = []
-        print(f"[llmrank:candidates] generating hstu candidates for split={split} rows={len(records)} batch_size={batch_size}")
+        print(
+            f"[llmrank:candidates] generating hstu candidates for split={split} "
+            f"rows={len(records)} batch_size={int(self._hstu_trainer_config.batch_size)}"
+        )
         model.eval()
         with torch.no_grad():
-            for start in _progress_range(0, len(records), batch_size, desc=f"[hstu:{split}]"):
-                batch_records = records.iloc[start : start + batch_size].reset_index(drop=True)
-                model_inputs = collator(batch_records)
-                exclude_item_ids, exclude_mask = _pad_int_lists(batch_records[SEEN_ITEM_IDS].tolist())
+            for model_inputs, batch_records in _progress_iterable(eval_dataloader, desc=f"[hstu:{split}]"):
+                exclude_item_ids, exclude_mask = eval_collate_fn._pad_int_lists(
+                    batch_records, 
+                    SEEN_ITEM_IDS,
+                )
                 pred_item_ids = model.predict(
                     model_inputs,
-                    k=int(self.model_config.candidate_topk),
+                    k=self._num_required_backbone_items(),
                     candidate_item_ids=None,
                     exclude_item_ids=exclude_item_ids,
                     exclude_mask=exclude_mask,
                 )
-                for row_index, ranked_item_ids in enumerate(pred_item_ids.detach().cpu().tolist()):
-                    record = batch_records.iloc[row_index]
-                    target_item_id = int(record[ITEM_ID])
-                    filtered_item_ids = [int(item_id) for item_id in ranked_item_ids if int(item_id) != target_item_id]
-                    candidate_rows.append(
-                        self._finalize_candidates(target_item_id=target_item_id, negative_item_ids=filtered_item_ids)
-                    )
+                for ranked_item_ids in pred_item_ids.detach().cpu().tolist():
+                    candidate_rows.append(self._finalize_candidates([int(item_id) for item_id in ranked_item_ids]))
         if len(candidate_rows) != len(eval_frame):
             raise ValueError(
                 f"HSTU candidate generation produced {len(candidate_rows)} rows, expected {len(eval_frame)} rows."
@@ -509,19 +624,6 @@ def _load_hstu_defaults(
     )
 
 
-def _pad_int_lists(rows: list[tuple[int, ...] | list[int]]) -> tuple[torch.Tensor, torch.Tensor]:
-    width = max((len(row) for row in rows), default=0)
-    values = torch.zeros((len(rows), width), dtype=torch.long)
-    mask = torch.zeros((len(rows), width), dtype=torch.bool)
-    for row_index, row in enumerate(rows):
-        if not row:
-            continue
-        row_tensor = torch.as_tensor(row, dtype=torch.long).reshape(-1)
-        values[row_index, : len(row)] = row_tensor
-        mask[row_index, : len(row)] = True
-    return values, mask
-
-
 def _normalize_value(value: Any) -> Any:
     if isinstance(value, DictConfig):
         return OmegaConf.to_container(value, resolve=True)
@@ -540,16 +642,6 @@ def _progress_records(frame: pd.DataFrame, *, desc: str) -> Any:
         return tqdm(records, desc=desc, total=len(records), leave=True)
     except ModuleNotFoundError:
         return records
-
-
-def _progress_range(start: int, stop: int, step: int, *, desc: str) -> Any:
-    values = range(start, stop, step)
-    try:
-        from tqdm.auto import tqdm
-
-        return tqdm(values, desc=desc, total=len(values), leave=True)
-    except ModuleNotFoundError:
-        return values
 
 
 def _progress_iterable(values: Any, *, desc: str) -> Any:

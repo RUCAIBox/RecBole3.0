@@ -6,11 +6,11 @@ from typing import Any, Literal
 from recbole3.model.sequential import SequentialModelConfig
 
 
-LLMRankBackend = Literal["heuristic_overlap", "mock", "openai", "local_hf"]
+LLMRankBackend = Literal["identity", "openai", "local_hf", "heuristic_overlap"]
 LLMRankCandidateSource = Literal["random", "bm25", "hstu"]
-LLMRankPromptStrategy = Literal["sequential", "recency_focused", "in_context_learning"]
 LLMRankDomain = Literal["item", "movie", "product"]
 LLMRankParsingStrategy = Literal["title", "index"]
+LLMRankPromptStrategy = Literal["sequential", "recency_focused", "in_context_learning"]
 
 
 @dataclass(slots=True)
@@ -19,16 +19,20 @@ class LLMRankConfig(SequentialModelConfig):
 
     name: str = field(default="llmrank", metadata={"help": "Registered model name."})
     history_max_length: int = field(
-        default=5,
+        default=50,
         metadata={"help": "Maximum number of recent interactions retained in prompt history."},
+    )
+    backbone_topk: int = field(
+        default=100,
+        metadata={"help": "Number of items produced by the backbone candidate generator before recall-budget truncation."},
+    )
+    recall_budget: int = field(
+        default=20,
+        metadata={"help": "Number of candidate items finally passed into the LLM reranker."},
     )
     candidate_source: LLMRankCandidateSource = field(
         default="bm25",
         metadata={"help": "Source used to build the candidate set before LLM reranking."},
-    )
-    candidate_topk: int = field(
-        default=100,
-        metadata={"help": "Candidate set size passed into the LLM reranker, including the target item."},
     )
     candidate_seed: int = field(
         default=42,
@@ -38,9 +42,33 @@ class LLMRankConfig(SequentialModelConfig):
         default="outputs/candidate_cache",
         metadata={"help": "Root directory used to cache generated candidate sets and auto-trained backbones."},
     )
+    candidate_file_dir: str = field(
+        default="outputs/candidate_files",
+        metadata={"help": "Root directory used to read/write external backbone candidate files."},
+    )
     refresh_candidate_cache: bool = field(
         default=False,
         metadata={"help": "Whether to rebuild cached candidate sets even if cache files already exist."},
+    )
+    use_candidate_file: bool = field(
+        default=True,
+        metadata={"help": "Whether to read backbone candidate files from disk before generating them on the fly."},
+    )
+    selected_user_count: int = field(
+        default=200,
+        metadata={"help": "Number of users evaluated by LLMRank. Use -1 to keep all evaluable users, matching the official full-user option."},
+    )
+    has_gt: bool = field(
+        default=True,
+        metadata={"help": "Whether to force the evaluation target item into the candidate set before LLM reranking."},
+    )
+    fix_pos: int = field(
+        default=-1,
+        metadata={"help": "Ground-truth insertion position inside the candidate set. Use -1 to match the official shuffled placement."},
+    )
+    shuffle: bool = field(
+        default=False,
+        metadata={"help": "Whether to shuffle the candidate list."},
     )
     item_text_field: str = field(
         default="title",
@@ -51,32 +79,24 @@ class LLMRankConfig(SequentialModelConfig):
         metadata={"help": "Optional fallback item-table column used when item_text_field is empty."},
     )
     domain: LLMRankDomain = field(
-        default="item",
+        default="product",
         metadata={"help": "Prompt domain used to choose movie/product/item wording."},
     )
-    prompt_strategy: LLMRankPromptStrategy = field(
-        default="recency_focused",
-        metadata={"help": "Prompting strategy inspired by the original LLMRank implementation."},
-    )
     backend: LLMRankBackend = field(
-        default="heuristic_overlap",
-        metadata={"help": "Inference backend used to obtain ranked candidate outputs."},
+        default="openai",
+        metadata={"help": "Inference backend used to obtain ranked candidate outputs. 'identity' keeps the backbone candidate order unchanged."},
     )
     parsing_strategy: LLMRankParsingStrategy = field(
         default="title",
         metadata={"help": "How to parse LLM outputs back into ranked candidate ids."},
     )
-    bootstrap_rounds: int = field(
-        default=1,
-        metadata={"help": "Number of repeated shuffled ranking rounds used for bootstrapping."},
+    prompt_strategy: LLMRankPromptStrategy = field(
+        default="sequential",
+        metadata={"help": "Prompt construction strategy used before querying the LLM."},
     )
-    candidate_shuffle: bool = field(
-        default=True,
-        metadata={"help": "Whether to shuffle candidates before prompting even without bootstrapping."},
-    )
-    random_seed: int = field(
-        default=42,
-        metadata={"help": "Random seed used by candidate shuffling and mock backends."},
+    boots: int = field(
+        default=0,
+        metadata={"help": "Number of bootstrapping rounds used to alleviate position bias. Official default is 0."},
     )
     bm25_item_text_field: str = field(
         default="title",
@@ -90,16 +110,16 @@ class LLMRankConfig(SequentialModelConfig):
         default=None,
         metadata={"help": "Optional checkpoint path used by candidate_source='hstu'. If unset, HSTU is trained automatically."},
     )
-    hstu_model_overrides: dict[str, Any] = field(
+    hstu_model: dict[str, Any] = field(
         default_factory=dict,
         metadata={"help": "Optional overrides merged into the default HSTU model config when candidate_source='hstu'."},
     )
-    hstu_trainer_overrides: dict[str, Any] = field(
+    hstu_trainer: dict[str, Any] = field(
         default_factory=dict,
         metadata={"help": "Optional overrides merged into the default HSTU trainer config when candidate_source='hstu'."},
     )
     api_model_name: str = field(
-        default="gpt-4o-mini",
+        default="gpt-3.5-turbo",
         metadata={"help": "Remote chat-completions model name used by the openai backend."},
     )
     api_base_url: str = field(
@@ -130,9 +150,13 @@ class LLMRankConfig(SequentialModelConfig):
         default=60.0,
         metadata={"help": "Network timeout used by the openai backend."},
     )
-    api_concurrency: int = field(
-        default=4,
-        metadata={"help": "Maximum number of concurrent OpenAI-compatible ranking requests."},
+    api_batch: int = field(
+        default=8,
+        metadata={"help": "Maximum number of requests launched together for one asynchronous OpenAI-compatible batch."},
+    )
+    async_dispatch: bool = field(
+        default=True,
+        metadata={"help": "Whether to dispatch OpenAI-compatible requests in parallel batches like the official implementation."},
     )
     api_response_cache_path: str = field(
         default="outputs/candidate_cache/llmrank_api_responses.jsonl",
@@ -163,8 +187,12 @@ class LLMRankConfig(SequentialModelConfig):
         metadata={"help": "Torch dtype used when loading one local Hugging Face model."},
     )
     local_batch_size: int = field(
-        default=8,
+        default=16,
         metadata={"help": "Prompt batch size used for one local Hugging Face generation pass."},
+    )
+    local_max_output_tokens: int = field(
+        default=128,
+        metadata={"help": "Maximum number of new tokens generated per local Hugging Face response."},
     )
     local_max_input_tokens: int = field(
         default=4096,
@@ -182,26 +210,18 @@ class LLMRankConfig(SequentialModelConfig):
         default=True,
         metadata={"help": "Whether to wrap prompts with tokenizer.apply_chat_template when available for local Hugging Face models."},
     )
-    enforce_candidate_constraint: bool = field(
-        default=True,
-        metadata={"help": "Whether prompts explicitly forbid outputs outside the candidate list."},
-    )
-    include_reasoning_instruction: bool = field(
-        default=True,
-        metadata={"help": "Whether prompts ask the LLM to think step by step before ranking."},
-    )
-    require_order_numbers: bool = field(
-        default=True,
-        metadata={"help": "Whether prompts ask the LLM to return order numbers with item names."},
-    )
     system_prompt: str | None = field(
         default=None,
         metadata={"help": "Optional system instruction prepended to the user prompt."},
     )
     mock_responses: tuple[str, ...] = field(
         default_factory=tuple,
-        metadata={"help": "Optional fixed response texts consumed by the mock backend."},
+        metadata={"help": "Deprecated legacy field from the removed mock backend; ignored and kept only for backward compatibility."},
     )
+
+    def __post_init__(self) -> None:
+        if str(self.backend).strip().lower() == "mock":
+            self.backend = "identity"  # type: ignore[assignment]
 
 
 __all__ = [

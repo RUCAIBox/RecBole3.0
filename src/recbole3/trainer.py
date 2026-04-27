@@ -139,11 +139,13 @@ class Trainer:
         best_value: float | None = None
         bad_epoch_count = 0
         stopped_early = False
+        eval_steps = max(1, int(self.config.eval_steps))
 
         for epoch in range(1, self.config.max_epochs + 1):
             model.train()
             losses: list[float] = []
-            for batch in train_dataloader:
+            progress_bar = self._create_train_progress_bar(train_dataloader, epoch=epoch, max_epochs=int(self.config.max_epochs))
+            for batch in progress_bar:
                 with accelerator.accumulate(model):
                     optimizer.zero_grad()
                     outputs = model.forward(batch)
@@ -154,28 +156,46 @@ class Trainer:
                         scheduler.step()
                 losses.append(float(loss.detach().float().item()))
 
+            if hasattr(progress_bar, "close"):
+                progress_bar.close()
+
+            epoch_loss = self._mean_or_none(losses)
             train_history.append(
                 {
                     "epoch": epoch,
-                    "loss": self._mean_or_none(losses),
+                    "loss": epoch_loss,
                     "losses": losses,
                     "num_batches": len(losses),
                 }
             )
-
-            valid_result = self._run_evaluation(
-                model,
-                prepared_data,
-                split="valid",
-                accelerator=accelerator,
-                model_is_prepared=True,
+            print(
+                f"[train] epoch={epoch}/{int(self.config.max_epochs)} "
+                f"avg_loss={(f'{epoch_loss:.6f}' if epoch_loss is not None else 'n/a')} "
+                f"num_batches={len(losses)}"
             )
-            valid_result["epoch"] = epoch
-            valid_history.append(valid_result)
+
+            should_run_validation = (epoch % eval_steps == 0) or (epoch == int(self.config.max_epochs))
+            valid_result: dict[str, Any] | None = None
+            if should_run_validation:
+                valid_result = self._run_evaluation(
+                    model,
+                    prepared_data,
+                    split="valid",
+                    accelerator=accelerator,
+                    model_is_prepared=True,
+                )
+                valid_result["epoch"] = epoch
+                valid_history.append(valid_result)
+                print(
+                    f"[eval:valid] epoch={epoch}/{int(self.config.max_epochs)} "
+                    f"metrics={self._format_metrics(valid_result['metrics'])}"
+                )
 
             current_value: float | None = None
             improved = False
             if monitor is not None:
+                if valid_result is None:
+                    raise ValueError("TrainerConfig.monitor requires validation to run before metric tracking.")
                 current_value = self._extract_monitor_value(valid_result["metrics"], monitor.name)
                 improved = self._is_improvement(
                     current_value,
@@ -192,6 +212,8 @@ class Trainer:
                 elif self.config.early_stopping.enabled:
                     bad_epoch_count += 1
             if scheduler is not None and scheduler_interval == "epoch":
+                if self._scheduler_requires_monitor() and valid_result is None:
+                    raise ValueError("Epoch-level metric-driven schedulers require validation to run before stepping.")
                 self._step_epoch_scheduler(scheduler, current_value=current_value)
             if checkpoint_paths["last"] is not None:
                 self._save_model_checkpoint(model, accelerator, checkpoint_paths["last"])
@@ -418,6 +440,18 @@ class Trainer:
         }
 
     @staticmethod
+    def _format_metrics(metrics: Mapping[str, Any]) -> str:
+        if not metrics:
+            return "{}"
+        parts: list[str] = []
+        for name, value in metrics.items():
+            try:
+                parts.append(f"{name}={float(value):.6f}")
+            except (TypeError, ValueError):
+                parts.append(f"{name}={value}")
+        return "{ " + ", ".join(parts) + " }"
+
+    @staticmethod
     def _create_progress_bar(eval_dataloader: DataLoader, *, split: str) -> Any:
         description = f"[eval:{split}]"
         try:
@@ -427,6 +461,17 @@ class Trainer:
         except ModuleNotFoundError:
             print(f"{description} progress logging enabled without tqdm; total_batches={len(eval_dataloader)}")
             return eval_dataloader
+
+    @staticmethod
+    def _create_train_progress_bar(train_dataloader: DataLoader, *, epoch: int, max_epochs: int) -> Any:
+        description = f"[train:{epoch}/{max_epochs}]"
+        try:
+            from tqdm.auto import tqdm
+
+            return tqdm(train_dataloader, desc=description, total=len(train_dataloader), leave=True)
+        except ModuleNotFoundError:
+            print(f"{description} progress logging enabled without tqdm; total_batches={len(train_dataloader)}")
+            return train_dataloader
 
     @staticmethod
     def _mean_or_none(values: Sequence[float]) -> float | None:

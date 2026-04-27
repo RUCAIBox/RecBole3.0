@@ -18,7 +18,8 @@ model:
 trainer:
   batch_size: 256
   shuffle: true
-  max_epochs: 1
+  max_epochs: 100
+  eval_steps: 5
   optimizer:
     name: Adam
     kwargs:
