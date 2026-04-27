@@ -191,7 +191,7 @@ class LLMRankTrainer(Trainer):
         row_index: int,
         model: Any,
     ) -> tuple[int, ...]:
-        backbone_candidates = [int(item_id) for item_id in (candidate_item_ids or ()) if int(item_id) > 0]
+        backbone_candidates = [int(item_id) for item_id in (candidate_item_ids or ())]
         recall_budget = int(model.config.recall_budget)
         has_gt = bool(model.config.has_gt)
         fix_pos = int(model.config.fix_pos)

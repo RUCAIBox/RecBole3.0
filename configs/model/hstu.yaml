@@ -20,6 +20,8 @@ trainer:
   shuffle: true
   max_epochs: 100
   eval_steps: 5
+  monitor: recall@10
+  stopping_step: 10
   optimizer:
     name: Adam
     kwargs:

@@ -5,7 +5,7 @@ model:
   history_max_length: 50
   backbone_topk: 100
   recall_budget: 20
-  candidate_source: bm25 # bm25, random, hstu
+  candidate_source: bm25 # bm25, random, or one registered retrieval backbone such as hstu
   candidate_seed: 42
   candidate_cache_dir: outputs/candidate_cache
   candidate_file_dir: outputs/candidate_files
@@ -13,15 +13,15 @@ model:
   use_candidate_file: true
   selected_user_count: 200
   has_gt: false
-  fix_pos: -1     # 如果要插入ground truth, -1表示插入末尾，0表示插入开头，
+  fix_pos: -1     # 如果要插入ground truth, -1表示插入末尾，0表示插入开头
   shuffle: false  # shuffle the candidate list
   boots: 0
   item_text_field: title
   fallback_item_text_field: metadata_text
   bm25_item_text_field: title
   bm25_fallback_text_field: metadata_text
-  hstu_checkpoint_path: null
-  hstu_model:
+  backbone_checkpoint_path: null
+  backbone_model:
     history_max_length: 50
     embedding_dim: 64
     num_layers: 2
@@ -34,11 +34,13 @@ model:
     l2_norm_eps: 1.0e-6
     normalize_embeddings: true
     num_time_buckets: 128
-  hstu_trainer:
+  backbone_trainer:
     batch_size: 256
     shuffle: true
-    max_epochs: 1
-    eval_steps: 5
+    max_epochs: 10
+    eval_steps: 2
+    monitor: recall@10
+    stopping_step: 2
     optimizer:
       name: Adam
       kwargs:

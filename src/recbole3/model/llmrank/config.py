@@ -7,7 +7,7 @@ from recbole3.model.sequential import SequentialModelConfig
 
 
 LLMRankBackend = Literal["identity", "openai", "local_hf", "heuristic_overlap"]
-LLMRankCandidateSource = Literal["random", "bm25", "hstu"]
+LLMRankCandidateSource = str
 LLMRankDomain = Literal["item", "movie", "product"]
 LLMRankParsingStrategy = Literal["title", "index"]
 LLMRankPromptStrategy = Literal["sequential", "recency_focused", "in_context_learning"]
@@ -32,7 +32,7 @@ class LLMRankConfig(SequentialModelConfig):
     )
     candidate_source: LLMRankCandidateSource = field(
         default="bm25",
-        metadata={"help": "Source used to build the candidate set before LLM reranking."},
+        metadata={"help": "Source used to build the candidate set before LLM reranking. Use 'random', 'bm25', or one registered retrieval backbone name such as 'hstu'."},
     )
     candidate_seed: int = field(
         default=42,
@@ -106,17 +106,17 @@ class LLMRankConfig(SequentialModelConfig):
         default="metadata_text",
         metadata={"help": "Fallback item text field used when bm25_item_text_field is empty."},
     )
-    hstu_checkpoint_path: str | None = field(
+    backbone_checkpoint_path: str | None = field(
         default=None,
-        metadata={"help": "Optional checkpoint path used by candidate_source='hstu'. If unset, HSTU is trained automatically."},
+        metadata={"help": "Optional checkpoint path used by model-backed candidate sources. If unset, the backbone is trained automatically."},
     )
-    hstu_model: dict[str, Any] = field(
+    backbone_model: dict[str, Any] = field(
         default_factory=dict,
-        metadata={"help": "Optional overrides merged into the default HSTU model config when candidate_source='hstu'."},
+        metadata={"help": "Optional overrides merged into the selected backbone model config."},
     )
-    hstu_trainer: dict[str, Any] = field(
+    backbone_trainer: dict[str, Any] = field(
         default_factory=dict,
-        metadata={"help": "Optional overrides merged into the default HSTU trainer config when candidate_source='hstu'."},
+        metadata={"help": "Optional overrides merged into the selected backbone trainer config."},
     )
     api_model_name: str = field(
         default="gpt-3.5-turbo",

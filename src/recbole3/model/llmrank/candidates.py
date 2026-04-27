@@ -21,7 +21,7 @@ from recbole3.dataset.base import BaseTaskDataset
 from recbole3.dataset.cache import DatasetCache
 from recbole3.evaluation.methods.base import BaseEvaluationMethod
 from recbole3.evaluation.methods.full import FullEvaluationMethod
-from recbole3.model.hstu import HSTUConfig, HSTUModel, HSTUModelDataset
+from recbole3.model.base import BaseRetrievalModel, ModelConfig
 from recbole3.model.llmrank.config import LLMRankConfig
 from recbole3.trainer import Trainer
 from recbole3.trainer_config import TrainerConfig
@@ -138,7 +138,7 @@ class BaseCandidateGenerator(ABC):
 
     def _cache_signature(self) -> str:
         payload = {
-            "implementation_version": "llmrank-candidates-v2",
+            "implementation_version": "llmrank-candidates-v4",
             "dataset": _normalize_value(self.dataset_cfg),
             "model": _normalize_value(
                 {
@@ -149,9 +149,9 @@ class BaseCandidateGenerator(ABC):
                     "selected_user_count": self.model_config.selected_user_count,
                     "bm25_item_text_field": self.model_config.bm25_item_text_field,
                     "bm25_fallback_text_field": self.model_config.bm25_fallback_text_field,
-                    "hstu_checkpoint_path": self.model_config.hstu_checkpoint_path,
-                    "hstu_model": self.model_config.hstu_model,
-                    "hstu_trainer": self.model_config.hstu_trainer,
+                    "backbone_checkpoint_path": self.model_config.backbone_checkpoint_path,
+                    "backbone_model": self.model_config.backbone_model,
+                    "backbone_trainer": self.model_config.backbone_trainer,
                 }
             ),
         }
@@ -201,7 +201,8 @@ class BaseCandidateGenerator(ABC):
             raise ValueError("selected_user_count must be -1 or a positive integer.")
         randomizer = random.Random(int(self.model_config.candidate_seed))
         sampled_user_ids = randomizer.sample(ordered_user_ids, selected_user_count)
-        return tuple(int(user_id) for user_id in sampled_user_ids)
+        sampled_user_set = set(sampled_user_ids)
+        return tuple(user_id for user_id in ordered_user_ids if user_id in sampled_user_set)
 
     def _filter_selected_users(self, frame: pd.DataFrame) -> pd.DataFrame:
         selected_user_ids = set(self._selected_user_ids)
@@ -218,9 +219,13 @@ class BaseCandidateGenerator(ABC):
                 f"Prepared {self.source_name} eval frame for split '{split}' has {len(filtered_frame)} selected-user rows, "
                 f"but the LLMRank eval subset expects {len(expected_frame)} rows."
             )
-        if not filtered_frame[USER_ID].reset_index(drop=True).equals(expected_frame[USER_ID].reset_index(drop=True)):
+        filtered_users = filtered_frame[USER_ID].reset_index(drop=True)
+        expected_users = expected_frame[USER_ID].reset_index(drop=True)
+        if not filtered_users.equals(expected_users):
             raise ValueError(f"Prepared {self.source_name} eval frame for split '{split}' does not match selected user order.")
-        if not filtered_frame[ITEM_ID].reset_index(drop=True).equals(expected_frame[ITEM_ID].reset_index(drop=True)):
+        filtered_items = filtered_frame[ITEM_ID].reset_index(drop=True)
+        expected_items = expected_frame[ITEM_ID].reset_index(drop=True)
+        if not filtered_items.equals(expected_items):
             raise ValueError(f"Prepared {self.source_name} eval frame for split '{split}' does not match selected target-item order.")
         return filtered_frame.reset_index(drop=True)
 
@@ -268,14 +273,13 @@ class BaseCandidateGenerator(ABC):
         return self._backbone_topk()
 
     def _finalize_candidates(self, candidate_item_ids: list[int]) -> tuple[int, ...]:
-        candidates = [int(item_id) for item_id in candidate_item_ids if int(item_id) >= 0]
         required = self._num_required_backbone_items()
-        if len(candidates) < required:
+        if len(candidate_item_ids) < required:
             raise ValueError(
-                f"{self.source_name} produced only {len(candidates)} candidates, "
+                f"{self.source_name} produced only {len(candidate_item_ids)} candidates, "
                 f"but backbone_topk={required} requires at least {required} items."
             )
-        return tuple(candidates[:required])
+        return tuple(int(item_id) for item_id in candidate_item_ids[:required])
 
 
 class RandomCandidateGenerator(BaseCandidateGenerator):
@@ -343,7 +347,7 @@ class BM25CandidateGenerator(BaseCandidateGenerator):
         candidate_rows: list[tuple[int, ...]] = []
         print(f"[llmrank:candidates] generating bm25 candidates rows={len(eval_frame)}")
         for record in _progress_records(eval_frame, desc=f"[bm25:{split}]"):
-            seen_item_ids = record.get(SEEN_ITEM_IDS, ())
+            seen_item_ids = set(record.get(SEEN_ITEM_IDS, ()))
             query_tokens: list[str] = []
             for item_id in seen_item_ids:
                 query_tokens.extend(self._encoded_item_text[int(item_id)])
@@ -381,9 +385,8 @@ class BM25CandidateGenerator(BaseCandidateGenerator):
             segmented_text.append([token for token in tokens if token not in stop_words])
         return segmented_text
 
-
-class HSTUCandidateGenerator(BaseCandidateGenerator):
-    source_name = "hstu"
+class ModelBackboneCandidateGenerator(BaseCandidateGenerator):
+    source_name = "backbone"
 
     def __init__(
         self,
@@ -394,6 +397,8 @@ class HSTUCandidateGenerator(BaseCandidateGenerator):
         dataset_cfg: DictConfig,
         trainer_cfg: DictConfig,
     ) -> None:
+        self.backbone_name = str(model_config.candidate_source).strip().lower()
+        self.source_name = self.backbone_name
         super().__init__(
             task_data,
             model_config=model_config,
@@ -401,43 +406,58 @@ class HSTUCandidateGenerator(BaseCandidateGenerator):
             dataset_cfg=dataset_cfg,
             trainer_cfg=trainer_cfg,
         )
-        self._hstu_model_config, self._hstu_trainer_config = _load_hstu_defaults(
-            model_overrides=model_config.hstu_model,
-            trainer_overrides=model_config.hstu_trainer,
+        self._model_spec = _load_backbone_model_spec(self.backbone_name)
+        if self._model_spec.model_data_cls is None:
+            raise TypeError(
+                f"Candidate source '{self.backbone_name}' does not provide one model-side dataset adapter and cannot be used as one LLMRank backbone."
+            )
+        self._backbone_model_config, self._backbone_trainer_config = _load_backbone_defaults(
+            backbone_name=self.backbone_name,
+            model_config_cls=self._model_spec.config_cls,
+            trainer_config_cls=self._model_spec.trainer_config_cls,
+            model_overrides=self.model_config.backbone_model,
+            trainer_overrides=self.model_config.backbone_trainer,
         )
-        self._hstu_prepared_data = HSTUModelDataset.from_task_dataset(task_data, model_config=self._hstu_model_config)
-        self._hstu_model = HSTUModel(self._hstu_model_config)
+        self._prepared_data = self._model_spec.model_data_cls.from_task_dataset(
+            task_data,
+            model_config=self._backbone_model_config,
+        )
+        self._backbone_model = self._model_spec.model_cls(self._backbone_model_config)
+        if not isinstance(self._backbone_model, BaseRetrievalModel):
+            raise TypeError(
+                f"Candidate source '{self.backbone_name}' must instantiate BaseRetrievalModel, got {type(self._backbone_model).__name__}."
+            )
+        self._backbone_trainer = self._model_spec.trainer_cls(self._backbone_trainer_config)
         self._checkpoint_path = self._resolve_checkpoint_path()
 
     def _generate_candidates(self, eval_frame: pd.DataFrame, *, split: str) -> list[tuple[int, ...]]:
-        model = self._load_trained_hstu_model()
-        prepared_split = self._hstu_prepared_data.get_eval_dataset(split)
+        model = self._load_trained_backbone_model()
+        prepared_split = self._prepared_data.get_eval_dataset(split)
         if not isinstance(prepared_split, FrameDataset):
-            raise TypeError(f"HSTU candidate generation requires FrameDataset, got {type(prepared_split).__name__}.")
+            raise TypeError(
+                f"{self.backbone_name} candidate generation requires FrameDataset, got {type(prepared_split).__name__}."
+            )
         records = self._align_prepared_eval_frame(prepared_split.frame, split=split)
-        eval_collate_fn = FullEvaluationMethod(metric_specs=tuple(), exclude_history=True).build_eval_collate_fn(
-            model,
-            self._hstu_prepared_data,
-            device=next(model.parameters()).device
-        )
-        eval_dataloader = Trainer(self._hstu_trainer_config).build_dataloader(
-            FrameDataset(records),
+        eval_method = FullEvaluationMethod(metric_specs=tuple(), exclude_history=True)
+        eval_collate_fn = eval_method.build_eval_collate_fn(model, self._prepared_data)
+        eval_dataloader = self._backbone_trainer.build_dataloader(
+            FrameDataset(records.reset_index(drop=True)),
             eval_collate_fn,
             shuffle=False,
         )
+        accelerator = self._backbone_trainer.create_accelerator()
+        prepared_model, prepared_dataloader = accelerator.prepare(model, eval_dataloader)
+        scoring_model = accelerator.unwrap_model(prepared_model)
         candidate_rows: list[tuple[int, ...]] = []
         print(
-            f"[llmrank:candidates] generating hstu candidates for split={split} "
-            f"rows={len(records)} batch_size={int(self._hstu_trainer_config.batch_size)}"
+            f"[llmrank:candidates] generating {self.backbone_name} candidates for split={split} rows={len(records)} batch_size={int(self._backbone_trainer_config.batch_size)}"
         )
-        model.eval()
+        prepared_model.eval()
         with torch.no_grad():
-            for model_inputs, batch_records in _progress_iterable(eval_dataloader, desc=f"[hstu:{split}]"):
-                exclude_item_ids, exclude_mask = eval_collate_fn._pad_int_lists(
-                    batch_records, 
-                    SEEN_ITEM_IDS,
-                )
-                pred_item_ids = model.predict(
+            for model_inputs, batch_records in _progress_iterable(prepared_dataloader, desc=f"[{self.backbone_name}:{split}]"):
+                device = BaseEvaluationMethod._infer_device(model_inputs)
+                exclude_item_ids, exclude_mask = BaseEvaluationMethod._pad_int_lists(batch_records, SEEN_ITEM_IDS, device=device)
+                pred_item_ids = scoring_model.predict(
                     model_inputs,
                     k=self._num_required_backbone_items(),
                     candidate_item_ids=None,
@@ -448,47 +468,46 @@ class HSTUCandidateGenerator(BaseCandidateGenerator):
                     candidate_rows.append(self._finalize_candidates([int(item_id) for item_id in ranked_item_ids]))
         if len(candidate_rows) != len(eval_frame):
             raise ValueError(
-                f"HSTU candidate generation produced {len(candidate_rows)} rows, expected {len(eval_frame)} rows."
+                f"{self.backbone_name} candidate generation produced {len(candidate_rows)} rows, expected {len(eval_frame)} rows."
             )
         return candidate_rows
 
     def _resolve_checkpoint_path(self) -> Path | None:
-        if self.model_config.hstu_checkpoint_path:
-            checkpoint_path = Path(self.model_config.hstu_checkpoint_path)
+        if self.model_config.backbone_checkpoint_path:
+            checkpoint_path = Path(self.model_config.backbone_checkpoint_path)
             if not checkpoint_path.is_absolute():
                 checkpoint_path = project_root() / checkpoint_path
             return checkpoint_path
-        auto_train_dir = self.cache.path("hstu_auto_train")
-        checkpoint_path = auto_train_dir / "checkpoints" / "last_model.pt"
+        auto_train_dir = self.cache.path("backbone_auto_train")
+        checkpoint_path = auto_train_dir / "checkpoints" / "best_model.pt"
         if checkpoint_path.exists() and not self.model_config.refresh_candidate_cache:
             return checkpoint_path
         return None
 
-    def _load_trained_hstu_model(self) -> HSTUModel:
+    def _load_trained_backbone_model(self) -> BaseRetrievalModel:
         self._ensure_initialized_model()
         checkpoint_path = self._checkpoint_path
         if checkpoint_path is None:
-            print("[llmrank:candidates] no HSTU checkpoint provided; auto-training backbone")
-            checkpoint_path = self._auto_train_hstu()
+            print(f"[llmrank:candidates] no {self.backbone_name} checkpoint provided; auto-training backbone")
+            checkpoint_path = self._auto_train_backbone()
         if not checkpoint_path.exists():
-            raise FileNotFoundError(f"HSTU checkpoint not found at {checkpoint_path}.")
-        print(f"[llmrank:candidates] loading HSTU checkpoint from {checkpoint_path}")
+            raise FileNotFoundError(f"{self.backbone_name} checkpoint not found at {checkpoint_path}.")
+        print(f"[llmrank:candidates] loading {self.backbone_name} checkpoint from {checkpoint_path}")
         state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        self._hstu_model.load_state_dict(state_dict)
-        return self._hstu_model
+        self._backbone_model.load_state_dict(state_dict)
+        return self._backbone_model
 
-    def _auto_train_hstu(self) -> Path:
-        auto_train_dir = self.cache.path("hstu_auto_train")
-        trainer = Trainer(self._hstu_trainer_config)
-        fit_result = trainer.fit(self._hstu_model, self._hstu_prepared_data, output_dir=auto_train_dir)
-        checkpoint_path = fit_result["checkpoint_paths"].get("last")
+    def _auto_train_backbone(self) -> Path:
+        auto_train_dir = self.cache.path("backbone_auto_train")
+        fit_result = self._backbone_trainer.fit(self._backbone_model, self._prepared_data, output_dir=auto_train_dir)
+        checkpoint_path = fit_result["checkpoint_paths"].get("best") or fit_result["checkpoint_paths"].get("last")
         if not checkpoint_path:
-            raise RuntimeError("Automatic HSTU training did not produce a last checkpoint.")
+            raise RuntimeError(f"Automatic {self.backbone_name} training did not produce one checkpoint.")
         self._checkpoint_path = Path(checkpoint_path)
         return self._checkpoint_path
 
     def _ensure_initialized_model(self) -> None:
-        self._hstu_model.build_eval_collator(self._hstu_prepared_data)
+        self._backbone_model.build_eval_collator(self._prepared_data)
 
 
 class BM25Model:
@@ -526,10 +545,7 @@ class BM25Model:
             term_frequencies = np.asarray([term_frequency for _, term_frequency in entries], dtype=np.float32)
             idf = self.idf[word] if self.idf[word] >= 0 else self.epsilon * average_idf
             contribution = (
-                idf
-                * term_frequencies
-                * (self.param_k1 + 1.0)
-                / (term_frequencies + length_norm[indices])
+                idf * term_frequencies * (self.param_k1 + 1.0) / (term_frequencies + length_norm[indices])
             ).astype(np.float32, copy=False)
             self._postings[word] = (indices, contribution)
 
@@ -576,13 +592,18 @@ def _create_candidate_generator(
     dataset_cfg: DictConfig,
     trainer_cfg: DictConfig,
 ) -> BaseCandidateGenerator:
-    if model_config.candidate_source == "random":
+    source_name = str(model_config.candidate_source).strip().lower()
+    if source_name == "random":
         return RandomCandidateGenerator(task_data, model_config=model_config, runtime_cfg=runtime_cfg, dataset_cfg=dataset_cfg, trainer_cfg=trainer_cfg)
-    if model_config.candidate_source == "bm25":
+    if source_name == "bm25":
         return BM25CandidateGenerator(task_data, model_config=model_config, runtime_cfg=runtime_cfg, dataset_cfg=dataset_cfg, trainer_cfg=trainer_cfg)
-    if model_config.candidate_source == "hstu":
-        return HSTUCandidateGenerator(task_data, model_config=model_config, runtime_cfg=runtime_cfg, dataset_cfg=dataset_cfg, trainer_cfg=trainer_cfg)
-    raise ValueError(f"Unsupported llmrank candidate_source '{model_config.candidate_source}'.")
+    return ModelBackboneCandidateGenerator(
+        task_data,
+        model_config=model_config,
+        runtime_cfg=runtime_cfg,
+        dataset_cfg=dataset_cfg,
+        trainer_cfg=trainer_cfg,
+    )
 
 
 def _build_item_text_lookup(
@@ -609,19 +630,65 @@ def _build_item_text_lookup(
     return lookup
 
 
-def _load_hstu_defaults(
+def _load_backbone_defaults(
     *,
+    backbone_name: str,
+    model_config_cls: type[ModelConfig],
+    trainer_config_cls: type[TrainerConfig],
     model_overrides: Mapping[str, Any],
     trainer_overrides: Mapping[str, Any],
-) -> tuple[HSTUConfig, TrainerConfig]:
-    config = OmegaConf.load(configs_dir() / "model" / "hstu.yaml")
+) -> tuple[ModelConfig, TrainerConfig]:
+    config_path = configs_dir() / "model" / f"{backbone_name}.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"Candidate source '{backbone_name}' requires one config file at {config_path}, but none was found."
+        )
+    config = OmegaConf.load(config_path)
     merged_model_cfg = OmegaConf.merge(config.get("model"), OmegaConf.create(dict(model_overrides)))
     merged_trainer_cfg = OmegaConf.merge(config.get("trainer"), OmegaConf.create(dict(trainer_overrides)))
-    merged_trainer_cfg["checkpoint"] = {"save_best": False, "save_last": True}
+    stopping_step = merged_trainer_cfg.pop("stopping_step", None)
+    if stopping_step is not None:
+        merged_trainer_cfg["early_stopping"] = OmegaConf.merge(
+            merged_trainer_cfg.get("early_stopping", {}),
+            {"enabled": True, "patience": int(stopping_step)},
+        )
+    if "monitor" not in merged_trainer_cfg or merged_trainer_cfg.get("monitor") in (None, ""):
+        monitor_name = _default_backbone_monitor_name(merged_trainer_cfg)
+        if monitor_name:
+            merged_trainer_cfg["monitor"] = monitor_name
+    early_stopping_cfg = merged_trainer_cfg.get("early_stopping")
+    if early_stopping_cfg is None:
+        merged_trainer_cfg["early_stopping"] = {"enabled": True, "patience": 10, "min_delta": 0.0}
+    elif "enabled" not in early_stopping_cfg:
+        merged_trainer_cfg["early_stopping"] = OmegaConf.merge(early_stopping_cfg, {"enabled": True})
+    merged_trainer_cfg["checkpoint"] = {"save_best": True, "save_last": True}
     return (
-        instantiate_dataclass(HSTUConfig, merged_model_cfg),
-        instantiate_dataclass(TrainerConfig, merged_trainer_cfg),
+        instantiate_dataclass(model_config_cls, merged_model_cfg),
+        instantiate_dataclass(trainer_config_cls, merged_trainer_cfg),
     )
+
+
+def _default_backbone_monitor_name(trainer_cfg: Mapping[str, Any] | Any) -> str | None:
+    eval_cfg = trainer_cfg.get("eval") if isinstance(trainer_cfg, Mapping) else None
+    if not isinstance(eval_cfg, Mapping):
+        return None
+    metrics = eval_cfg.get("metrics")
+    if not metrics:
+        return None
+    first_metric = metrics[0]
+    if not isinstance(first_metric, Mapping):
+        return None
+    metric_name = str(first_metric.get("name", "")).strip()
+    ks = first_metric.get("ks") or ()
+    if not metric_name or not ks:
+        return None
+    return f"{metric_name}@{int(ks[0])}"
+
+
+def _load_backbone_model_spec(backbone_name: str) -> Any:
+    from recbole3.model import get_model_spec
+
+    return get_model_spec(backbone_name)
 
 
 def _normalize_value(value: Any) -> Any:
@@ -660,7 +727,7 @@ def _progress_iterable(values: Any, *, desc: str) -> Any:
 __all__ = [
     "BaseCandidateGenerator",
     "BM25CandidateGenerator",
-    "HSTUCandidateGenerator",
+    "ModelBackboneCandidateGenerator",
     "RandomCandidateGenerator",
     "build_candidate_frames",
 ]
