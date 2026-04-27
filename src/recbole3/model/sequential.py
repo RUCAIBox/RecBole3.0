@@ -9,7 +9,7 @@ import pandas as pd
 from torch.utils.data import Dataset
 
 from recbole3.dataset import FrameDataset, ITEM_ID, LABEL, USER_ID
-from recbole3.model.base import BaseTaskModelDataset, ModelConfig, ModelDatasets
+from recbole3.model.base import BaseModelDataset, ModelConfig, ModelDatasets
 
 
 HISTORY_ITEM_IDS = "history_item_ids"
@@ -74,7 +74,7 @@ def _truncate_history(item_ids: list[int], *, history_max_length: int | None) ->
 
 
 class BaseSequentialModelDataset(
-    BaseTaskModelDataset[pd.DataFrame, pd.DataFrame],
+    BaseModelDataset[pd.DataFrame, pd.DataFrame],
     ABC,
 ):
     """Model-side dataset that adds history_item_ids to every split."""

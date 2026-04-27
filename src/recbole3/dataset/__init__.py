@@ -11,7 +11,6 @@ from recbole3.dataset.base import (
     PARSER_INTERACTIONS_SCHEMA,
     PREPARED_INTERACTIONS_SCHEMA,
     RETRIEVAL_EVAL_SCHEMA,
-    TaskDataset,
 )
 
 from recbole3.dataset.parser import (
@@ -67,7 +66,6 @@ __all__ = [
     "PREPARED_INTERACTIONS_SCHEMA",
     "ParsedData",
     "RETRIEVAL_EVAL_SCHEMA",
-    "TaskDataset",
     "SEEN_ITEM_IDS",
     "SplitConfig",
     "TIMESTAMP",

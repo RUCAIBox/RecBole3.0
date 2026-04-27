@@ -109,7 +109,7 @@ class Pipeline:
     def _build_model_data(
         self,
         task_data: BaseTaskDataset,
-        model_data_cls: BaseModelDataset | None,
+        model_data_cls: type[BaseModelDataset[Any, Any]] | None,
         model_config: DictConfig,
     ) -> BaseTaskDataset:
         """Build model-specific data from task dataset."""

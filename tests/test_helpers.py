@@ -15,7 +15,7 @@ from recbole3.dataset import (
     LABEL,
     ParsedData,
     SplitConfig,
-    TaskDataset,
+    BaseTaskDataset,
     USER_ID,
 )
 from recbole3.dataset.base import DatasetConfig
@@ -25,7 +25,7 @@ from recbole3.model import (
     BaseCollator,
     BaseRankingModel,
     BaseRetrievalModel,
-    BaseTaskModelDataset,
+    BaseModelDataset,
     ModelConfig,
     ModelDatasets,
     ModelSpec,
@@ -75,12 +75,12 @@ class StubParser(BaseDatasetParser):
         return ParsedData(interactions=interactions, user_table=users, item_table=items)
 
 
-class StubDataset(TaskDataset):
+class StubDataset(BaseTaskDataset):
     config_cls = StubDatasetConfig
     parser_cls = StubParser
 
 
-class StubRankingDataset(TaskDataset):
+class StubRankingDataset(BaseTaskDataset):
     config_cls = StubRankingDatasetConfig
     parser_cls = StubParser
 
@@ -156,7 +156,7 @@ class StubRankingEvalCollator(BaseCollator):
         }
 
 
-class StubModelDataset(BaseTaskModelDataset[Any, Any]):
+class StubModelDataset(BaseModelDataset[Any, Any]):
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[Any, Any]:
         self.model_name = model_config.name
         return ModelDatasets()

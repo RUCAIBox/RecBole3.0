@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal, Sequence
 from typing_extensions import Self
 
@@ -66,7 +65,7 @@ class FrameDataset(Dataset[pd.DataFrame | dict[str, Any]]):
         return self.frame.take([int(index) for index in indices]).reset_index(drop=True)
 
 
-class BaseTaskDataset(ABC):
+class BaseTaskDataset:
     """Prepare task-aware split datasets from one dataset parser."""
 
     config_cls: type[DatasetConfig] = DatasetConfig
@@ -123,12 +122,194 @@ class BaseTaskDataset(ABC):
         self._require_prepared()
         return self._num_items
 
-    @abstractmethod
+    @property
+    def task(self) -> DatasetTask:
+        self._require_prepared()
+        protocol = self._eval_config.protocol if self._eval_config else ""
+        return "ranking" if protocol == "labeled" else "retrieval"
+
     def _build_split_frames(
         self,
         ordered_interactions: pd.DataFrame,
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        ...
+        protocol = self._require_eval_config().protocol
+        if protocol == "labeled":
+            return self._split_interactions(ordered_interactions)
+        if protocol in {"full", "sampled"}:
+            return self._build_retrieval_split_frames(ordered_interactions)
+        raise ValueError(
+            f"BaseTaskDataset only supports eval protocols 'labeled', 'full', and 'sampled', got '{protocol}'."
+        )
+
+    def _build_retrieval_split_frames(
+        self,
+        ordered_interactions: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        train_frame, valid_interactions, test_interactions = self._split_interactions(ordered_interactions)
+        valid_frame = self._build_eval_frame(
+            valid_interactions,
+            seen_history_interactions=train_frame,
+            split="valid",
+        )
+        test_frame = self._build_eval_frame(
+            test_interactions,
+            seen_history_interactions=self._concat_like(
+                [train_frame, self._positive_interactions(valid_interactions)],
+                ordered_interactions,
+            ),
+            split="test",
+        )
+        return train_frame, valid_frame, test_frame
+
+    def _build_eval_frame(
+        self,
+        interactions: pd.DataFrame,
+        *,
+        seen_history_interactions: pd.DataFrame,
+        split: Literal["valid", "test"],
+    ) -> pd.DataFrame:
+        positive_interactions = self._positive_interactions(interactions)
+        requests = self._build_retrieval_eval_frame(
+            positive_interactions,
+            seen_history_interactions=self._positive_interactions(seen_history_interactions),
+        )
+        return self._maybe_attach_sampled_candidates(requests, split=split)
+
+    def _maybe_attach_sampled_candidates(
+        self,
+        requests: pd.DataFrame,
+        *,
+        split: Literal["valid", "test"],
+    ) -> pd.DataFrame:
+        protocol = self._require_eval_config().protocol
+        if protocol != "sampled":
+            return requests
+        return self._attach_sampled_candidates(requests, split=split)
+
+    @staticmethod
+    def _positive_interactions(interactions: pd.DataFrame) -> pd.DataFrame:
+        if interactions.empty:
+            return interactions.copy()
+        labels = pd.to_numeric(interactions[LABEL], errors="coerce")
+        positive_mask = interactions[LABEL].isna() | (labels > 0)
+        return interactions.loc[positive_mask].copy()
+
+    def _build_retrieval_eval_frame(
+        self,
+        positive_interactions: pd.DataFrame,
+        *,
+        seen_history_interactions: pd.DataFrame,
+    ) -> pd.DataFrame:
+        if positive_interactions.empty:
+            columns = list(positive_interactions.columns)
+            if SEEN_ITEM_IDS not in columns:
+                columns.append(SEEN_ITEM_IDS)
+            return pd.DataFrame(columns=columns)
+        result = positive_interactions.copy()
+        seen_histories = self._group_unique_item_sequences(seen_history_interactions)
+        item_ids = result[ITEM_ID].to_numpy()
+        seen_item_ids: list[tuple[int, ...]] = [()] * len(result)
+        ordered_positions: list[int] = []
+        for user_id, positions in result.groupby(USER_ID, sort=False).indices.items():
+            history = list(seen_histories.get(int(user_id), ()))
+            seen_item_set = set(history)
+            for position in positions:
+                row_position = int(position)
+                seen_item_ids[row_position] = tuple(history)
+                item_id = int(item_ids[row_position])
+                if item_id not in seen_item_set:
+                    history.append(item_id)
+                    seen_item_set.add(item_id)
+                ordered_positions.append(row_position)
+        result[SEEN_ITEM_IDS] = seen_item_ids
+        return result.take(ordered_positions).reset_index(drop=True)
+
+    def _attach_sampled_candidates(
+        self,
+        requests: pd.DataFrame,
+        *,
+        split: Literal["valid", "test"],
+    ) -> pd.DataFrame:
+        if requests.empty:
+            result = requests.copy()
+            result[CANDIDATE_ITEM_IDS] = pd.Series(dtype=object)
+            return result
+        result = requests.copy()
+        user_ids = result[USER_ID].to_numpy()
+        item_ids = result[ITEM_ID].to_numpy()
+        result[CANDIDATE_ITEM_IDS] = [
+            (int(item_id),)
+            + self._sample_negative_item_ids(
+                user_id=int(user_id),
+                target_item_id=int(item_id),
+                split=split,
+                record_index=index,
+            )
+            for index, (user_id, item_id) in enumerate(zip(user_ids, item_ids))
+        ]
+        self._validate_sampled_candidates(result)
+        return result
+
+    def _sample_negative_item_ids(
+        self,
+        *,
+        user_id: int,
+        target_item_id: int,
+        split: Literal["valid", "test"],
+        record_index: int,
+    ) -> tuple[int, ...]:
+        target_item_id = int(target_item_id)
+        available_count = max(0, self._num_items - 1)
+        sample_size = self._negative_sample_size(available_count)
+        if sample_size == 0:
+            return ()
+        if sample_size == available_count:
+            return self._all_negative_item_ids(target_item_id)
+
+        sampled_offsets = np.random.default_rng(
+            self._sample_seed(user_id=user_id, split=split, record_index=record_index)
+        ).choice(available_count, size=sample_size, replace=False)
+        sampled_negative_item_ids = sampled_offsets
+        sampled_negative_item_ids[sampled_negative_item_ids >= target_item_id] += 1
+        return tuple(int(item_id) for item_id in sampled_negative_item_ids.tolist())
+
+    def _all_negative_item_ids(self, target_item_id: int) -> tuple[int, ...]:
+        target_item_id = int(target_item_id)
+        return tuple(range(0, target_item_id)) + tuple(range(target_item_id + 1, self._num_items))
+
+    def _negative_sample_size(self, available_count: int) -> int:
+        eval_config = self._require_eval_config()
+        return min(max(0, int(eval_config.neg_sampling_num)), available_count)
+
+    def _sample_seed(
+        self,
+        *,
+        user_id: int,
+        split: Literal["valid", "test"],
+        record_index: int,
+    ) -> int:
+        eval_config = self._require_eval_config()
+        split_offset = 0 if split == "valid" else 10_000
+        return int(eval_config.candidate_seed) + int(user_id) + split_offset + int(record_index)
+
+    @staticmethod
+    def _group_unique_item_sequences(interactions: pd.DataFrame) -> dict[int, tuple[int, ...]]:
+        if interactions.empty:
+            return {}
+        unique_interactions = interactions.loc[:, [USER_ID, ITEM_ID]].drop_duplicates([USER_ID, ITEM_ID], keep="first")
+        grouped_item_ids = unique_interactions.groupby(USER_ID, sort=False)[ITEM_ID].agg(tuple)
+        return {
+            int(user_id): tuple(int(item_id) for item_id in item_ids)
+            for user_id, item_ids in grouped_item_ids.items()
+        }
+
+    @staticmethod
+    def _validate_sampled_candidates(requests: pd.DataFrame) -> None:
+        if requests.empty:
+            return
+        counts = requests[CANDIDATE_ITEM_IDS].map(len)
+        if counts.nunique(dropna=False) > 1:
+            raise ValueError("Sampled evaluation requires each candidate_item_ids row to have the same length.")
 
     @staticmethod
     def _normalize_parser_interactions(
@@ -455,197 +636,6 @@ class BaseTaskDataset(ABC):
         return TIMESTAMP in interactions.columns and bool(interactions[TIMESTAMP].notna().all())
 
 
-class TaskDataset(BaseTaskDataset):
-    """Task dataset that prepares split datasets based on the evaluation protocol."""
-
-    @property
-    def task(self) -> DatasetTask:
-        self._require_prepared()
-        protocol = self._eval_config.protocol if self._eval_config else ""
-        return "ranking" if protocol == "labeled" else "retrieval"
-
-    def _build_split_frames(
-        self,
-        ordered_interactions: pd.DataFrame,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        protocol = self._require_eval_config().protocol
-        if protocol == "labeled":
-            return self._split_interactions(ordered_interactions)
-        if protocol in {"full", "sampled"}:
-            return self._build_retrieval_split_frames(ordered_interactions)
-        raise ValueError(
-            f"TaskDataset only supports eval protocols 'labeled', 'full', and 'sampled', got '{protocol}'."
-        )
-
-    def _build_retrieval_split_frames(
-        self,
-        ordered_interactions: pd.DataFrame,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        train_frame, valid_interactions, test_interactions = self._split_interactions(ordered_interactions)
-        valid_frame = self._build_eval_frame(
-            valid_interactions,
-            seen_history_interactions=train_frame,
-            split="valid",
-        )
-        test_frame = self._build_eval_frame(
-            test_interactions,
-            seen_history_interactions=self._concat_like([train_frame, self._positive_interactions(valid_interactions)], ordered_interactions),
-            split="test",
-        )
-        return train_frame, valid_frame, test_frame
-
-    def _build_eval_frame(
-        self,
-        interactions: pd.DataFrame,
-        *,
-        seen_history_interactions: pd.DataFrame,
-        split: Literal["valid", "test"],
-    ) -> pd.DataFrame:
-        positive_interactions = self._positive_interactions(interactions)
-        requests = self._build_retrieval_eval_frame(
-            positive_interactions,
-            seen_history_interactions=self._positive_interactions(seen_history_interactions),
-        )
-        return self._maybe_attach_sampled_candidates(requests, split=split)
-
-    def _maybe_attach_sampled_candidates(
-        self,
-        requests: pd.DataFrame,
-        *,
-        split: Literal["valid", "test"],
-    ) -> pd.DataFrame:
-        protocol = self._require_eval_config().protocol
-        if protocol != "sampled":
-            return requests
-        return self._attach_sampled_candidates(requests, split=split)
-
-    @staticmethod
-    def _positive_interactions(interactions: pd.DataFrame) -> pd.DataFrame:
-        if interactions.empty:
-            return interactions.copy()
-        labels = pd.to_numeric(interactions[LABEL], errors="coerce")
-        positive_mask = interactions[LABEL].isna() | (labels > 0)
-        return interactions.loc[positive_mask].copy()
-
-    def _build_retrieval_eval_frame(
-        self,
-        positive_interactions: pd.DataFrame,
-        *,
-        seen_history_interactions: pd.DataFrame,
-    ) -> pd.DataFrame:
-        if positive_interactions.empty:
-            columns = list(positive_interactions.columns)
-            if SEEN_ITEM_IDS not in columns:
-                columns.append(SEEN_ITEM_IDS)
-            return pd.DataFrame(columns=columns)
-        result = positive_interactions.copy()
-        # ToDo
-        # Do we need to unique the seen history?
-        seen_histories = self._group_unique_item_sequences(seen_history_interactions)
-        item_ids = result[ITEM_ID].to_numpy()
-        seen_item_ids: list[tuple[int, ...]] = [()] * len(result)
-        ordered_positions: list[int] = []
-        for user_id, positions in result.groupby(USER_ID, sort=False).indices.items():
-            history = list(seen_histories.get(int(user_id), ()))
-            seen_item_set = set(history)
-            for position in positions:
-                row_position = int(position)
-                seen_item_ids[row_position] = tuple(history)
-                item_id = int(item_ids[row_position])
-                if item_id not in seen_item_set:
-                    history.append(item_id)
-                    seen_item_set.add(item_id)
-                ordered_positions.append(row_position)
-        result[SEEN_ITEM_IDS] = seen_item_ids
-        return result.take(ordered_positions).reset_index(drop=True)
-
-    def _attach_sampled_candidates(
-        self,
-        requests: pd.DataFrame,
-        *,
-        split: Literal["valid", "test"],
-    ) -> pd.DataFrame:
-        if requests.empty:
-            result = requests.copy()
-            result[CANDIDATE_ITEM_IDS] = pd.Series(dtype=object)
-            return result
-        result = requests.copy()
-        user_ids = result[USER_ID].to_numpy()
-        item_ids = result[ITEM_ID].to_numpy()
-        result[CANDIDATE_ITEM_IDS] = [
-            (int(item_id),)
-            + self._sample_negative_item_ids(
-                user_id=int(user_id),
-                target_item_id=int(item_id),
-                split=split,
-                record_index=index,
-            )
-            for index, (user_id, item_id) in enumerate(zip(user_ids, item_ids))
-        ]
-        self._validate_sampled_candidates(result)
-        return result
-
-    def _sample_negative_item_ids(
-        self,
-        *,
-        user_id: int,
-        target_item_id: int,
-        split: Literal["valid", "test"],
-        record_index: int,
-    ) -> tuple[int, ...]:
-        target_item_id = int(target_item_id)
-        available_count = max(0, self._num_items - 1)
-        sample_size = self._negative_sample_size(available_count)
-        if sample_size == 0:
-            return ()
-        if sample_size == available_count:
-            return self._all_negative_item_ids(target_item_id)
-
-        sampled_offsets = np.random.default_rng(
-            self._sample_seed(user_id=user_id, split=split, record_index=record_index)
-        ).choice(available_count, size=sample_size, replace=False)
-        sampled_negative_item_ids = sampled_offsets
-        sampled_negative_item_ids[sampled_negative_item_ids >= target_item_id] += 1
-        return tuple(int(item_id) for item_id in sampled_negative_item_ids.tolist())
-
-    def _all_negative_item_ids(self, target_item_id: int) -> tuple[int, ...]:
-        target_item_id = int(target_item_id)
-        return tuple(range(0, target_item_id)) + tuple(range(target_item_id + 1, self._num_items))
-
-    def _negative_sample_size(self, available_count: int) -> int:
-        eval_config = self._require_eval_config()
-        return min(max(0, int(eval_config.neg_sampling_num)), available_count)
-
-    def _sample_seed(
-        self,
-        *,
-        user_id: int,
-        split: Literal["valid", "test"],
-        record_index: int,
-    ) -> int:
-        eval_config = self._require_eval_config()
-        split_offset = 0 if split == "valid" else 10_000
-        return int(eval_config.candidate_seed) + int(user_id) + split_offset + int(record_index)
-
-    @staticmethod
-    def _group_unique_item_sequences(interactions: pd.DataFrame) -> dict[int, tuple[int, ...]]:
-        if interactions.empty:
-            return {}
-        unique_interactions = interactions.loc[:, [USER_ID, ITEM_ID]].drop_duplicates([USER_ID, ITEM_ID], keep="first")
-        grouped_item_ids = unique_interactions.groupby(USER_ID, sort=False)[ITEM_ID].agg(tuple)
-        return {
-            int(user_id): tuple(int(item_id) for item_id in item_ids)
-            for user_id, item_ids in grouped_item_ids.items()
-        }
-
-    @staticmethod
-    def _validate_sampled_candidates(requests: pd.DataFrame) -> None:
-        if requests.empty:
-            return
-        counts = requests[CANDIDATE_ITEM_IDS].map(len)
-        if counts.nunique(dropna=False) > 1:
-            raise ValueError("Sampled evaluation requires each candidate_item_ids row to have the same length.")
-
 __all__ = [
     "BaseDatasetParser",
     "BaseTaskDataset",
@@ -658,6 +648,5 @@ __all__ = [
     "ParsedData",
     "RETRIEVAL_EVAL_SCHEMA",
     "SplitConfig",
-    "TaskDataset",
     "require_columns",
 ]
