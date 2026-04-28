@@ -3,9 +3,6 @@
 from dataclasses import dataclass
 from typing import Any
 
-from transformers import PreTrainedModel
-
-from recbole3.dataset import DatasetTask
 from recbole3.model.base import (
     BaseCollator,
     BaseModel,
@@ -21,8 +18,7 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
-from recbole3.model.lcrec import LCRecConfig
-from recbole3.model.lcrec.pipeline import LCRecPipeline
+from recbole3.model.lcrec.config import LCRecConfig
 from recbole3.model.rqvae import (
     RQVAEConfig,
     RQVAEModel,
@@ -38,18 +34,19 @@ from recbole3.model.sequential import (
 from recbole3.trainer import Trainer
 from recbole3.trainer_config import TrainerConfig
 from recbole3.pipeline import Pipeline
+from recbole3.utils import LazyImport
 
 
 @dataclass(frozen=True, slots=True)
 class ModelSpec:
     """Static model table entry."""
 
-    model_cls: type[BaseModel] | Any
+    model_cls: type[BaseModel] | LazyImport | Any
     config_cls: type[ModelConfig]
     model_data_cls: type[BaseModelDataset[Any, Any]] | None = None
     trainer_cls: type[Trainer] = Trainer
     trainer_config_cls: type[TrainerConfig] = TrainerConfig
-    pipeline_cls: type[Pipeline] = Pipeline
+    pipeline_cls: type[Pipeline] | LazyImport = Pipeline
 
 
 MODEL_TABLE: dict[str, ModelSpec] = {
@@ -70,9 +67,9 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         pipeline_cls=Pipeline,
     ),
     "lcrec": ModelSpec(
-        model_cls=PreTrainedModel,
+        model_cls=LazyImport("transformers", "PreTrainedModel"),
         config_cls=LCRecConfig,
-        pipeline_cls=LCRecPipeline,
+        pipeline_cls=LazyImport("recbole3.model.lcrec.pipeline", "LCRecPipeline"),
     ),
 }
 

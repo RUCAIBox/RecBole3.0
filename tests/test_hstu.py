@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from recbole3.dataset import ITEM_ID, LABEL, SEEN_ITEM_IDS, TIMESTAMP, USER_ID, BaseDatasetParser, ParsedData, SplitConfig, BaseTaskDataset
@@ -67,9 +68,7 @@ def test_hstu_model_dataset_builds_histories_with_timestamps_across_splits() -> 
     assert hstu_data.get_train_dataset().frame[
         [USER_ID, ITEM_ID, TIMESTAMP, LABEL, HISTORY_ITEM_IDS, HISTORY_TIMESTAMPS]
     ].to_dict("records") == [
-        {USER_ID: 0, ITEM_ID: 0, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: (), HISTORY_TIMESTAMPS: ()},
         {USER_ID: 0, ITEM_ID: 1, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (0,), HISTORY_TIMESTAMPS: (1.0,)},
-        {USER_ID: 1, ITEM_ID: 4, TIMESTAMP: 1, LABEL: 1.0, HISTORY_ITEM_IDS: (), HISTORY_TIMESTAMPS: ()},
         {USER_ID: 1, ITEM_ID: 5, TIMESTAMP: 2, LABEL: 1.0, HISTORY_ITEM_IDS: (4,), HISTORY_TIMESTAMPS: (1.0,)},
     ]
     eval_columns = [USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS, HISTORY_ITEM_IDS, HISTORY_TIMESTAMPS]
@@ -93,20 +92,20 @@ def test_hstu_model_dataset_rejects_missing_timestamps() -> None:
 def test_hstu_collators_pad_history_sequences() -> None:
     prepared = StubDataset(StubDatasetConfig()).prepare(eval_config=_full_eval_config())
     hstu_data = HSTUModelDataset.from_task_dataset(prepared, model_config=HSTUConfig(history_max_length=2))
-    train_records = hstu_data.get_train_dataset().frame.iloc[:2].reset_index(drop=True)
+    train_records = hstu_data.get_train_dataset().frame.reset_index(drop=True)
     eval_records = hstu_data.get_eval_dataset("test").frame
 
     train_batch = HSTUTrainCollator(HSTUConfig(history_max_length=2), prepared_data=hstu_data)(train_records)
     eval_batch = HSTUEvalCollator(HSTUConfig(history_max_length=2), prepared_data=hstu_data)(eval_records)
 
-    assert train_batch["history_lengths"].tolist() == [0, 1]
-    assert train_batch["history_item_ids"].tolist() == [[0], [0]]
-    assert train_batch["history_timestamps"].tolist() == [[0.0], [1.0]]
-    assert train_batch["item_id"].tolist() == [0, 1]
+    assert train_batch["history_lengths"].tolist() == [1, 1]
+    assert train_batch["history_item_ids"].tolist() == [[0, 1], [4, 5]]
+    assert train_batch["history_timestamps"].tolist() == [[1.0, 2.0], [1.0, 2.0]]
+    assert train_batch["item_id"].tolist() == [1, 5]
 
     assert eval_batch["history_lengths"].tolist() == [2, 2]
-    assert eval_batch["history_item_ids"].tolist() == [[1, 2], [5, 6]]
-    assert eval_batch["history_timestamps"].tolist() == [[2.0, 3.0], [2.0, 3.0]]
+    assert eval_batch["history_item_ids"].tolist() == [[1, 2, HSTU_PADDING_ITEM_ID], [5, 6, HSTU_PADDING_ITEM_ID]]
+    assert eval_batch["history_timestamps"].tolist() == [[2.0, 3.0, 4.0], [2.0, 3.0, 4.0]]
 
 
 def test_hstu_model_registration_and_retrieval_trainer_registration_exist() -> None:
@@ -161,6 +160,124 @@ def test_hstu_predict_supports_sampled_and_full_modes(monkeypatch: pytest.Monkey
 
     assert sampled_pred.tolist() == [[1, 2], [3, 4]]
     assert full_pred.tolist() == [[2, 3], [4, 1]]
+
+
+def test_hstu_compute_loss_uses_ar_sampled_softmax_with_item_zero_and_collision_mask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(HSTUModel, "_require_runtime_support", lambda self: None)
+    model = HSTUModel(HSTUConfig(history_max_length=2, normalize_embeddings=False, temperature=1.0, num_negatives=3))
+    model._num_items = 3
+    model._item_embeddings = nn.Embedding(4, 2, padding_idx=HSTU_PADDING_ITEM_ID)
+    with torch.no_grad():
+        model._item_embeddings.weight.copy_(
+            torch.tensor(
+                [
+                    [0.0, 0.0],
+                    [1.0, 0.0],
+                    [0.0, 1.0],
+                    [-1.0, 0.0],
+                ]
+            )
+        )
+
+    negative_item_ids = torch.tensor(
+        [
+            [1, 0, 2],
+            [2, 1, 0],
+            [0, 2, 1],
+        ],
+        dtype=torch.long,
+    )
+
+    def fake_randint(low, high, size, *, device=None, dtype=None, **kwargs):
+        del kwargs
+        assert (low, high, tuple(size)) == (0, 3, (3, 3))
+        return negative_item_ids.to(device=device, dtype=dtype or torch.long)
+
+    monkeypatch.setattr(torch, "randint", fake_randint)
+    batch = {
+        HISTORY_ITEM_IDS: torch.tensor([[0, 1, 2], [1, 0, 0]], dtype=torch.long),
+        "history_lengths": torch.tensor([2, 1], dtype=torch.long),
+    }
+    sequence_embeddings = torch.tensor(
+        [
+            [[1.0, 0.0], [0.0, 1.0], [9.0, 9.0]],
+            [[1.0, 1.0], [8.0, 8.0], [7.0, 7.0]],
+        ],
+        dtype=torch.float32,
+    )
+
+    loss = model.compute_loss(batch, {"sequence_embeddings": sequence_embeddings})
+
+    flat_prediction_embeddings = torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=torch.float32)
+    positive_item_ids = torch.tensor([1, 2, 0], dtype=torch.long)
+    real_item_embeddings = model._item_embeddings.weight[1:]
+    positive_logits = torch.sum(flat_prediction_embeddings * real_item_embeddings[positive_item_ids], dim=1)
+    negative_logits = torch.einsum("bd,bkd->bk", flat_prediction_embeddings, real_item_embeddings[negative_item_ids])
+    negative_logits = negative_logits.masked_fill(negative_item_ids == positive_item_ids.unsqueeze(1), -5e4)
+    expected = F.cross_entropy(
+        torch.cat([positive_logits.unsqueeze(1), negative_logits], dim=1),
+        torch.zeros(3, dtype=torch.long),
+    )
+    assert torch.isfinite(loss)
+    assert loss.item() == pytest.approx(expected.item())
+
+
+def test_hstu_eval_encode_uses_query_timestamp_without_target_item(monkeypatch: pytest.MonkeyPatch) -> None:
+    records = pd.DataFrame(
+        [
+            {
+                USER_ID: 0,
+                ITEM_ID: 0,
+                TIMESTAMP: 10,
+                LABEL: 1.0,
+                HISTORY_ITEM_IDS: (0,),
+                HISTORY_TIMESTAMPS: (5.0,),
+            }
+        ]
+    )
+    batch = HSTUEvalCollator(HSTUConfig(history_max_length=2), prepared_data=object())(records)
+    assert batch[HISTORY_ITEM_IDS].tolist() == [[0, HSTU_PADDING_ITEM_ID]]
+    assert batch[HISTORY_TIMESTAMPS].tolist() == [[5.0, 10.0]]
+
+    monkeypatch.setattr(HSTUModel, "_require_runtime_support", lambda self: None)
+    monkeypatch.setattr(
+        HSTUModel,
+        "_complete_cumsum",
+        lambda self, lengths: torch.cat([lengths.new_zeros(1), torch.cumsum(lengths.to(torch.int32), dim=0)]),
+    )
+    model = HSTUModel(HSTUConfig(history_max_length=2, normalize_embeddings=False, temperature=1.0))
+    model._num_items = 2
+    model._item_embeddings = nn.Embedding(3, 2, padding_idx=HSTU_PADDING_ITEM_ID)
+    with torch.no_grad():
+        model._item_embeddings.weight.copy_(torch.tensor([[0.0, 0.0], [3.0, 4.0], [9.0, 9.0]]))
+    model._empty_history_embedding = nn.Parameter(torch.zeros(2))
+
+    captured: dict[str, torch.Tensor] = {}
+
+    class CapturePreprocessor(nn.Module):
+        def forward(self, *, past_lengths, past_ids, past_embeddings, past_payloads):
+            del past_payloads
+            captured["past_lengths"] = past_lengths.detach().cpu()
+            captured["past_ids"] = past_ids.detach().cpu()
+            return past_lengths, past_embeddings, {}
+
+    class CaptureEncoder(nn.Module):
+        def forward(self, *, x, x_offsets, all_timestamps, invalid_attn_mask):
+            del x_offsets, invalid_attn_mask
+            captured["all_timestamps"] = all_timestamps.detach().cpu()
+            return x
+
+    model._input_preprocessor = CapturePreprocessor()
+    model._encoder = CaptureEncoder()
+
+    user_embeddings = model._encode_user_embeddings(batch)
+
+    assert captured["past_lengths"].tolist() == [2]
+    assert captured["past_ids"].tolist() == [[1, HSTU_PADDING_ITEM_ID]]
+    assert captured["all_timestamps"].tolist() == [[5.0, 10.0]]
+    assert user_embeddings.tolist() == [[3.0, 4.0]]
 
 
 def test_run_experiment_with_hstu_fails_fast_without_fbgemm_gpu(tmp_path: Path) -> None:
