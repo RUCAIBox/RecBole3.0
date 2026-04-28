@@ -12,7 +12,6 @@ from recbole3.model.base import (
     BaseModelDataset,
     BaseRankingModel,
     BaseRetrievalModel,
-    BaseTaskModelDataset,
     ModelConfig,
     ModelDatasets,
 )
@@ -92,7 +91,6 @@ __all__ = [
     "BaseModelDataset",
     "BaseRankingModel",
     "BaseRetrievalModel",
-    "BaseTaskModelDataset",
     "BaseSequentialModelDataset",
     "HISTORY_ITEM_IDS",
     "HISTORY_TIMESTAMPS",

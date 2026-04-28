@@ -8,7 +8,7 @@ import pytest
 import torch
 from torch import nn
 
-from recbole3.dataset import ITEM_ID, LABEL, SEEN_ITEM_IDS, TIMESTAMP, USER_ID, BaseDatasetParser, ParsedData, SplitConfig, TaskDataset
+from recbole3.dataset import ITEM_ID, LABEL, SEEN_ITEM_IDS, TIMESTAMP, USER_ID, BaseDatasetParser, ParsedData, SplitConfig, BaseTaskDataset
 from recbole3.dataset.base import DatasetConfig
 from recbole3.evaluation import EvalConfig, MetricSpec
 from recbole3.model import HISTORY_ITEM_IDS, HISTORY_TIMESTAMPS, HSTUConfig, HSTUModel, HSTUModelDataset, get_model_spec
@@ -51,7 +51,7 @@ class MissingTimestampParser(BaseDatasetParser):
         return ParsedData(interactions=interactions, user_table=users, item_table=items)
 
 
-class MissingTimestampDataset(TaskDataset):
+class MissingTimestampDataset(BaseTaskDataset):
     config_cls = MissingTimestampDatasetConfig
     parser_cls = MissingTimestampParser
 

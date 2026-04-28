@@ -21,8 +21,6 @@ The stable concepts are:
 
 - `BaseDatasetParser`
 - `BaseTaskDataset`
-- `RankingDataset`
-- `RetrievalDataset`
 - `ParsedData`
 - `FrameDataset`
 
@@ -49,22 +47,13 @@ If `user_table` or `item_table` is omitted, `BaseTaskDataset` derives the missin
 - remapping raw interaction and entity-table ids into framework ids
 - interaction ordering
 - ratio and leave-one-out split helpers
-- exposing prepared train and eval datasets through method accessors
-- exposing prepared metadata such as `num_users` and `num_items`
-
-`RankingDataset` owns:
-
-- validating `labeled` evaluation protocol usage
-- keeping interaction DataFrames for all three splits
-
-`RetrievalDataset` owns:
-
-- validating `full` and `sampled` evaluation protocol usage
-- keeping an interaction DataFrame for `train`
-- building request-level eval DataFrames for `valid` and `test`
+- labeled ranking split construction
+- full and sampled retrieval eval frame construction
 - filtering retrieval eval rows to positive interactions
 - carrying tuple-valued `seen_item_ids` histories that grow within each eval split
 - deterministic sampled candidate generation for `sampled`
+- exposing prepared train and eval datasets through method accessors
+- exposing prepared metadata such as `num_users` and `num_items`
 
 Dataset code does not own:
 
@@ -125,16 +114,14 @@ The framework exposes two task-specific model bases:
 
 When one model needs extra task-level data processing, bind the model to one optional model-data class through `MODEL_TABLE`. That class is implementation detail, not a user-facing config entry.
 
-The framework also provides task-matched model-side dataset extension points:
+The framework also provides one model-side dataset extension point:
 
-- `BaseRankingModelDataset`
-- `BaseRetrievalModelDataset`
+- `BaseModelDataset`
 
 For sequence models, the framework provides built-in model-side DataFrame transforms plus one shared history builder:
 
 - `build_history_item_ids(...)`
-- `BaseSequentialRankingModelDataset`
-- `BaseSequentialRetrievalModelDataset`
+- `BaseSequentialModelDataset`
 
 Those sequential helpers are model-side only. They do not change dataset parser responsibilities or retrieval metric contracts.
 

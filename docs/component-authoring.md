@@ -94,18 +94,18 @@ Retrieval eval frames use tuple-valued `seen_item_ids`; sampled retrieval also u
 
 ### Step 3: Bind It to One Task Dataset
 
-Choose the task base that matches the evaluation contract:
+Use `BaseTaskDataset` for concrete datasets. The evaluation protocol selects the task contract:
 
-- `RankingDataset` for labeled ranking tasks
-- `RetrievalDataset` for retrieval tasks
+- `labeled` prepares ranking splits
+- `full` and `sampled` prepare retrieval splits
 
 In most cases the concrete dataset class only binds `config_cls` and `parser_cls`.
 
 ```python
-from recbole3.dataset import RetrievalDataset
+from recbole3.dataset import BaseTaskDataset
 
 
-class MyRetrievalDataset(RetrievalDataset):
+class MyDataset(BaseTaskDataset):
     config_cls = MyDatasetConfig
     parser_cls = MyDatasetParser
 ```
@@ -117,7 +117,7 @@ from recbole3.dataset import DATASET_TABLE, DatasetSpec
 
 
 DATASET_TABLE["my_retrieval_dataset"] = DatasetSpec(
-    dataset_cls=MyRetrievalDataset,
+    dataset_cls=MyDataset,
     config_cls=MyDatasetConfig,
 )
 ```
@@ -224,20 +224,18 @@ If one model needs extra dataset processing, implement one model-data class and 
 
 ### Model-side Dataset Extension
 
-Use the task-matched base class:
+Use the shared model-data base class:
 
-- `BaseRetrievalModelDataset` for retrieval models
-- `BaseRankingModelDataset` for ranking models
-- `BaseSequentialRetrievalModelDataset` for retrieval sequence models
-- `BaseSequentialRankingModelDataset` for ranking sequence models
+- `BaseModelDataset` for model-specific split replacement
+- `BaseSequentialModelDataset` when the model needs `history_item_ids`
 
 You do not need to override `from_task_dataset(...)`. The base class clones one prepared task dataset for you, then calls `_build_model_datasets(...)`.
 
 ```python
-from recbole3.model import BaseRetrievalModelDataset, MODEL_TABLE, ModelDatasets, ModelSpec
+from recbole3.model import BaseModelDataset, MODEL_TABLE, ModelDatasets, ModelSpec
 
 
-class MyModelDataset(BaseRetrievalModelDataset[Any, Any]):
+class MyModelDataset(BaseModelDataset[Any, Any]):
     def _build_model_datasets(self, *, model_config: MyModelConfig) -> ModelDatasets[Any, Any]:
         train_dataset = self.get_train_dataset()
         return ModelDatasets(train_dataset=train_dataset)
@@ -256,27 +254,16 @@ Rules for model-side datasets:
 
 If your model needs `history_item_ids`, prefer the built-in sequential bases instead of rebuilding sequence logic in the collator.
 
-- `BaseSequentialRankingModelDataset` adds `history_item_ids` to all three split DataFrames
-- `BaseSequentialRetrievalModelDataset` adds `history_item_ids` to train, valid, and test split DataFrames
+- `BaseSequentialModelDataset` adds `history_item_ids` to train, valid, and test split DataFrames
 - `build_history_item_ids(...)` is the shared helper that constructs one prefix history per row
 
-Minimal retrieval example:
+Minimal example:
 
 ```python
-from recbole3.model import BaseSequentialRetrievalModelDataset
+from recbole3.model import BaseSequentialModelDataset
 
 
-class MySequentialModelDataset(BaseSequentialRetrievalModelDataset):
-    pass
-```
-
-Minimal ranking example:
-
-```python
-from recbole3.model import BaseSequentialRankingModelDataset
-
-
-class MySequentialRankingModelDataset(BaseSequentialRankingModelDataset):
+class MySequentialModelDataset(BaseSequentialModelDataset):
     pass
 ```
 
@@ -381,6 +368,6 @@ Before adding one new dataset, check these points:
 - optional `item_table` contains unique non-null raw `item_id`
 - retrieval datasets produce only positive eval requests and valid `seen_item_ids` histories
 - sampled retrieval candidates are equal-width tuples and target-first
-- dataset class inherits the correct task base
+- dataset class inherits `BaseTaskDataset`
 - dataset name is added to `DATASET_TABLE`
 - YAML `dataset.name` matches the table key exactly

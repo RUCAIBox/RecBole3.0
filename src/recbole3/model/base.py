@@ -9,7 +9,7 @@ import torch
 from torch import nn
 from torch.utils.data import Dataset
 
-from recbole3.dataset.base import BaseTaskDataset, TaskDataset
+from recbole3.dataset.base import BaseTaskDataset
 
 
 TModelTrain = TypeVar("TModelTrain")
@@ -92,7 +92,7 @@ class BaseRetrievalModel(BaseModel):
         """Return top-k item ids for one retrieval batch."""
 
 
-class BaseModelDataset(ABC, Generic[TModelTrain, TModelEval]):
+class BaseModelDataset(BaseTaskDataset, ABC, Generic[TModelTrain, TModelEval]):
     """Model-side prepared-data extension built from one prepared task dataset."""
 
     @classmethod
@@ -108,9 +108,14 @@ class BaseModelDataset(ABC, Generic[TModelTrain, TModelEval]):
         return model_dataset
 
     @classmethod
-    @abstractmethod
     def _clone_task_dataset(cls, dataset: BaseTaskDataset) -> Self:
         """Clone one prepared task dataset into the model-side dataset type."""
+
+        if not isinstance(dataset, BaseTaskDataset):
+            raise TypeError(f"{cls.__name__} requires a prepared BaseTaskDataset.")
+        model_dataset = cls.__new__(cls)
+        cls._copy_task_dataset_state(model_dataset, dataset)
+        return model_dataset
 
     @abstractmethod
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[TModelTrain, TModelEval]:
@@ -157,25 +162,12 @@ class BaseModelDataset(ABC, Generic[TModelTrain, TModelEval]):
         return dataset
 
 
-class BaseTaskModelDataset(BaseModelDataset[TModelTrain, TModelEval], TaskDataset, ABC):
-    """Model-side dataset extension for ranking tasks."""
-
-    @classmethod
-    def _clone_task_dataset(cls, dataset: BaseTaskDataset) -> Self:
-        if not isinstance(dataset, TaskDataset):
-            raise TypeError(f"{cls.__name__} requires a prepared TaskDataset.")
-        model_dataset = cls.__new__(cls)
-        cls._copy_task_dataset_state(model_dataset, dataset)
-        return model_dataset
-
-
 __all__ = [
     "BaseCollator",
     "BaseModel",
     "BaseModelDataset",
     "BaseRankingModel",
     "BaseRetrievalModel",
-    "BaseTaskModelDataset",
     "ModelConfig",
     "ModelDatasets",
 ]
