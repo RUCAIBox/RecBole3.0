@@ -35,6 +35,9 @@ hstu = [
 rqvae = [
   "sentence-transformers",
 ]
+tiger = [
+  "transformers>=4.40,<5.0",
+]
 lc-rec = [
   "peft<0.19.0",
   "flash-attn",
