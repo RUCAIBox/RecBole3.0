@@ -19,8 +19,6 @@ from recbole3.config import configs_dir, instantiate_dataclass, project_root
 from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset, ITEM_ID, SEEN_ITEM_IDS, USER_ID
 from recbole3.dataset.base import BaseTaskDataset
 from recbole3.dataset.cache import DatasetCache
-from recbole3.evaluation.methods.base import BaseEvaluationMethod
-from recbole3.evaluation.methods.full import FullEvaluationMethod
 from recbole3.model.base import BaseRetrievalModel, ModelConfig
 from recbole3.model.llmrank.config import LLMRankConfig
 from recbole3.trainer import Trainer
@@ -431,6 +429,9 @@ class ModelBackboneCandidateGenerator(BaseCandidateGenerator):
         self._checkpoint_path = self._resolve_checkpoint_path()
 
     def _generate_candidates(self, eval_frame: pd.DataFrame, *, split: str) -> list[tuple[int, ...]]:
+        from recbole3.evaluation.methods.base import BaseEvaluationMethod
+        from recbole3.evaluation.methods.full import FullEvaluationMethod
+
         model = self._load_trained_backbone_model()
         prepared_split = self._prepared_data.get_eval_dataset(split)
         if not isinstance(prepared_split, FrameDataset):
@@ -508,6 +509,12 @@ class ModelBackboneCandidateGenerator(BaseCandidateGenerator):
 
     def _ensure_initialized_model(self) -> None:
         self._backbone_model.build_eval_collator(self._prepared_data)
+
+
+class HSTUCandidateGenerator(ModelBackboneCandidateGenerator):
+    """Backward-compatible alias for the generic model-backed backbone generator."""
+
+    pass
 
 
 class BM25Model:
@@ -727,6 +734,7 @@ def _progress_iterable(values: Any, *, desc: str) -> Any:
 __all__ = [
     "BaseCandidateGenerator",
     "BM25CandidateGenerator",
+    "HSTUCandidateGenerator",
     "ModelBackboneCandidateGenerator",
     "RandomCandidateGenerator",
     "build_candidate_frames",

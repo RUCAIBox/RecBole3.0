@@ -15,9 +15,7 @@ from recbole3.dataset.base import (
     FrameDataset,
     PARSER_INTERACTIONS_SCHEMA,
     PREPARED_INTERACTIONS_SCHEMA,
-    RankingDataset,
     RETRIEVAL_EVAL_SCHEMA,
-    RetrievalDataset,
 )
 from recbole3.dataset.config import DatasetConfig, SplitConfig
 from recbole3.dataset.parser import BaseDatasetParser, ParsedData
@@ -77,9 +75,7 @@ __all__ = [
     "PARSER_INTERACTIONS_SCHEMA",
     "PREPARED_INTERACTIONS_SCHEMA",
     "ParsedData",
-    "RankingDataset",
     "RETRIEVAL_EVAL_SCHEMA",
-    "RetrievalDataset",
     "SEEN_ITEM_IDS",
     "SplitConfig",
     "TIMESTAMP",

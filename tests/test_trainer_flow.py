@@ -231,8 +231,8 @@ def test_run_loads_best_checkpoint_before_test(tmp_path: Path) -> None:
 
 def test_retrieval_protocol_rejects_ranking_dataset_prepare() -> None:
     dataset = StubRankingDataset(StubRankingDatasetConfig())
-    with pytest.raises(ValueError, match="only support eval protocol 'labeled'"):
-        dataset.prepare(eval_config=EvalConfig(protocol="sampled"))
+    with pytest.raises(ValueError, match="only supports eval protocols 'labeled', 'full', and 'sampled'"):
+        dataset.prepare(eval_config=EvalConfig(protocol="invalid_protocol"))
 
 
 

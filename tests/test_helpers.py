@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -11,22 +11,21 @@ from recbole3.dataset import (
     DATASET_TABLE,
     BaseDatasetParser,
     DatasetSpec,
-    DatasetConfig,
     ITEM_ID,
     LABEL,
     ParsedData,
-    RankingDataset,
-    RetrievalDataset,
     SplitConfig,
+    BaseTaskDataset,
     USER_ID,
 )
+from recbole3.dataset.base import DatasetConfig
 from recbole3.evaluation import EvalConfig, MetricSpec
 from recbole3.model import (
     MODEL_TABLE,
     BaseCollator,
     BaseRankingModel,
     BaseRetrievalModel,
-    BaseRetrievalModelDataset,
+    BaseModelDataset,
     ModelConfig,
     ModelDatasets,
     ModelSpec,
@@ -88,12 +87,12 @@ class StubParser(BaseDatasetParser):
         return ParsedData(interactions=interactions, user_table=users, item_table=items)
 
 
-class StubDataset(RetrievalDataset):
+class StubDataset(BaseTaskDataset):
     config_cls = StubDatasetConfig
     parser_cls = StubParser
 
 
-class StubRankingDataset(RankingDataset):
+class StubRankingDataset(BaseTaskDataset):
     config_cls = StubRankingDatasetConfig
     parser_cls = StubParser
 
@@ -169,7 +168,7 @@ class StubRankingEvalCollator(BaseCollator):
         }
 
 
-class StubModelDataset(BaseRetrievalModelDataset[Any, Any]):
+class StubModelDataset(BaseModelDataset[Any, Any]):
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[Any, Any]:
         self.model_name = model_config.name
         return ModelDatasets()
@@ -260,9 +259,3 @@ def ensure_stub_tables() -> None:
         trainer_cls=StubRankingTrainer,
         trainer_config_cls=StubRankingTrainerConfig,
     )
-
-
-
-
-
-

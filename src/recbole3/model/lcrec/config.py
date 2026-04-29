@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-
+print(21)
 from recbole3.model.base import ModelConfig
-
+print(22)
 
 @dataclass(slots=True)
 class LCRecConfig(ModelConfig):
@@ -71,3 +71,5 @@ class LCRecConfig(ModelConfig):
     item_description_field: str = field(
         default="description", metadata={"help": "Column name for item description in item_table."}
     )
+
+print(23)

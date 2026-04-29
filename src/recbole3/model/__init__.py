@@ -1,45 +1,42 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
+from recbole3.dataset import DatasetTask
 from recbole3.model.base import (
     BaseCollator,
     BaseModel,
     BaseModelDataset,
     BaseRankingModel,
-    BaseRankingModelDataset,
     BaseRetrievalModel,
-    BaseRetrievalModelDataset,
     ModelConfig,
     ModelDatasets,
 )
+
 from recbole3.model.hstu import (
     HISTORY_TIMESTAMPS,
     HSTUConfig,
     HSTUModel,
     HSTUModelDataset,
 )
-from recbole3.model.llmrank import LLMRankConfig, LLMRankModel, LLMRankModelDataset
-from recbole3.model.llmrank.pipeline import LLMRankPipeline
-from recbole3.model.llmrank.trainer import LLMRankTrainer, LLMRankTrainerConfig
-from recbole3.model.sequential import (
-    BaseSequentialRankingModelDataset,
-    BaseSequentialRetrievalModelDataset,
-    HISTORY_ITEM_IDS,
-    SequentialModelConfig,
-    build_history_item_ids,
-)
-from recbole3.pipeline import Pipeline
-from recbole3.trainer import Trainer
-from recbole3.trainer_config import TrainerConfig
+try:
+    from recbole3.model.llmrank import LLMRankConfig, LLMRankModel, LLMRankModelDataset
+    from recbole3.model.llmrank.pipeline import LLMRankPipeline
+    from recbole3.model.llmrank.trainer import LLMRankTrainer, LLMRankTrainerConfig
+except:
+    LLMRankConfig=None
+    LLMRankModel=None
+    LLMRankModelDataset=None
+    LLMRankPipeline=None
+    LLMRankTrainer=None
+    LLMRankTrainerConfig=None
 
 try:
     from transformers import PreTrainedModel
     from recbole3.model.lcrec import LCRecConfig
     from recbole3.model.lcrec.pipeline import LCRecPipeline
-except ModuleNotFoundError:
-    PreTrainedModel = None
+except :
     LCRecConfig = None
     LCRecPipeline = None
 
@@ -50,12 +47,23 @@ try:
         RQVAEModelDataset,
         RQVAETrainer,
     )
-except ModuleNotFoundError:
+except:
     RQVAEConfig = None
     RQVAEModel = None
     RQVAEModelDataset = None
     RQVAETrainer = None
 
+from recbole3.model.sequential import (
+    BaseSequentialModelDataset,
+    HISTORY_ITEM_IDS,
+    SequentialModelConfig,
+    build_history_item_ids,
+)
+from recbole3.trainer import Trainer
+from recbole3.trainer_config import TrainerConfig
+from recbole3.pipeline import Pipeline
+
+print("import succeeded")
 
 @dataclass(frozen=True, slots=True)
 class ModelSpec:
@@ -69,6 +77,7 @@ class ModelSpec:
     pipeline_cls: type[Pipeline] = Pipeline
 
 
+
 MODEL_TABLE: dict[str, ModelSpec] = {
     "hstu": ModelSpec(
         model_cls=HSTUModel,
@@ -77,14 +86,6 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_cls=Trainer,
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
-    ),
-    "llmrank": ModelSpec(
-        model_cls=LLMRankModel,
-        config_cls=LLMRankConfig,
-        model_data_cls=LLMRankModelDataset,
-        trainer_cls=LLMRankTrainer,
-        trainer_config_cls=LLMRankTrainerConfig,
-        pipeline_cls=LLMRankPipeline,
     ),
 }
 
@@ -105,6 +106,15 @@ if LCRecConfig is not None and LCRecPipeline is not None and PreTrainedModel is 
         pipeline_cls=LCRecPipeline,
     )
 
+if LLMRankModel is not None and LLMRankConfig is not None and LLMRankModelDataset is not None:
+    MODEL_TABLE["llmrank"] = ModelSpec(
+        model_cls=LLMRankModel,
+        config_cls=LLMRankConfig,
+        model_data_cls=LLMRankModelDataset,
+        trainer_cls=LLMRankTrainer,
+        trainer_config_cls=LLMRankTrainerConfig,
+        pipeline_cls=LLMRankPipeline,
+        )
 
 def get_model_spec(name: str) -> ModelSpec:
     try:
@@ -119,11 +129,8 @@ __all__ = [
     "BaseModel",
     "BaseModelDataset",
     "BaseRankingModel",
-    "BaseRankingModelDataset",
     "BaseRetrievalModel",
-    "BaseRetrievalModelDataset",
-    "BaseSequentialRankingModelDataset",
-    "BaseSequentialRetrievalModelDataset",
+    "BaseSequentialModelDataset",
     "HISTORY_ITEM_IDS",
     "HISTORY_TIMESTAMPS",
     "HSTUConfig",
@@ -136,6 +143,10 @@ __all__ = [
     "ModelConfig",
     "ModelDatasets",
     "ModelSpec",
+    "RQVAEConfig",
+    "RQVAEModel",
+    "RQVAEModelDataset",
+    "RQVAETrainer",
     "SequentialModelConfig",
     "build_history_item_ids",
     "get_model_spec",

@@ -9,7 +9,7 @@ model:
   candidate_seed: 42
   candidate_cache_dir: outputs/candidate_cache
   candidate_file_dir: outputs/candidate_files
-  refresh_candidate_cache: false
+  refresh_candidate_cache: true
   use_candidate_file: true
   selected_user_count: 200
   has_gt: false

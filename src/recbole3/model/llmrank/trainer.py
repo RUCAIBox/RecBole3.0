@@ -12,7 +12,6 @@ from recbole3.dataset import BaseTaskDataset
 from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset, ITEM_ID
 from recbole3.evaluation.config import EvalConfig
 from recbole3.evaluation.metric import MetricSpec, RetrievalEvalData
-from recbole3.evaluation.methods.base import BaseRetrievalEvaluationMethod
 from recbole3.model.base import BaseModel, BaseModelDataset, BaseRetrievalModel
 from recbole3.trainer import Trainer
 from recbole3.trainer_config import OptimizerConfig, TrainerConfig
@@ -43,62 +42,66 @@ class LLMRankTrainerConfig(TrainerConfig):
         metadata={"help": "Unused placeholder optimizer config kept for compatibility with TrainerConfig."},
     )
 
+def _build_llmrank_evaluation_method(metric_specs: tuple[MetricSpec, ...]):
+    from recbole3.evaluation.methods.base import BaseRetrievalEvaluationMethod
 
-class LLMRankEvaluationMethod(BaseRetrievalEvaluationMethod):
-    """Evaluate one official candidate subset per request while keeping full-protocol semantics."""
+    class LLMRankEvaluationMethod(BaseRetrievalEvaluationMethod):
+        """Evaluate one official candidate subset per request while keeping full-protocol semantics."""
 
-    protocol = "full"
+        protocol = "full"
 
-    def _collect_retrieval_batch(
-        self,
-        model: BaseModel,
-        model_inputs: Any,
-        records: Any,
-        max_k: int,
-    ) -> RetrievalEvalData:
-        if not isinstance(model, BaseRetrievalModel):
-            raise TypeError("LLMRank evaluation requires BaseRetrievalModel.")
-        if isinstance(records, pd.DataFrame):
-            missing_candidates = CANDIDATE_ITEM_IDS not in records.columns or records[CANDIDATE_ITEM_IDS].isna().any()
-        else:
-            missing_candidates = any(self._record_value(record, CANDIDATE_ITEM_IDS) is None for record in records)
-        if missing_candidates:
-            raise TypeError("LLMRank evaluation requires candidate_item_ids in every eval row.")
+        def _collect_retrieval_batch(
+            self,
+            model: BaseModel,
+            model_inputs: Any,
+            records: Any,
+            max_k: int,
+        ) -> RetrievalEvalData:
+            if not isinstance(model, BaseRetrievalModel):
+                raise TypeError("LLMRank evaluation requires BaseRetrievalModel.")
+            if isinstance(records, pd.DataFrame):
+                missing_candidates = CANDIDATE_ITEM_IDS not in records.columns or records[CANDIDATE_ITEM_IDS].isna().any()
+            else:
+                missing_candidates = any(self._record_value(record, CANDIDATE_ITEM_IDS) is None for record in records)
+            if missing_candidates:
+                raise TypeError("LLMRank evaluation requires candidate_item_ids in every eval row.")
 
-        device = self._infer_device(model_inputs)
-        target_item_ids, target_mask = self._single_target_tensors(records, device=device)
-        if len(records) == 0:
-            pred_item_ids = torch.empty((0, max(0, max_k)), dtype=torch.long, device=device)
-        elif max_k <= 0:
-            pred_item_ids = torch.empty((len(records), 0), dtype=torch.long, device=device)
-        else:
-            candidate_item_ids, candidate_mask = self._pad_int_lists(records, CANDIDATE_ITEM_IDS, device=device)
-            valid_candidate_count = torch.sum(candidate_mask, dim=1)
-            if torch.any(valid_candidate_count != valid_candidate_count[0]):
-                raise ValueError("LLMRank evaluation requires equal candidate counts in every row.")
-            candidate_count = int(valid_candidate_count[0].item()) if len(valid_candidate_count) > 0 else 0
-            if candidate_count < max_k:
-                raise ValueError(
-                    "LLMRank evaluation requires at least k candidates per row. "
-                    f"Got k={max_k} with candidate count {candidate_count}."
+            device = self._infer_device(model_inputs)
+            target_item_ids, target_mask = self._single_target_tensors(records, device=device)
+            if len(records) == 0:
+                pred_item_ids = torch.empty((0, max(0, max_k)), dtype=torch.long, device=device)
+            elif max_k <= 0:
+                pred_item_ids = torch.empty((len(records), 0), dtype=torch.long, device=device)
+            else:
+                candidate_item_ids, candidate_mask = self._pad_int_lists(records, CANDIDATE_ITEM_IDS, device=device)
+                valid_candidate_count = torch.sum(candidate_mask, dim=1)
+                if torch.any(valid_candidate_count != valid_candidate_count[0]):
+                    raise ValueError("LLMRank evaluation requires equal candidate counts in every row.")
+                candidate_count = int(valid_candidate_count[0].item()) if len(valid_candidate_count) > 0 else 0
+                if candidate_count < max_k:
+                    raise ValueError(
+                        "LLMRank evaluation requires at least k candidates per row. "
+                        f"Got k={max_k} with candidate count {candidate_count}."
+                    )
+                pred_item_ids = model.predict(
+                    model_inputs,
+                    k=max_k,
+                    candidate_item_ids=candidate_item_ids,
                 )
-            pred_item_ids = model.predict(
-                model_inputs,
-                k=max_k,
-                candidate_item_ids=candidate_item_ids,
+                if pred_item_ids.ndim != 2 or tuple(pred_item_ids.shape) != (len(records), max_k):
+                    raise ValueError(
+                        "Retrieval predict() must return top-k item ids with shape [batch, k]. "
+                        f"Got {tuple(pred_item_ids.shape)} for expected {(len(records), max_k)}."
+                    )
+                pred_item_ids = pred_item_ids.to(dtype=torch.long)
+
+            return RetrievalEvalData(
+                pred_item_ids=self._to_numpy(pred_item_ids),
+                target_item_ids=self._to_numpy(target_item_ids),
+                target_mask=self._to_numpy(target_mask),
             )
-            if pred_item_ids.ndim != 2 or tuple(pred_item_ids.shape) != (len(records), max_k):
-                raise ValueError(
-                    "Retrieval predict() must return top-k item ids with shape [batch, k]. "
-                    f"Got {tuple(pred_item_ids.shape)} for expected {(len(records), max_k)}."
-                )
-            pred_item_ids = pred_item_ids.to(dtype=torch.long)
 
-        return RetrievalEvalData(
-            pred_item_ids=self._to_numpy(pred_item_ids),
-            target_item_ids=self._to_numpy(target_item_ids),
-            target_mask=self._to_numpy(target_mask),
-        )
+    return LLMRankEvaluationMethod(metric_specs=metric_specs)
 
 
 class LLMRankTrainer(Trainer):
@@ -108,7 +111,7 @@ class LLMRankTrainer(Trainer):
 
     def create_evaluation_method(self, prepared_data: BaseTaskDataset | None = None):
         if str(self.config.eval.protocol).strip().lower() == "full":
-            return LLMRankEvaluationMethod(metric_specs=tuple(self.config.eval.metrics))
+            return _build_llmrank_evaluation_method(tuple(self.config.eval.metrics))
         return super().create_evaluation_method(prepared_data)
 
     def evaluate(self, model: BaseModel, prepared_data: BaseTaskDataset, split: str = "valid") -> dict[str, Any]:
@@ -229,7 +232,6 @@ class LLMRankTrainer(Trainer):
 
 
 __all__ = [
-    "LLMRankEvaluationMethod",
     "LLMRankTrainer",
     "LLMRankTrainerConfig",
 ]

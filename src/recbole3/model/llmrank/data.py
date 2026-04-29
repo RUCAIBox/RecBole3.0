@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from recbole3.model.sequential import BaseSequentialRetrievalModelDataset
+from recbole3.model.sequential import BaseSequentialModelDataset
 
 
-class LLMRankModelDataset(BaseSequentialRetrievalModelDataset):
+class LLMRankModelDataset(BaseSequentialModelDataset):
     """Model-side retrieval dataset that only adds sequential histories for prompting."""
 
     pass
