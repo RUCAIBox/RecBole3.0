@@ -25,7 +25,9 @@ from recbole3.model.sequential import HISTORY_ITEM_IDS
 class LLMRankTrainCollator(BaseCollator):
     """Placeholder train collator for inference-only LLM reranking."""
 
-    def __call__(self, feature_records: Sequence[Any]) -> dict[str, Any]:
+    def __call__(self, feature_records: Sequence[Any] | pd.DataFrame) -> dict[str, Any]:
+        if isinstance(feature_records, pd.DataFrame):
+            return {"records": feature_records.reset_index(drop=True)}
         return {"records": list(feature_records)}
 
 
@@ -116,7 +118,7 @@ class LLMRankModel(BaseRetrievalModel):
     ) -> list[list[int]]:
         if self.config.backend == "identity":
             return [
-                [int(item_id) for item_id in candidate_ids if int(item_id) > 0]
+                [int(item_id) for item_id in candidate_ids if int(item_id) >= 0]
                 for candidate_ids in candidate_batches
             ]
         if self.config.backend == "heuristic_overlap":

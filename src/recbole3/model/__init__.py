@@ -63,7 +63,6 @@ from recbole3.trainer import Trainer
 from recbole3.trainer_config import TrainerConfig
 from recbole3.pipeline import Pipeline
 
-print("import succeeded")
 
 @dataclass(frozen=True, slots=True)
 class ModelSpec:

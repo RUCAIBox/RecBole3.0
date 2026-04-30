@@ -193,9 +193,7 @@ class Trainer:
 
             current_value: float | None = None
             improved = False
-            if monitor is not None:
-                if valid_result is None:
-                    raise ValueError("TrainerConfig.monitor requires validation to run before metric tracking.")
+            if monitor is not None and valid_result is not None:
                 current_value = self._extract_monitor_value(valid_result["metrics"], monitor.name)
                 improved = self._is_improvement(
                     current_value,
@@ -212,12 +210,19 @@ class Trainer:
                 elif self.config.early_stopping.enabled:
                     bad_epoch_count += 1
             if scheduler is not None and scheduler_interval == "epoch":
-                if self._scheduler_requires_monitor() and valid_result is None:
-                    raise ValueError("Epoch-level metric-driven schedulers require validation to run before stepping.")
-                self._step_epoch_scheduler(scheduler, current_value=current_value)
+                if self._scheduler_requires_monitor():
+                    if valid_result is not None:
+                        self._step_epoch_scheduler(scheduler, current_value=current_value)
+                else:
+                    self._step_epoch_scheduler(scheduler, current_value=current_value)
             if checkpoint_paths["last"] is not None:
                 self._save_model_checkpoint(model, accelerator, checkpoint_paths["last"])
-            if self.config.early_stopping.enabled and not improved and bad_epoch_count >= int(self.config.early_stopping.patience):
+            if (
+                valid_result is not None
+                and self.config.early_stopping.enabled
+                and not improved
+                and bad_epoch_count >= int(self.config.early_stopping.patience)
+            ):
                 stopped_early = True
                 break
 

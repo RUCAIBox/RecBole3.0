@@ -70,7 +70,7 @@ class TrainerConfig:
     )
     max_epochs: int = field(default=1, metadata={"help": "Number of epochs executed by fit()."})
     eval_steps: int = field(
-        default=5,
+        default=1,
         metadata={"help": "Run validation once every N training epochs."},
     )
     optimizer: OptimizerConfig = field(
