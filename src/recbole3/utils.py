@@ -1,6 +1,35 @@
 from __future__ import annotations
 
+import importlib
+from typing import Any
+
 from omegaconf import DictConfig
+
+
+class LazyImport:
+    """Resolve an importable object the first time it is used."""
+
+    __slots__ = ("_module_name", "_attribute_name", "_resolved")
+
+    def __init__(self, module_name: str, attribute_name: str):
+        self._module_name = module_name
+        self._attribute_name = attribute_name
+        self._resolved: Any | None = None
+
+    def resolve(self) -> Any:
+        if self._resolved is None:
+            module = importlib.import_module(self._module_name)
+            self._resolved = getattr(module, self._attribute_name)
+        return self._resolved
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self.resolve()(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.resolve(), name)
+
+    def __repr__(self) -> str:
+        return f"<lazy import {self._module_name}:{self._attribute_name}>"
 
 
 def require_component_cfg(cfg: DictConfig, component: str) -> DictConfig:
@@ -48,6 +77,7 @@ def require_component_name(component_cfg: DictConfig, component: str) -> str:
 
 
 __all__ = [
+    "LazyImport",
     "require_component_cfg",
     "require_component_name",
 ]
