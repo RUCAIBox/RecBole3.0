@@ -8,7 +8,10 @@ import pandas as pd
 from torch.utils.data import Dataset
 
 from recbole3.dataset.config import DatasetConfig, SplitConfig
-from recbole3.dataset.parser import BaseDatasetParser, ParsedData
+from recbole3.dataset.parser import (
+    BaseDatasetParser,
+    ParsedData,
+)
 from recbole3.dataset.utils import (
     CANDIDATE_ITEM_IDS,
     ITEM_ID,

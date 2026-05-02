@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
 from recbole3.model.base import ModelConfig
+
 
 @dataclass(slots=True)
 class LCRecConfig(ModelConfig):

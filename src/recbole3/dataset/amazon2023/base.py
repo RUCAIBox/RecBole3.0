@@ -28,11 +28,11 @@ class Amazon2023BaseConfig(DatasetConfig):
         metadata={"help": "Amazon 2023 review subset to download."},
     )
     metadata_mode: Literal["none", "sentence", "fields"] = field(
-        default="fields",
+        default="sentence",
         metadata={"help": "How to materialize item metadata in the item table."},
     )
     download_source: Literal["huggingface", "modelscope"] = field(
-        default="huggingface",
+        default="modelscope",
         metadata={"help": "Remote source used to snapshot Amazon 2023 raw data."},
     )
 
