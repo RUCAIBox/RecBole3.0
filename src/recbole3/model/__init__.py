@@ -37,9 +37,9 @@ from recbole3.model.sequential import (
     SequentialModelConfig,
     build_history_item_ids,
 )
-from recbole3.pipeline import Pipeline
 from recbole3.trainer import Trainer
 from recbole3.trainer_config import TrainerConfig
+from recbole3.pipeline import Pipeline
 from recbole3.utils import LazyImport
 
 
