@@ -43,7 +43,7 @@ RETRIEVAL_EVAL_SCHEMA = FrameSchema(
 )
 
 
-class FrameDataset(Dataset[pd.DataFrame | dict[str, Any]]):
+class FrameDataset(Dataset[pd.DataFrame]):
     """Map-style Dataset backed by a DataFrame.
 
     PyTorch DataLoader uses `__getitems__` for batched fetching when available,
