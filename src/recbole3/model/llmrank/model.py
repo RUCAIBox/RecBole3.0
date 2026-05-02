@@ -62,12 +62,7 @@ class LLMRankModel(BaseRetrievalModel):
         self._item_token_lookup: tuple[frozenset[str], ...] = ()
         self._history_token_cache: dict[tuple[str, ...], tuple[frozenset[str], frozenset[str]]] = {}
         self._prompt_cache: dict[tuple[tuple[str, ...], tuple[int, ...]], str] = {}
-        self._response_cache: dict[tuple[str, tuple[str, ...], tuple[int, ...]], str] = {}
         self._api_response_cache: dict[str, str] | None = None
-        self._local_model: Any | None = None
-        self._local_tokenizer: Any | None = None
-        self._local_input_device: torch.device | None = None
-        self._local_formatted_prompt_cache: dict[str, str] = {}
 
     def build_train_collator(self, prepared_data) -> BaseCollator:
         self._ensure_item_text_lookup(prepared_data)
@@ -107,7 +102,7 @@ class LLMRankModel(BaseRetrievalModel):
         for ranked_candidate_ids in ranked_batches:
             top_ids = ranked_candidate_ids[: max(0, int(k))]
             if len(top_ids) < int(k):
-                top_ids.extend([-1] * (int(k) - len(top_ids)))
+                raise ValueError(f"LLMRankModel expected at least {int(k)} ranked candidates, got {len(top_ids)}.")
             pred_item_ids.append(top_ids)
         return torch.tensor(pred_item_ids, dtype=torch.long)
 
@@ -118,7 +113,7 @@ class LLMRankModel(BaseRetrievalModel):
     ) -> list[list[int]]:
         if self.config.backend == "identity":
             return [
-                [int(item_id) for item_id in candidate_ids if int(item_id) >= 0]
+                [int(item_id) for item_id in candidate_ids]
                 for candidate_ids in candidate_batches
             ]
         if self.config.backend == "heuristic_overlap":
@@ -132,7 +127,7 @@ class LLMRankModel(BaseRetrievalModel):
         for batch_index, (history_texts, candidate_ids) in enumerate(
             zip(history_text_batches, candidate_batches, strict=True)
         ):
-            filtered_candidate_ids = [int(item_id) for item_id in candidate_ids if int(item_id) > 0]
+            filtered_candidate_ids = [int(item_id) for item_id in candidate_ids]
             score_tables.append({int(item_id): 0.0 for item_id in filtered_candidate_ids})
             original_positions.append({int(item_id): index for index, item_id in enumerate(filtered_candidate_ids)})
             if not filtered_candidate_ids:
@@ -180,7 +175,7 @@ class LLMRankModel(BaseRetrievalModel):
     ) -> list[list[int]]:
         ranked_batches: list[list[int]] = []
         for history_texts, candidate_ids in zip(history_text_batches, candidate_batches, strict=True):
-            filtered_candidate_ids = [int(item_id) for item_id in candidate_ids if int(item_id) > 0]
+            filtered_candidate_ids = [int(item_id) for item_id in candidate_ids]
             if not filtered_candidate_ids:
                 ranked_batches.append([])
                 continue
@@ -333,18 +328,7 @@ class LLMRankModel(BaseRetrievalModel):
             return []
         prompts = [str(task["prompt"]) for task in tasks]
         round_indices = [int(task["round_index"]) for task in tasks]
-        if self.config.backend == "local_hf":
-            return self._request_local_hf_responses(prompts)
         return self._request_openai_responses(prompts, round_indices)
-
-    def _generate_response(self, prompt: str, round_index: int) -> str:
-        if self.config.backend == "openai":
-            return self._request_openai_response(prompt, round_index=round_index)
-        if self.config.backend == "local_hf":
-            return self._request_local_hf_response(prompt)
-        if self.config.backend in {"heuristic_overlap", "identity"}:
-            raise RuntimeError(f"{self.config.backend} ranks candidates directly and does not generate textual responses.")
-        raise ValueError(f"Unsupported llmrank backend '{self.config.backend}'.")
 
     def _request_openai_response(self, prompt: str, *, round_index: int) -> str:
         cache_key = self._api_cache_key(prompt, round_index=round_index)
@@ -434,191 +418,6 @@ class LLMRankModel(BaseRetrievalModel):
                         results[index] = response
         return results
 
-    def _request_local_hf_response(self, prompt: str) -> str:
-        return self._request_local_hf_responses([prompt])[0]
-
-    def _request_local_hf_responses(self, prompts: Sequence[str]) -> list[str]:
-        if not prompts:
-            return []
-        model, tokenizer = self._ensure_local_generator_loaded()
-        results = [""] * len(prompts)
-        pending_prompts: dict[str, list[int]] = {}
-        for index, prompt in enumerate(prompts):
-            cache_key = self._local_response_cache_key(prompt)
-            cached_response = self._lookup_local_response_cache(cache_key)
-            if cached_response is not None:
-                results[index] = cached_response
-                continue
-            pending_prompts.setdefault(prompt, []).append(index)
-        if not pending_prompts:
-            return results
-
-        unique_prompts = list(pending_prompts)
-        unique_prompts.sort(key=lambda prompt: len(self._format_local_chat_prompt(prompt, tokenizer)), reverse=True)
-        batch_size = max(1, int(self.config.local_batch_size))
-        for start in range(0, len(unique_prompts), batch_size):
-            prompt_batch = unique_prompts[start : start + batch_size]
-            prompt_text_batch = [self._format_local_chat_prompt(prompt, tokenizer) for prompt in prompt_batch]
-            tokenizer_kwargs: dict[str, Any] = {
-                "return_tensors": "pt",
-                "padding": True,
-                "truncation": True,
-            }
-            if int(self.config.local_max_input_tokens) > 0:
-                tokenizer_kwargs["max_length"] = int(self.config.local_max_input_tokens)
-            tokenized = tokenizer(prompt_text_batch, **tokenizer_kwargs)
-            input_device = self._local_input_device or torch.device("cpu")
-            tokenized = {key: value.to(input_device) for key, value in tokenized.items()}
-            prompt_length = int(tokenized["input_ids"].shape[1])
-            with torch.inference_mode():
-                generated = model.generate(
-                    **tokenized,
-                    max_new_tokens=int(self.config.local_max_output_tokens),
-                    do_sample=False,
-                    use_cache=True,
-                    pad_token_id=self._local_pad_token_id(tokenizer),
-                    eos_token_id=self._local_eos_token_ids(tokenizer),
-                )
-            for batch_index, prompt in enumerate(prompt_batch):
-                generated_ids = generated[batch_index, prompt_length:]
-                response = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-                cache_key = self._local_response_cache_key(prompt)
-                self._store_local_response_cache(cache_key, response)
-                for result_index in pending_prompts[prompt]:
-                    results[result_index] = response
-        return results
-
-    def _ensure_local_generator_loaded(self) -> tuple[Any, Any]:
-        if self._local_model is not None and self._local_tokenizer is not None:
-            return self._local_model, self._local_tokenizer
-        model_path = str(self.config.local_model_path or "").strip()
-        if not model_path:
-            raise RuntimeError("LLMRank local_hf backend requires model.local_model_path to point to one local HF model.")
-        tokenizer_path = str(self.config.local_tokenizer_path or model_path).strip()
-        try:
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-        except ModuleNotFoundError as exc:
-            raise ModuleNotFoundError(
-                "LLMRank local_hf backend requires transformers. Install the optional Hugging Face dependencies first."
-            ) from exc
-
-        dtype = self._resolve_local_dtype()
-        model_kwargs: dict[str, Any] = {"trust_remote_code": bool(self.config.local_trust_remote_code)}
-        if dtype is not None:
-            model_kwargs["torch_dtype"] = dtype
-        if self.config.local_attn_implementation:
-            model_kwargs["attn_implementation"] = self.config.local_attn_implementation
-        if self.config.local_device_map:
-            model_kwargs["device_map"] = self.config.local_device_map
-        tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_path,
-            trust_remote_code=bool(self.config.local_trust_remote_code),
-        )
-        tokenizer.padding_side = "left"
-        model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
-        if not self.config.local_device_map:
-            target_device = torch.device(self.config.local_device or ("cuda:0" if torch.cuda.is_available() else "cpu"))
-            model.to(target_device)
-            self._local_input_device = target_device
-        else:
-            self._local_input_device = self._infer_local_input_device(model)
-        model.eval()
-        if tokenizer.pad_token_id is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        self._local_model = model
-        self._local_tokenizer = tokenizer
-        return model, tokenizer
-
-    def _resolve_local_dtype(self) -> torch.dtype | None:
-        dtype_name = str(self.config.local_dtype).strip().lower()
-        if dtype_name == "auto":
-            return None
-        if dtype_name == "bfloat16":
-            return torch.bfloat16
-        if dtype_name == "float16":
-            return torch.float16
-        if dtype_name == "float32":
-            return torch.float32
-        raise ValueError(f"Unsupported local_dtype '{self.config.local_dtype}'.")
-
-    def _infer_local_input_device(self, model: Any) -> torch.device:
-        hf_device_map = getattr(model, "hf_device_map", None)
-        if isinstance(hf_device_map, dict):
-            for location in hf_device_map.values():
-                if isinstance(location, str) and location not in {"cpu", "disk"}:
-                    return torch.device(location)
-                if isinstance(location, int):
-                    return torch.device(f"cuda:{location}")
-        try:
-            return next(model.parameters()).device
-        except StopIteration:
-            return torch.device("cpu")
-
-    def _format_local_chat_prompt(self, prompt: str, tokenizer: Any) -> str:
-        cached_prompt = self._local_formatted_prompt_cache.get(prompt)
-        if cached_prompt is not None:
-            return cached_prompt
-        if not bool(self.config.local_use_chat_template) or not hasattr(tokenizer, "apply_chat_template"):
-            self._local_formatted_prompt_cache[prompt] = prompt
-            return prompt
-        messages: list[dict[str, str]] = []
-        system_prompt = self._effective_system_prompt()
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-        formatted_prompt = str(
-            tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        )
-        self._local_formatted_prompt_cache[prompt] = formatted_prompt
-        return formatted_prompt
-
-    @staticmethod
-    def _local_pad_token_id(tokenizer: Any) -> int:
-        if tokenizer.pad_token_id is not None:
-            return int(tokenizer.pad_token_id)
-        if tokenizer.eos_token_id is not None:
-            return int(tokenizer.eos_token_id)
-        raise ValueError("Local HF backend requires tokenizer.pad_token_id or tokenizer.eos_token_id.")
-
-    @staticmethod
-    def _local_eos_token_ids(tokenizer: Any) -> int | list[int] | None:
-        eos_ids: list[int] = []
-        if tokenizer.eos_token_id is not None:
-            eos_ids.append(int(tokenizer.eos_token_id))
-        try:
-            im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
-        except Exception:
-            im_end_id = None
-        if isinstance(im_end_id, int) and im_end_id >= 0 and im_end_id not in eos_ids:
-            eos_ids.append(im_end_id)
-        if not eos_ids:
-            return None
-        if len(eos_ids) == 1:
-            return eos_ids[0]
-        return eos_ids
-
-    def _local_response_cache_key(self, prompt: str) -> str:
-        payload = {
-            "backend": "local_hf",
-            "local_model_path": self.config.local_model_path,
-            "local_tokenizer_path": self.config.local_tokenizer_path,
-            "system_prompt": self._effective_system_prompt(),
-            "local_max_output_tokens": int(self.config.local_max_output_tokens),
-            "local_max_input_tokens": int(self.config.local_max_input_tokens),
-            "prompt": prompt,
-        }
-        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
-
-    def _lookup_local_response_cache(self, cache_key: str) -> str | None:
-        return self._response_cache.get(("local_hf", (cache_key,), ()))
-
-    def _store_local_response_cache(self, cache_key: str, response: str) -> None:
-        self._response_cache[("local_hf", (cache_key,), ())] = response
-
     def _ensure_item_text_lookup(self, prepared_data) -> None:
         if self._item_text_lookup:
             return
@@ -637,8 +436,6 @@ class LLMRankModel(BaseRetrievalModel):
         self._item_token_lookup = tuple(frozenset(_tokenize_text(text)) for text in self._item_text_lookup)
         self._history_token_cache.clear()
         self._prompt_cache.clear()
-        self._response_cache.clear()
-        self._local_formatted_prompt_cache.clear()
 
     def _resolve_item_text(self, item_record: dict[str, Any], *, item_id: int) -> str:
         candidate_fields = [self.config.item_text_field]

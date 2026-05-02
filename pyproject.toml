@@ -41,7 +41,7 @@ lc-rec = [
 ]
 
 llmrank = [
-  "nltk>=3.8",           # 需要手动下载2个语言包： python -c "import nltk; nltk.download('punkt'); nltk.download('stopwords')"
+  "nltk>=3.8",           # Manually download the required NLTK packages: python -c "import nltk; nltk.download('punkt'); nltk.download('stopwords')"
   "tqdm>=4.60.0",        
   "transformers>=4.37.0",
   "jinja2>=3.0.0",       

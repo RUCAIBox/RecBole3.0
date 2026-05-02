@@ -67,17 +67,6 @@ model:
   request_timeout_sec: 60.0
   api_response_cache_path: outputs/candidate_cache/llmrank_api_responses.jsonl
   refresh_api_response_cache: false
-  local_model_path: null
-  local_tokenizer_path: null
-  local_device: null
-  local_device_map: auto
-  local_dtype: bfloat16
-  local_batch_size: 16
-  local_max_output_tokens: 128
-  local_max_input_tokens: 4096
-  local_trust_remote_code: true
-  local_attn_implementation: flash_attention_2
-  local_use_chat_template: true
   system_prompt: null
 
 trainer:

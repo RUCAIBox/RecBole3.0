@@ -6,7 +6,7 @@ from typing import Any, Literal
 from recbole3.model.sequential import SequentialModelConfig
 
 
-LLMRankBackend = Literal["identity", "openai", "local_hf", "heuristic_overlap"]
+LLMRankBackend = Literal["identity", "openai", "heuristic_overlap"]
 LLMRankCandidateSource = str
 LLMRankDomain = Literal["item", "movie", "product"]
 LLMRankParsingStrategy = Literal["title", "index"]
@@ -165,50 +165,6 @@ class LLMRankConfig(SequentialModelConfig):
     refresh_api_response_cache: bool = field(
         default=False,
         metadata={"help": "Whether to ignore cached OpenAI-compatible responses and rebuild the cache."},
-    )
-    local_model_path: str | None = field(
-        default=None,
-        metadata={"help": "Filesystem path to one local Hugging Face causal LM used when backend='local_hf'."},
-    )
-    local_tokenizer_path: str | None = field(
-        default=None,
-        metadata={"help": "Optional tokenizer path; defaults to local_model_path when backend='local_hf'."},
-    )
-    local_device: str | None = field(
-        default=None,
-        metadata={"help": "Optional explicit device such as 'cuda:0' or 'cpu' for single-device local inference."},
-    )
-    local_device_map: str | None = field(
-        default="auto",
-        metadata={"help": "Optional Hugging Face device_map; use 'auto' for multi-GPU sharding or null for single-device placement."},
-    )
-    local_dtype: Literal["auto", "bfloat16", "float16", "float32"] = field(
-        default="bfloat16",
-        metadata={"help": "Torch dtype used when loading one local Hugging Face model."},
-    )
-    local_batch_size: int = field(
-        default=16,
-        metadata={"help": "Prompt batch size used for one local Hugging Face generation pass."},
-    )
-    local_max_output_tokens: int = field(
-        default=128,
-        metadata={"help": "Maximum number of new tokens generated per local Hugging Face response."},
-    )
-    local_max_input_tokens: int = field(
-        default=4096,
-        metadata={"help": "Maximum prompt token length for one local Hugging Face generation pass."},
-    )
-    local_trust_remote_code: bool = field(
-        default=True,
-        metadata={"help": "Whether local Hugging Face model loading may execute custom modeling code."},
-    )
-    local_attn_implementation: str | None = field(
-        default="flash_attention_2",
-        metadata={"help": "Optional attn_implementation passed to local Hugging Face models; set null to disable."},
-    )
-    local_use_chat_template: bool = field(
-        default=True,
-        metadata={"help": "Whether to wrap prompts with tokenizer.apply_chat_template when available for local Hugging Face models."},
     )
     system_prompt: str | None = field(
         default=None,

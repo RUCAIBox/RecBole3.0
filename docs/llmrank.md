@@ -248,8 +248,6 @@ Supported backends:
   - simple non-LLM heuristic reranker
 - `openai`
   - call one OpenAI-compatible API endpoint, including local vLLM service
-- `local_hf`
-  - load and run one local Hugging Face model directly
 
 ### `identity`
 
@@ -261,12 +259,6 @@ This backend is appropriate when you:
 
 - call the real OpenAI API, or
 - run one local vLLM server that exposes an OpenAI-compatible endpoint
-
-### `local_hf`
-
-This backend runs the local model directly in-process.
-
-It is simple, but can be much slower than serving the model via vLLM.
 
 ## Common Configuration Parameters
 
@@ -359,7 +351,7 @@ Useful subfields inside `model.backbone_trainer`:
 ### LLM Backend
 
 - `model.backend`
-  - `identity`, `heuristic_overlap`, `openai`, `local_hf`
+  - `identity`, `heuristic_overlap`, `openai`
 
 - `model.api_base_url`
   - OpenAI-compatible endpoint URL
@@ -384,20 +376,6 @@ Useful subfields inside `model.backbone_trainer`:
 
 - `model.refresh_api_response_cache`
   - whether to ignore cached API responses
-
-### Local Hugging Face Backend
-
-- `model.local_model_path`
-- `model.local_tokenizer_path`
-- `model.local_device`
-- `model.local_device_map`
-- `model.local_dtype`
-- `model.local_batch_size`
-- `model.local_max_output_tokens`
-- `model.local_max_input_tokens`
-- `model.local_trust_remote_code`
-- `model.local_attn_implementation`
-- `model.local_use_chat_template`
 
 ## How to Run LLMRank
 
@@ -470,7 +448,7 @@ When debugging one new setup, it is usually best to proceed in this order:
 1. run `candidate_source=hstu` with `backend=identity`
 2. verify backbone metrics are reasonable
 3. verify candidate cache is being written correctly
-4. then switch `backend=openai` or `backend=local_hf`
+4. then switch `backend=openai`
 5. only then compare prompt strategies and parsing strategies
 
 This isolates whether problems come from:
@@ -485,9 +463,6 @@ This isolates whether problems come from:
 
 - backbone metrics are strong, but final `identity` metrics are poor
   - candidate rows and eval rows may be misaligned
-
-- `local_hf` is too slow
-  - prefer serving the model through vLLM and using `backend=openai`
 
 - the final candidate list looks too easy or too hard
   - check `has_gt`, `fix_pos`, and `shuffle`

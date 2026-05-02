@@ -124,37 +124,54 @@ class LLMRankTrainer(Trainer):
         *,
         output_dir: str | Path | None = None,
     ) -> Any:
-        valid_history: list[dict[str, Any]] = []
         checkpoint_paths = self._resolve_checkpoint_paths(output_dir)
-        best_value = None
-        monitor = None
+        if checkpoint_paths["best"] is not None or checkpoint_paths["last"] is not None:
+            accelerator = self.create_accelerator()
+            if checkpoint_paths["best"] is not None:
+                self._save_model_checkpoint(model, accelerator, checkpoint_paths["best"])
+            if checkpoint_paths["last"] is not None:
+                self._save_model_checkpoint(model, accelerator, checkpoint_paths["last"])
+
+        return {
+            "train_history": [],
+            "valid_history": [],
+            "data_stats": self._build_result_data_stats(prepared_data),
+            "stopped_early": False,
+            "best_epoch": None,
+            "best_metric": None,
+            "checkpoint_paths": {key: (str(path) if path is not None else None) for key, path in checkpoint_paths.items()},
+        }
+
+    def run(
+        self,
+        model: BaseModel,
+        prepared_data: BaseTaskDataset,
+        *,
+        output_dir: str | Path | None = None,
+    ) -> dict[str, Any]:
         prepared_eval_data = self._build_llmrank_prepared_data(prepared_data, model=model)
+        fit_result = self.fit(model, prepared_data, output_dir=output_dir)
+        monitor_name = str(self.config.monitor or "").strip()
+        monitor = self._resolve_monitor(prepared_eval_data) if monitor_name else None
+
         if len(prepared_eval_data.get_eval_dataset("valid")) > 0:
             print("[llmrank] starting validation evaluation")
             valid_result = super().evaluate(model, prepared_eval_data, split="valid")
             print("[llmrank] finished validation evaluation")
             valid_result["epoch"] = 0
-            valid_history.append(valid_result)
-            monitor_name = str(self.config.monitor or "").strip()
-            if monitor_name:
-                monitor = self._resolve_monitor(prepared_eval_data)
+            fit_result["valid_history"] = [valid_result]
+            if monitor is not None:
                 best_value = self._extract_monitor_value(valid_result["metrics"], monitor.name)
+                fit_result["best_epoch"] = 0
+                fit_result["best_metric"] = self._build_best_metric_payload(monitor, best_value)
 
-        if checkpoint_paths["best"] is not None:
-            accelerator = self.create_accelerator()
-            self._save_model_checkpoint(model, accelerator, checkpoint_paths["best"])
-        if checkpoint_paths["last"] is not None:
-            accelerator = self.create_accelerator()
-            self._save_model_checkpoint(model, accelerator, checkpoint_paths["last"])
-
+        fit_result["data_stats"] = self._build_result_data_stats(prepared_eval_data)
+        print("[trainer] starting test evaluation")
+        test_result = super().evaluate(model, prepared_eval_data, split="test")
+        print("[trainer] finished test evaluation")
         return {
-            "train_history": [],
-            "valid_history": valid_history,
-            "data_stats": self._build_result_data_stats(prepared_eval_data),
-            "stopped_early": False,
-            "best_epoch": 0 if best_value is not None else None,
-            "best_metric": self._build_best_metric_payload(monitor, best_value),
-            "checkpoint_paths": {key: (str(path) if path is not None else None) for key, path in checkpoint_paths.items()},
+            "fit": fit_result,
+            "test": test_result,
         }
 
     def _build_llmrank_prepared_data(self, prepared_data: BaseTaskDataset, *, model: Any) -> BaseTaskDataset:
