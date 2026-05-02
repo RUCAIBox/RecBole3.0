@@ -69,6 +69,10 @@ model:
   refresh_api_response_cache: false
   system_prompt: null
 
+dataset:
+  metadata_mode: fields
+  download_source: huggingface
+
 trainer:
   batch_size: 100
   shuffle: false
