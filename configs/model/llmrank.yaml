@@ -74,6 +74,8 @@ trainer:
   shuffle: false
   dataloader_num_workers: 0
   max_epochs: 0
+  save_inference_results: true
+  inference_topk: 20
   checkpoint:
     save_best: true
     save_last: true

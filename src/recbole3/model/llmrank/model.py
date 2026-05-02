@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import json
@@ -9,7 +10,6 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from random import Random
 from typing import Any
@@ -405,18 +405,40 @@ class LLMRankModel(BaseRetrievalModel):
             return results
 
         api_batch = max(1, int(getattr(self.config, "api_batch", 8)))
-        for start in range(0, len(request_items), api_batch):
-            batch = request_items[start : start + api_batch]
-            with ThreadPoolExecutor(max_workers=min(len(batch), api_batch)) as executor:
-                future_pairs = {
-                    executor.submit(self._request_openai_response, prompt, round_index=round_index): indexes
-                    for (prompt, round_index), indexes in batch
-                }
-                for future, indexes in future_pairs.items():
-                    response = future.result()
-                    for index in indexes:
-                        results[index] = response
+        responses = self._run_async(
+            self._request_openai_responses_async(request_items, max_concurrency=api_batch)
+        )
+        for ((_, _), indexes), response in zip(request_items, responses, strict=True):
+            for index in indexes:
+                results[index] = response
         return results
+
+    async def _request_openai_responses_async(
+        self,
+        request_items: Sequence[tuple[tuple[str, int], list[int]]],
+        *,
+        max_concurrency: int,
+    ) -> list[str]:
+        semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
+
+        async def _request_one(prompt: str, round_index: int) -> str:
+            async with semaphore:
+                return await asyncio.to_thread(self._request_openai_response, prompt, round_index=round_index)
+
+        return await asyncio.gather(
+            *[
+                _request_one(prompt, round_index)
+                for (prompt, round_index), _ in request_items
+            ]
+        )
+
+    @staticmethod
+    def _run_async(coroutine: Any) -> Any:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coroutine)
+        raise RuntimeError("LLMRank async OpenAI dispatch requires one synchronous caller without an active event loop.")
 
     def _ensure_item_text_lookup(self, prepared_data) -> None:
         if self._item_text_lookup:

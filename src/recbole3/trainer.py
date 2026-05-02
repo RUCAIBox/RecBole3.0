@@ -11,6 +11,7 @@ from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 
 from recbole3.dataset import BaseTaskDataset
+from recbole3.evaluation.metric import RankingEvalData, RetrievalEvalData
 from recbole3.model.base import BaseCollator, BaseModel
 from recbole3.trainer_config import (
     CheckpointConfig,
@@ -292,7 +293,7 @@ class Trainer:
         progress_bar = self._create_progress_bar(eval_dataloader, split=split)
         with torch.no_grad():
             for model_inputs, records in progress_bar:
-                batch_eval_data.append(method.collect_batch(scoring_model, model_inputs, records))
+                batch_eval_data.append(self._collect_eval_batch(method, scoring_model, model_inputs, records))
                 num_batches += 1
                 if hasattr(progress_bar, "set_postfix_str"):
                     progress_bar.set_postfix_str(f"batches={num_batches}")
@@ -300,13 +301,76 @@ class Trainer:
         if hasattr(progress_bar, "close"):
             progress_bar.close()
 
-        return {
+        result = {
             "split": split,
             "protocol": method.protocol,
             "loss": None,
             "metrics": method.compute_metrics(batch_eval_data),
             "num_batches": num_batches,
             "data_stats": self._build_result_data_stats(prepared_data),
+        }
+        if self.config.save_inference_results:
+            result["inference_results"] = self._build_inference_results(batch_eval_data)
+        return result
+
+    def _collect_eval_batch(
+        self,
+        method: Any,
+        model: BaseModel,
+        model_inputs: Any,
+        records: Any,
+    ) -> RankingEvalData | RetrievalEvalData:
+        inference_topk = self.config.inference_topk
+        if inference_topk is None:
+            return method.collect_batch(model, model_inputs, records)
+
+        from recbole3.evaluation.methods.base import BaseRetrievalEvaluationMethod
+
+        if not isinstance(method, BaseRetrievalEvaluationMethod):
+            raise ValueError("TrainerConfig.inference_topk is only supported for retrieval evaluation methods.")
+        if int(inference_topk) < 0:
+            raise ValueError("TrainerConfig.inference_topk must be non-negative when provided.")
+        return method._collect_retrieval_batch(
+            model=model,
+            model_inputs=model_inputs,
+            records=records,
+            max_k=int(inference_topk),
+        )
+
+    @staticmethod
+    def _build_inference_results(batch_eval_data: Sequence[RankingEvalData | RetrievalEvalData]) -> dict[str, Any]:
+        if not batch_eval_data:
+            return {}
+        first_batch = batch_eval_data[0]
+        if isinstance(first_batch, RetrievalEvalData):
+            pred_item_ids: list[list[int]] = []
+            target_item_ids: list[list[int]] = []
+            target_mask: list[list[bool]] = []
+            for batch_data in batch_eval_data:
+                if not isinstance(batch_data, RetrievalEvalData):
+                    raise TypeError("Mixed evaluation batch types are not supported when saving inference results.")
+                pred_item_ids.extend([[int(item_id) for item_id in row] for row in batch_data.pred_item_ids.tolist()])
+                target_item_ids.extend([[int(item_id) for item_id in row] for row in batch_data.target_item_ids.tolist()])
+                target_mask.extend([[bool(flag) for flag in row] for row in batch_data.target_mask.tolist()])
+            return {
+                "pred_item_ids": pred_item_ids,
+                "target_item_ids": target_item_ids,
+                "target_mask": target_mask,
+            }
+
+        scores: list[float] = []
+        labels: list[float] = []
+        group_ids: list[int] = []
+        for batch_data in batch_eval_data:
+            if not isinstance(batch_data, RankingEvalData):
+                raise TypeError("Mixed evaluation batch types are not supported when saving inference results.")
+            scores.extend(float(value) for value in batch_data.scores.reshape(-1).tolist())
+            labels.extend(float(value) for value in batch_data.labels.reshape(-1).tolist())
+            group_ids.extend(int(value) for value in batch_data.group_ids.reshape(-1).tolist())
+        return {
+            "scores": scores,
+            "labels": labels,
+            "group_ids": group_ids,
         }
 
     def _resolve_monitor(self, prepared_data: BaseTaskDataset) -> MonitorSpec | None:

@@ -6,7 +6,7 @@ import random
 import time
 from abc import ABC, abstractmethod
 from collections import Counter
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -19,7 +19,7 @@ from recbole3.config import configs_dir, instantiate_dataclass, project_root
 from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset, ITEM_ID, SEEN_ITEM_IDS, USER_ID
 from recbole3.dataset.base import BaseTaskDataset
 from recbole3.dataset.cache import DatasetCache
-from recbole3.model.base import BaseRetrievalModel, ModelConfig
+from recbole3.model.base import BaseModelDataset, BaseRetrievalModel, ModelConfig
 from recbole3.model.llmrank.config import LLMRankConfig
 from recbole3.trainer import Trainer
 from recbole3.trainer_config import TrainerConfig
@@ -426,47 +426,32 @@ class ModelBackboneCandidateGenerator(BaseCandidateGenerator):
                 f"Candidate source '{self.backbone_name}' must instantiate BaseRetrievalModel, got {type(self._backbone_model).__name__}."
             )
         self._backbone_trainer = self._model_spec.trainer_cls(self._backbone_trainer_config)
+        self._backbone_inference_trainer = self._model_spec.trainer_cls(
+            replace(
+                self._backbone_trainer_config,
+                save_inference_results=True,
+                inference_topk=self._num_required_backbone_items(),
+            )
+        )
         self._checkpoint_path = self._resolve_checkpoint_path()
 
     def _generate_candidates(self, eval_frame: pd.DataFrame, *, split: str) -> list[tuple[int, ...]]:
-        from recbole3.evaluation.methods.base import BaseEvaluationMethod
-        from recbole3.evaluation.methods.full import FullEvaluationMethod
-
         model = self._load_trained_backbone_model()
-        prepared_split = self._prepared_data.get_eval_dataset(split)
-        if not isinstance(prepared_split, FrameDataset):
-            raise TypeError(
-                f"{self.backbone_name} candidate generation requires FrameDataset, got {type(prepared_split).__name__}."
-            )
-        records = self._align_prepared_eval_frame(prepared_split.frame, split=split)
-        eval_method = FullEvaluationMethod(metric_specs=tuple(), exclude_history=True)
-        eval_collate_fn = eval_method.build_eval_collate_fn(model, self._prepared_data)
-        eval_dataloader = self._backbone_trainer.build_dataloader(
-            FrameDataset(records.reset_index(drop=True)),
-            eval_collate_fn,
-            shuffle=False,
-        )
-        accelerator = self._backbone_trainer.create_accelerator()
-        prepared_model, prepared_dataloader = accelerator.prepare(model, eval_dataloader)
-        scoring_model = accelerator.unwrap_model(prepared_model)
-        candidate_rows: list[tuple[int, ...]] = []
+        prepared_eval_data = self._build_prepared_eval_subset(split)
         print(
-            f"[llmrank:candidates] generating {self.backbone_name} candidates for split={split} rows={len(records)} batch_size={int(self._backbone_trainer_config.batch_size)}"
+            f"[llmrank:candidates] generating {self.backbone_name} candidates for split={split} rows={len(eval_frame)} batch_size={int(self._backbone_trainer_config.batch_size)}"
         )
-        prepared_model.eval()
-        with torch.no_grad():
-            for model_inputs, batch_records in _progress_iterable(prepared_dataloader, desc=f"[{self.backbone_name}:{split}]"):
-                device = BaseEvaluationMethod._infer_device(model_inputs)
-                exclude_item_ids, exclude_mask = BaseEvaluationMethod._pad_int_lists(batch_records, SEEN_ITEM_IDS, device=device)
-                pred_item_ids = scoring_model.predict(
-                    model_inputs,
-                    k=self._num_required_backbone_items(),
-                    candidate_item_ids=None,
-                    exclude_item_ids=exclude_item_ids,
-                    exclude_mask=exclude_mask,
-                )
-                for ranked_item_ids in pred_item_ids.detach().cpu().tolist():
-                    candidate_rows.append(self._finalize_candidates([int(item_id) for item_id in ranked_item_ids]))
+        eval_result = self._backbone_inference_trainer.evaluate(model, prepared_eval_data, split=split)
+        inference_results = eval_result.get("inference_results") or {}
+        pred_item_ids = inference_results.get("pred_item_ids")
+        if pred_item_ids is None:
+            raise RuntimeError(
+                f"{self.backbone_name} candidate generation expected inference_results['pred_item_ids'] from trainer evaluation."
+            )
+        candidate_rows = [
+            self._finalize_candidates([int(item_id) for item_id in ranked_item_ids])
+            for ranked_item_ids in pred_item_ids
+        ]
         if len(candidate_rows) != len(eval_frame):
             raise ValueError(
                 f"{self.backbone_name} candidate generation produced {len(candidate_rows)} rows, expected {len(eval_frame)} rows."
@@ -510,6 +495,22 @@ class ModelBackboneCandidateGenerator(BaseCandidateGenerator):
     def _ensure_initialized_model(self) -> None:
         self._backbone_model.build_eval_collator(self._prepared_data)
 
+
+    def _build_prepared_eval_subset(self, split: str) -> BaseTaskDataset:
+        prepared_split = self._prepared_data.get_eval_dataset(split)
+        if not isinstance(prepared_split, FrameDataset):
+            raise TypeError(
+                f"{self.backbone_name} candidate generation requires FrameDataset, got {type(prepared_split).__name__}."
+            )
+        records = self._align_prepared_eval_frame(prepared_split.frame, split=split)
+        cloned = type(self._prepared_data).__new__(type(self._prepared_data))
+        BaseModelDataset._copy_task_dataset_state(cloned, self._prepared_data)
+        selected_dataset = FrameDataset(records.reset_index(drop=True))
+        if split == "valid":
+            cloned._valid_dataset = selected_dataset
+        else:
+            cloned._test_dataset = selected_dataset
+        return cloned
 
 class HSTUCandidateGenerator(ModelBackboneCandidateGenerator):
     """Backward-compatible alias for the generic model-backed backbone generator."""

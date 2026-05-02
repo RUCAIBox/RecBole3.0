@@ -73,6 +73,14 @@ class TrainerConfig:
         default=1,
         metadata={"help": "Run validation once every N training epochs."},
     )
+    save_inference_results: bool = field(
+        default=False,
+        metadata={"help": "Whether evaluation returns raw inference outputs together with metrics."},
+    )
+    inference_topk: int | None = field(
+        default=None,
+        metadata={"help": "Optional top-k width requested during evaluation when raw inference outputs are needed."},
+    )
     optimizer: OptimizerConfig = field(
         default_factory=OptimizerConfig,
         metadata={"help": "Optimizer settings used during fit()."},
