@@ -11,6 +11,7 @@ from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 
 from recbole3.dataset import BaseTaskDataset
+from recbole3.evaluation.metric import RankingEvalData, RetrievalEvalData
 from recbole3.model.base import BaseCollator, BaseModel
 from recbole3.trainer_config import (
     CheckpointConfig,
@@ -139,11 +140,13 @@ class Trainer:
         best_value: float | None = None
         bad_epoch_count = 0
         stopped_early = False
+        eval_steps = max(1, int(self.config.eval_steps))
 
         for epoch in range(1, self.config.max_epochs + 1):
             model.train()
             losses: list[float] = []
-            for batch in train_dataloader:
+            progress_bar = self._create_train_progress_bar(train_dataloader, epoch=epoch, max_epochs=int(self.config.max_epochs))
+            for batch in progress_bar:
                 with accelerator.accumulate(model):
                     optimizer.zero_grad()
                     outputs = model.forward(batch)
@@ -154,28 +157,44 @@ class Trainer:
                         scheduler.step()
                 losses.append(float(loss.detach().float().item()))
 
+            if hasattr(progress_bar, "close"):
+                progress_bar.close()
+
+            epoch_loss = self._mean_or_none(losses)
             train_history.append(
                 {
                     "epoch": epoch,
-                    "loss": self._mean_or_none(losses),
+                    "loss": epoch_loss,
                     "losses": losses,
                     "num_batches": len(losses),
                 }
             )
-
-            valid_result = self._run_evaluation(
-                model,
-                prepared_data,
-                split="valid",
-                accelerator=accelerator,
-                model_is_prepared=True,
+            print(
+                f"[train] epoch={epoch}/{int(self.config.max_epochs)} "
+                f"avg_loss={(f'{epoch_loss:.6f}' if epoch_loss is not None else 'n/a')} "
+                f"num_batches={len(losses)}"
             )
-            valid_result["epoch"] = epoch
-            valid_history.append(valid_result)
+
+            should_run_validation = (epoch % eval_steps == 0) or (epoch == int(self.config.max_epochs))
+            valid_result: dict[str, Any] | None = None
+            if should_run_validation:
+                valid_result = self._run_evaluation(
+                    model,
+                    prepared_data,
+                    split="valid",
+                    accelerator=accelerator,
+                    model_is_prepared=True,
+                )
+                valid_result["epoch"] = epoch
+                valid_history.append(valid_result)
+                print(
+                    f"[eval:valid] epoch={epoch}/{int(self.config.max_epochs)} "
+                    f"metrics={self._format_metrics(valid_result['metrics'])}"
+                )
 
             current_value: float | None = None
             improved = False
-            if monitor is not None:
+            if monitor is not None and valid_result is not None:
                 current_value = self._extract_monitor_value(valid_result["metrics"], monitor.name)
                 improved = self._is_improvement(
                     current_value,
@@ -192,10 +211,19 @@ class Trainer:
                 elif self.config.early_stopping.enabled:
                     bad_epoch_count += 1
             if scheduler is not None and scheduler_interval == "epoch":
-                self._step_epoch_scheduler(scheduler, current_value=current_value)
+                if self._scheduler_requires_monitor():
+                    if valid_result is not None:
+                        self._step_epoch_scheduler(scheduler, current_value=current_value)
+                else:
+                    self._step_epoch_scheduler(scheduler, current_value=current_value)
             if checkpoint_paths["last"] is not None:
                 self._save_model_checkpoint(model, accelerator, checkpoint_paths["last"])
-            if self.config.early_stopping.enabled and not improved and bad_epoch_count >= int(self.config.early_stopping.patience):
+            if (
+                valid_result is not None
+                and self.config.early_stopping.enabled
+                and not improved
+                and bad_epoch_count >= int(self.config.early_stopping.patience)
+            ):
                 stopped_early = True
                 break
 
@@ -231,7 +259,9 @@ class Trainer:
         if best_checkpoint:
             state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
             model.load_state_dict(state_dict)
+        print("[trainer] starting test evaluation")
         test_result = self.evaluate(model, prepared_data, split="test")
+        print("[trainer] finished test evaluation")
         return {
             "fit": fit_result,
             "test": test_result,
@@ -260,18 +290,87 @@ class Trainer:
         scoring_model = accelerator.unwrap_model(prepared_model)
         batch_eval_data: list[Any] = []
         num_batches = 0
+        progress_bar = self._create_progress_bar(eval_dataloader, split=split)
         with torch.no_grad():
-            for model_inputs, records in eval_dataloader:
-                batch_eval_data.append(method.collect_batch(scoring_model, model_inputs, records))
+            for model_inputs, records in progress_bar:
+                batch_eval_data.append(self._collect_eval_batch(method, scoring_model, model_inputs, records))
                 num_batches += 1
+                if hasattr(progress_bar, "set_postfix_str"):
+                    progress_bar.set_postfix_str(f"batches={num_batches}")
 
-        return {
+        if hasattr(progress_bar, "close"):
+            progress_bar.close()
+
+        result = {
             "split": split,
             "protocol": method.protocol,
             "loss": None,
             "metrics": method.compute_metrics(batch_eval_data),
             "num_batches": num_batches,
             "data_stats": self._build_result_data_stats(prepared_data),
+        }
+        if self.config.save_inference_results:
+            result["inference_results"] = self._build_inference_results(batch_eval_data)
+        return result
+
+    def _collect_eval_batch(
+        self,
+        method: Any,
+        model: BaseModel,
+        model_inputs: Any,
+        records: Any,
+    ) -> RankingEvalData | RetrievalEvalData:
+        inference_topk = self.config.inference_topk
+        if inference_topk is None:
+            return method.collect_batch(model, model_inputs, records)
+
+        from recbole3.evaluation.methods.base import BaseRetrievalEvaluationMethod
+
+        if not isinstance(method, BaseRetrievalEvaluationMethod):
+            raise ValueError("TrainerConfig.inference_topk is only supported for retrieval evaluation methods.")
+        if int(inference_topk) < 0:
+            raise ValueError("TrainerConfig.inference_topk must be non-negative when provided.")
+        return method._collect_retrieval_batch(
+            model=model,
+            model_inputs=model_inputs,
+            records=records,
+            max_k=int(inference_topk),
+        )
+
+    @staticmethod
+    def _build_inference_results(batch_eval_data: Sequence[RankingEvalData | RetrievalEvalData]) -> dict[str, Any]:
+        if not batch_eval_data:
+            return {}
+        first_batch = batch_eval_data[0]
+        if isinstance(first_batch, RetrievalEvalData):
+            pred_item_ids: list[list[int]] = []
+            target_item_ids: list[list[int]] = []
+            target_mask: list[list[bool]] = []
+            for batch_data in batch_eval_data:
+                if not isinstance(batch_data, RetrievalEvalData):
+                    raise TypeError("Mixed evaluation batch types are not supported when saving inference results.")
+                pred_item_ids.extend([[int(item_id) for item_id in row] for row in batch_data.pred_item_ids.tolist()])
+                target_item_ids.extend([[int(item_id) for item_id in row] for row in batch_data.target_item_ids.tolist()])
+                target_mask.extend([[bool(flag) for flag in row] for row in batch_data.target_mask.tolist()])
+            return {
+                "pred_item_ids": pred_item_ids,
+                "target_item_ids": target_item_ids,
+                "target_mask": target_mask,
+            }
+
+        scores: list[float] = []
+        labels: list[float] = []
+        group_ids: list[int] = []
+        for batch_data in batch_eval_data:
+            if not isinstance(batch_data, RankingEvalData):
+                raise TypeError("Mixed evaluation batch types are not supported when saving inference results.")
+            scores.extend(float(value) for value in batch_data.scores.reshape(-1).tolist())
+            labels.extend(float(value) for value in batch_data.labels.reshape(-1).tolist())
+            group_ids.extend(int(value) for value in batch_data.group_ids.reshape(-1).tolist())
+        return {
+            "scores": scores,
+            "labels": labels,
+            "group_ids": group_ids,
         }
 
     def _resolve_monitor(self, prepared_data: BaseTaskDataset) -> MonitorSpec | None:
@@ -408,6 +507,40 @@ class Trainer:
             "num_users": int(prepared_data.get_num_users()),
             "num_items": int(prepared_data.get_num_items()),
         }
+
+    @staticmethod
+    def _format_metrics(metrics: Mapping[str, Any]) -> str:
+        if not metrics:
+            return "{}"
+        parts: list[str] = []
+        for name, value in metrics.items():
+            try:
+                parts.append(f"{name}={float(value):.6f}")
+            except (TypeError, ValueError):
+                parts.append(f"{name}={value}")
+        return "{ " + ", ".join(parts) + " }"
+
+    @staticmethod
+    def _create_progress_bar(eval_dataloader: DataLoader, *, split: str) -> Any:
+        description = f"[eval:{split}]"
+        try:
+            from tqdm.auto import tqdm
+
+            return tqdm(eval_dataloader, desc=description, total=len(eval_dataloader), leave=True)
+        except ModuleNotFoundError:
+            print(f"{description} progress logging enabled without tqdm; total_batches={len(eval_dataloader)}")
+            return eval_dataloader
+
+    @staticmethod
+    def _create_train_progress_bar(train_dataloader: DataLoader, *, epoch: int, max_epochs: int) -> Any:
+        description = f"[train:{epoch}/{max_epochs}]"
+        try:
+            from tqdm.auto import tqdm
+
+            return tqdm(train_dataloader, desc=description, total=len(train_dataloader), leave=True)
+        except ModuleNotFoundError:
+            print(f"{description} progress logging enabled without tqdm; total_batches={len(train_dataloader)}")
+            return train_dataloader
 
     @staticmethod
     def _mean_or_none(values: Sequence[float]) -> float | None:

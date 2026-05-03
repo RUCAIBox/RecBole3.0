@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +19,12 @@ from recbole3.model.hstu import (
     HSTUModelDataset,
 )
 from recbole3.model.lcrec.config import LCRecConfig
+from recbole3.model.llmrank import (
+    LLMRankConfig,
+    LLMRankModel,
+    LLMRankModelDataset,
+)
+from recbole3.model.llmrank.trainer import LLMRankTrainer, LLMRankTrainerConfig
 from recbole3.model.rqvae import (
     RQVAEConfig,
     RQVAEModel,
@@ -71,6 +77,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         config_cls=LCRecConfig,
         pipeline_cls=LazyImport("recbole3.model.lcrec.pipeline", "LCRecPipeline"),
     ),
+    "llmrank": ModelSpec(
+        model_cls=LLMRankModel,
+        config_cls=LLMRankConfig,
+        model_data_cls=LLMRankModelDataset,
+        trainer_cls=LLMRankTrainer,
+        trainer_config_cls=LLMRankTrainerConfig,
+        pipeline_cls=LazyImport("recbole3.model.llmrank.pipeline", "LLMRankPipeline"),
+    ),
 }
 
 
@@ -94,6 +108,9 @@ __all__ = [
     "HSTUConfig",
     "HSTUModel",
     "HSTUModelDataset",
+    "LLMRankConfig",
+    "LLMRankModel",
+    "LLMRankModelDataset",
     "MODEL_TABLE",
     "RQVAEConfig",
     "RQVAEModel",
