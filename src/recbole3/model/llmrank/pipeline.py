@@ -49,8 +49,8 @@ class LLMRankPipeline(Pipeline):
 
         printable = {
             "prepared_data": self.serialize_prepared_data(prepared_data),
-            "fit": run_result["fit"],
-            "test": run_result["test"],
+            "valid": self._sanitize_result_for_print(run_result["valid"]),
+            "test": self._sanitize_result_for_print(run_result["test"]),
         }
         print(OmegaConf.to_yaml(OmegaConf.create(printable), resolve=True))
         return {
@@ -77,6 +77,14 @@ class LLMRankPipeline(Pipeline):
         task_data._valid_dataset = FrameDataset(valid_frame)
         task_data._test_dataset = FrameDataset(test_frame)
         return task_data
+
+    @staticmethod
+    def _sanitize_result_for_print(result: dict[str, Any] | None) -> dict[str, Any] | None:
+        if result is None:
+            return None
+        sanitized = dict(result)
+        sanitized.pop("inference_results", None)
+        return sanitized
 
 
 __all__ = [

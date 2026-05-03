@@ -39,6 +39,8 @@ model:
     shuffle: true
     max_epochs: 10
     eval_steps: 2
+    save_inference_results: false
+    inference_topk: null
     monitor: recall@10
     stopping_step: 2
     optimizer:
@@ -78,8 +80,8 @@ trainer:
   shuffle: false
   dataloader_num_workers: 0
   max_epochs: 0
-  save_inference_results: true
-  inference_topk: 20
+  save_inference_results: false
+  inference_topk: null
   checkpoint:
     save_best: true
     save_last: true

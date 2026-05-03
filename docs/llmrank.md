@@ -17,6 +17,12 @@ This implementation is built on top of the RecBole3.0 framework, but follows the
 3. let the LLM rerank that candidate list
 4. evaluate the final ranked list with retrieval metrics such as `ndcg@10` and `recall@10`
 
+Current implementation notes:
+
+- `llmrank` is inference-only and does not optimize a trainable reranker
+- backbone training, if needed, happens during candidate generation
+- final LLMRank evaluation is simply one validation evaluation plus one test evaluation
+
 ## File Structure
 
 The main LLMRank implementation lives in these files:
@@ -30,7 +36,7 @@ The main LLMRank implementation lives in these files:
 - `src/recbole3/model/llmrank/model.py`
   - prompt construction, backend calls, response parsing, and reranking
 - `src/recbole3/model/llmrank/trainer.py`
-  - final reranking evaluation logic
+  - inference-only evaluation logic for reranking
 - `configs/model/llmrank.yaml`
   - default LLMRank model and trainer config
 
@@ -51,7 +57,7 @@ The runtime flow is:
 2. generate backbone candidates for `valid` and `test`
 3. inject those candidates into the eval frames
 4. build model-side prepared data
-5. run LLMRank evaluation on the injected candidate sets
+5. run LLMRank validation and test evaluation on the injected candidate sets
 
 In code, the main path is:
 
@@ -127,6 +133,9 @@ Important points:
 - evaluation protocol is `full`
 - but LLMRank only reranks the provided candidate subset
 - the final metrics are computed on the reranked candidate outputs
+- `LLMRankTrainer.run(...)` does not perform training; it evaluates:
+  - `valid` once, if the validation split is non-empty
+  - `test` once
 - the trainer supports the official-style controls:
   - `has_gt`
   - `fix_pos`
@@ -170,7 +179,8 @@ Behavior:
 - merge `model.backbone_model` overrides into the backbone model config
 - merge `model.backbone_trainer` overrides into the backbone trainer config
 - load one checkpoint if available, otherwise auto-train the backbone
-- use the backbone's retrieval `predict(...)` to generate top-k candidates
+- reuse the backbone trainer's evaluation pipeline to export inference top-k results
+- convert those top-k predictions into LLMRank candidate rows
 
 This generic wrapper is the reason future retrieval models can be plugged in more easily.
 
@@ -247,7 +257,7 @@ Supported backends:
 - `heuristic_overlap`
   - simple non-LLM heuristic reranker
 - `openai`
-  - call one OpenAI-compatible API endpoint, including local vLLM service
+  - call one OpenAI-compatible API endpoint, including local vLLM / sglang style services
 
 ### `identity`
 
@@ -258,7 +268,9 @@ This is useful for measuring backbone quality without LLM reranking.
 This backend is appropriate when you:
 
 - call the real OpenAI API, or
-- run one local vLLM server that exposes an OpenAI-compatible endpoint
+- run one local inference service that exposes an OpenAI-compatible endpoint
+
+When `model.async_dispatch=true`, batched API calls are orchestrated concurrently during reranking.
 
 ## Common Configuration Parameters
 
@@ -329,6 +341,18 @@ Useful subfields inside `model.backbone_trainer`:
 - `eval.protocol`
 - `eval.exclude_history`
 - `eval.metrics`
+
+### LLMRank Trainer
+
+The reranker itself is inference-only, so the `trainer` section mostly controls evaluation-time behavior:
+
+- `batch_size`
+  - evaluation batch size for reranking
+- `save_inference_results`
+  - whether to keep raw prediction outputs in evaluation results
+  - this is mainly used internally when backbone evaluation is reused to export candidate lists
+- `inference_topk`
+  - optional override for top-k prediction collection during evaluation
 
 ### Prompt and Parsing
 
@@ -428,6 +452,18 @@ python -m recbole3.run \
   runtime.output_dir=outputs/llmrank_hstu_vllm
 ```
 
+### 3b. Override dataset loading only for LLMRank
+
+`llmrank.yaml` can also override dataset defaults for this model, for example:
+
+```yaml
+dataset:
+  metadata_mode: fields
+  download_source: huggingface
+```
+
+This is useful when LLMRank depends on richer item text than the repository-wide dataset default.
+
 ### 4. Reuse one trained backbone checkpoint
 
 ```bash
@@ -464,11 +500,17 @@ This isolates whether problems come from:
 - backbone metrics are strong, but final `identity` metrics are poor
   - candidate rows and eval rows may be misaligned
 
+- candidate generation works, but backbone auto-training behavior is confusing
+  - remember that backbone training is handled in `candidates.py`, not in `LLMRankTrainer`
+
 - the final candidate list looks too easy or too hard
   - check `has_gt`, `fix_pos`, and `shuffle`
 
 - a backbone trains but LLMRank cannot use it
   - ensure the model is registered as a retrieval model and supports `predict(..., k=..., candidate_item_ids=None, exclude_item_ids=..., exclude_mask=...)`
+
+- you expect one training history from the reranker itself
+  - `llmrank` does not train one neural reranker; it only evaluates `valid` and `test`
 
 ## Summary
 
