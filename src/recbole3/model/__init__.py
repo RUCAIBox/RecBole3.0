@@ -25,6 +25,13 @@ from recbole3.model.llmrank import (
     LLMRankModelDataset,
 )
 from recbole3.model.llmrank.trainer import LLMRankTrainer, LLMRankTrainerConfig
+from recbole3.model.rpg import (
+    RPGConfig,
+    RPGModel,
+    RPGModelDataset,
+    RPGTrainer,
+    RPGTrainerConfig,
+)
 from recbole3.model.rqvae import (
     RQVAEConfig,
     RQVAEModel,
@@ -85,6 +92,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=LLMRankTrainerConfig,
         pipeline_cls=LazyImport("recbole3.model.llmrank.pipeline", "LLMRankPipeline"),
     ),
+    "rpg": ModelSpec(
+        model_cls=RPGModel,
+        config_cls=RPGConfig,
+        model_data_cls=RPGModelDataset,
+        trainer_cls=RPGTrainer,
+        trainer_config_cls=RPGTrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
 }
 
 
@@ -116,6 +131,11 @@ __all__ = [
     "RQVAEModel",
     "RQVAEModelDataset",
     "RQVAETrainer",
+    "RPGConfig",
+    "RPGModel",
+    "RPGModelDataset",
+    "RPGTrainer",
+    "RPGTrainerConfig",
     "ModelConfig",
     "ModelDatasets",
     "ModelSpec",

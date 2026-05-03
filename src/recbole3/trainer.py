@@ -152,6 +152,8 @@ class Trainer:
                     outputs = model.forward(batch)
                     loss = model.compute_loss(batch, outputs)
                     accelerator.backward(loss)
+                    if self.config.max_grad_norm is not None:
+                        accelerator.clip_grad_norm_(model.parameters(), float(self.config.max_grad_norm))
                     optimizer.step()
                     if scheduler is not None and scheduler_interval == "step":
                         scheduler.step()

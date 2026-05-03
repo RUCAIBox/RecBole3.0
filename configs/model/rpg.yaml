@@ -1,0 +1,85 @@
+# @package _global_
+
+model:
+  name: rpg
+
+  # Provide this file to skip OPQ/PQ generation. Keys are RecBole item_id values
+  # (as strings) after dataset preparation; values are raw OPQ codes
+  # (list of n_codebook ints in [0, codebook_size)). Pre-offset token ids are not accepted.
+  semantic_id_file: ""
+  cache_dir: ""
+  # Leave empty to let RPG fingerprint the cache file by
+  # (sent_emb_model, n_codebook, codebook_size, sent_emb_pca, semantic_embedding_file)
+  # so different generation configs never silently share a cache.
+  semantic_id_cache_file: ""
+  semantic_embedding_file: ""
+  metadata_text_field: metadata_text
+  item_title_field: title
+  item_description_field: description
+
+  sent_emb_model: sentence-transformers/sentence-t5-base
+  sent_emb_dim: 768
+  sent_emb_pca: 128
+  sent_emb_batch_size: 512
+  openai_api_key: null
+  n_codebook: 32
+  codebook_size: 256
+  opq_use_gpu: false
+  opq_gpu_id: 0
+  faiss_omp_num_threads: 32
+
+  max_item_seq_len: 50
+  n_embd: 448
+  n_layer: 2
+  n_head: 4
+  n_inner: 1024
+  activation_function: gelu_new
+  resid_pdrop: 0.0
+  embd_pdrop: 0.5
+  attn_pdrop: 0.5
+  layer_norm_epsilon: 1.0e-12
+  initializer_range: 0.02
+
+  temperature: 0.07
+  use_decoding_graph: false
+  num_beams: 50
+  n_edges: 50
+  propagation_steps: 3
+  chunk_size: 1024
+
+trainer:
+  batch_size: 256
+  eval_batch_size: 32
+  shuffle: true
+  max_epochs: 150
+  steps: null
+  warmup_steps: 10000
+  # Original RPG (KDD'25 release) clips gradients with max_grad_norm=1.0; keep aligned.
+  max_grad_norm: 1.0
+  monitor: ndcg@10
+  early_stopping:
+    enabled: true
+    patience: 20
+    min_delta: 0.0
+  checkpoint:
+    save_best: true
+    save_last: false
+  optimizer:
+    name: AdamW
+    kwargs:
+      lr: 0.0003
+      weight_decay: 0.0
+  scheduler:
+    name: cosine
+    interval: step
+    kwargs: {}
+  eval:
+    protocol: full
+    # Original RPG (KDD'25) reports full-ranking metrics WITHOUT excluding seen items.
+    # Keep this false to reproduce the paper; flip to true only for production-style eval.
+    exclude_history: false
+    metrics:
+      - name: ndcg
+        ks: [10]
+      - name: recall
+        ks: [10]

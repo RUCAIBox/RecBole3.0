@@ -68,6 +68,15 @@ class TrainerConfig:
         default=1,
         metadata={"help": "Number of optimizer accumulation steps handled by accelerate."},
     )
+    max_grad_norm: float | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Optional gradient L2-norm clipping value applied via accelerator.clip_grad_norm_ "
+                "after each accelerator.backward() and before optimizer.step(). None disables clipping."
+            )
+        },
+    )
     max_epochs: int = field(default=1, metadata={"help": "Number of epochs executed by fit()."})
     eval_steps: int = field(
         default=1,
