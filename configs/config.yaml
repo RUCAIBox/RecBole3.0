@@ -6,9 +6,9 @@
 runtime:
   seed: 42
   device: auto
-  output_dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  output_dir: outputs/${model.name}/
 
 hydra:
   run:
-    dir: ${runtime.output_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ${runtime.output_dir}/${model.name}/
 

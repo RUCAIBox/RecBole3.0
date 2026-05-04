@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence
@@ -12,6 +13,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from recbole3.dataset import BaseTaskDataset
 from recbole3.evaluation.metric import RankingEvalData, RetrievalEvalData
+from recbole3.logger import TrainingLogger
 from recbole3.model.base import BaseCollator, BaseModel
 from recbole3.trainer_config import (
     CheckpointConfig,
@@ -38,6 +40,31 @@ class Trainer:
 
     def __init__(self, config: TrainerConfig):
         self.config = config
+
+    def _setup_logger(
+        self,
+        model: BaseModel,
+        prepared_data: BaseTaskDataset,
+        output_dir: str | Path | None,
+    ) -> None:
+        """Create the training logger and write initial configuration / info sections."""
+        if output_dir is None:
+            output_dir = Path(".")
+        model.ensure_initialized(prepared_data)
+        model_name = str(getattr(model.config, "name", "") or "unknown")
+        dataset_name = str(getattr(prepared_data.config, "name", "") or "unknown")
+        category_name = str(getattr(prepared_data.config, "category", "") or "")
+        self._logger = TrainingLogger(
+            output_dir=Path(output_dir),
+            model_name=model_name,
+            dataset_name=dataset_name,
+            category_name=category_name,
+        )
+        self._logger.log_config("Trainer", self.config)
+        self._logger.log_config("Model", model.config)
+        self._logger.log_config("Dataset", prepared_data.config)
+        self._logger.log_dataset_info(prepared_data)
+        self._logger.log_model_info(model)
 
     def create_accelerator(self) -> Any:
         from accelerate import Accelerator
@@ -143,6 +170,7 @@ class Trainer:
         eval_steps = max(1, int(self.config.eval_steps))
 
         for epoch in range(1, self.config.max_epochs + 1):
+            epoch_start = time.perf_counter()
             model.train()
             losses: list[float] = []
             progress_bar = self._create_train_progress_bar(train_dataloader, epoch=epoch, max_epochs=int(self.config.max_epochs))
@@ -161,12 +189,16 @@ class Trainer:
                 progress_bar.close()
 
             epoch_loss = self._mean_or_none(losses)
+            elapsed = time.perf_counter() - epoch_start
+            lr = optimizer.param_groups[0].get("lr", None)
             train_history.append(
                 {
                     "epoch": epoch,
                     "loss": epoch_loss,
                     "losses": losses,
                     "num_batches": len(losses),
+                    "elapsed_seconds": elapsed,
+                    "lr": lr,
                 }
             )
             print(
@@ -174,6 +206,15 @@ class Trainer:
                 f"avg_loss={(f'{epoch_loss:.6f}' if epoch_loss is not None else 'n/a')} "
                 f"num_batches={len(losses)}"
             )
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_epoch(
+                    epoch=epoch,
+                    max_epochs=int(self.config.max_epochs),
+                    loss=epoch_loss,
+                    num_batches=len(losses),
+                    elapsed_seconds=elapsed,
+                    lr=lr,
+                )
 
             should_run_validation = (epoch % eval_steps == 0) or (epoch == int(self.config.max_epochs))
             valid_result: dict[str, Any] | None = None
@@ -191,6 +232,8 @@ class Trainer:
                     f"[eval:valid] epoch={epoch}/{int(self.config.max_epochs)} "
                     f"metrics={self._format_metrics(valid_result['metrics'])}"
                 )
+                if (logger := getattr(self, "_logger", None)) is not None:
+                    logger.log_validation(epoch=epoch, metrics=valid_result["metrics"])
 
             current_value: float | None = None
             improved = False
@@ -225,7 +268,21 @@ class Trainer:
                 and bad_epoch_count >= int(self.config.early_stopping.patience)
             ):
                 stopped_early = True
+                if (logger := getattr(self, "_logger", None)) is not None:
+                    logger.log_early_stopping(
+                        stopped=True,
+                        epoch=epoch,
+                        patience=int(self.config.early_stopping.patience),
+                    )
                 break
+
+        if not stopped_early:
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_early_stopping(
+                    stopped=False,
+                    epoch=int(self.config.max_epochs),
+                    patience=int(self.config.early_stopping.patience),
+                )
 
         return {
             "train_history": train_history,
@@ -254,18 +311,45 @@ class Trainer:
         *,
         output_dir: str | Path | None = None,
     ) -> dict[str, Any]:
-        fit_result = self.fit(model, prepared_data, output_dir=output_dir)
-        best_checkpoint = fit_result["checkpoint_paths"].get("best")
-        if best_checkpoint:
-            state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
-            model.load_state_dict(state_dict)
-        print("[trainer] starting test evaluation")
-        test_result = self.evaluate(model, prepared_data, split="test")
-        print("[trainer] finished test evaluation")
-        return {
-            "fit": fit_result,
-            "test": test_result,
-        }
+        self._setup_logger(model, prepared_data, output_dir)
+        total_start = time.perf_counter()
+        try:
+            fit_result = self.fit(model, prepared_data, output_dir=output_dir)
+
+            if (logger := getattr(self, "_logger", None)) is not None:
+                best_metric = fit_result.get("best_metric")
+                if best_metric:
+                    logger.log_best(
+                        epoch=fit_result["best_epoch"],
+                        monitor_name=best_metric["name"],
+                        best_value=best_metric["value"],
+                    )
+
+            best_checkpoint = fit_result["checkpoint_paths"].get("best")
+            if best_checkpoint:
+                state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
+                model.load_state_dict(state_dict)
+            print("[trainer] starting test evaluation")
+            test_result = self.evaluate(model, prepared_data, split="test")
+            print("[trainer] finished test evaluation")
+
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_test(test_result)
+                total_elapsed = time.perf_counter() - total_start
+                logger.log_summary(
+                    stopped_early=fit_result.get("stopped_early", False),
+                    total_epochs=len(fit_result.get("train_history", [])),
+                    best_epoch=fit_result.get("best_epoch"),
+                    total_time=total_elapsed,
+                )
+
+            return {
+                "fit": fit_result,
+                "test": test_result,
+            }
+        finally:
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.close()
 
     def _run_evaluation(
         self,
