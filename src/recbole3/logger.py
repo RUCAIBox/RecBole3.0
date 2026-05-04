@@ -9,12 +9,12 @@ from typing import Any, Mapping, Sequence
 
 
 def _is_main_process() -> bool:
-    """Return True on rank 0 or when not running under DDP."""
-    local_rank = os.environ.get("LOCAL_RANK", "")
-    if local_rank == "":
+    """Return True on global rank 0 or when not running under DDP."""
+    rank = os.environ.get("RANK", "")
+    if rank == "":
         return True
     try:
-        return int(local_rank) in (-1, 0)
+        return int(rank) in (-1, 0)
     except ValueError:
         return True
 
