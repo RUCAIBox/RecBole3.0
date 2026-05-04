@@ -92,19 +92,19 @@ class TestIsNestedContainer:
 
 class TestIsMainProcess:
     def test_default(self, monkeypatch):
-        monkeypatch.delenv("LOCAL_RANK", raising=False)
+        monkeypatch.delenv("RANK", raising=False)
         assert _is_main_process() is True
 
     def test_rank_zero(self, monkeypatch):
-        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("RANK", "0")
         assert _is_main_process() is True
 
     def test_rank_minus_one(self, monkeypatch):
-        monkeypatch.setenv("LOCAL_RANK", "-1")
+        monkeypatch.setenv("RANK", "-1")
         assert _is_main_process() is True
 
     def test_rank_one_skips(self, monkeypatch):
-        monkeypatch.setenv("LOCAL_RANK", "1")
+        monkeypatch.setenv("RANK", "1")
         assert _is_main_process() is False
 
 
@@ -413,7 +413,7 @@ class TestLoggerFooter:
 
 class TestLoggerDDPGuard:
     def test_non_main_process_writes_nothing(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setenv("LOCAL_RANK", "1")
+        monkeypatch.setenv("RANK", "1")
         logger = TrainingLogger(str(tmp_path), "m", "d", "")
         logger.log_config("Trainer", _MockConfig())
         logger.log_model_info(_MockModel())
