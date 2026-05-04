@@ -51,6 +51,14 @@ class BaseModel(nn.Module, ABC):
         super().__init__()
         self.config = config
 
+    def ensure_initialized(self, _prepared_data: BaseTaskDataset) -> None:
+        """Hook for lazy parameter initialization before training inspection.
+
+        Called by the trainer before logging model info, so that models with
+        dataset-dependent parameter shapes (e.g. item-embedding cardinality)
+        are fully materialized when the logger counts parameters.
+        """
+
     @abstractmethod
     def build_train_collator(self, prepared_data: BaseTaskDataset) -> BaseCollator:
         """Return the collator used for training batches."""

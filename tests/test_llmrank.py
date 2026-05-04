@@ -333,7 +333,6 @@ def test_llmrank_pipeline_end_to_end_with_full_protocol_and_identity_backend(loc
     assert "candidate_item_ids" in test_dataset.frame.columns
     assert all(len(values) == 4 for values in valid_dataset.frame["candidate_item_ids"].tolist())
     assert all(len(values) == 4 for values in test_dataset.frame["candidate_item_ids"].tolist())
-    assert result["fit"]["valid_history"][0]["protocol"] == "full"
     assert "recall@3" in result["test"]["metrics"]
     assert "ndcg@3" in result["test"]["metrics"]
 

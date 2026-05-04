@@ -4,6 +4,7 @@ outputs/
 test.py
 AGENTS.md
 CLAUDE.md
+.claude
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
