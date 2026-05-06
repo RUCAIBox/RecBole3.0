@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from recbole3.dataset.amazon2014 import (
+    Amazon2014BaseConfig,
+    Amazon2014BaseParser,
     Amazon2014RetrievalConfig,
     Amazon2014RetrievalDataset,
     Amazon2014RetrievalParser,
@@ -65,6 +67,8 @@ def get_dataset_spec(name: str) -> DatasetSpec:
 
 
 __all__ = [
+    "Amazon2014BaseConfig",
+    "Amazon2014BaseParser",
     "Amazon2014RetrievalConfig",
     "Amazon2014RetrievalDataset",
     "Amazon2014RetrievalParser",
