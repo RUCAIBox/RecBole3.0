@@ -63,8 +63,12 @@ class LETTERModelDataset(RQVAEModelDataset):
                 "Run `python -m recbole3.tools.generate_letter_cf_hstu ...` to generate it first."
             )
 
-        arr = torch.load(str(cf_path), map_location="cpu").squeeze().detach().numpy()
-        return torch.FloatTensor(arr)
+        return (
+            torch.load(str(cf_path), map_location="cpu")
+            .squeeze()
+            .detach()
+            .to(dtype=torch.float32)
+        )
 
     def _create_dataset(
         self,
