@@ -144,16 +144,22 @@ class _TIGERBaseCollator(BaseCollator):
             raise ValueError("TIGERConfig.n_user_tokens must be a positive integer.")
         self.base_user_token = self.codec.semantic_vocab_size + 1
         self.eos_token = self.base_user_token + int(config.n_user_tokens)
-        self.max_token_seq_len = int(config.history_max_length or 0) * self.codec.n_digit + 2
+        self.history_max_length = _normalize_history_max_length(config.history_max_length)
+        self.max_token_seq_len = (
+            None
+            if self.history_max_length is None
+            else self.history_max_length * self.codec.n_digit + 2
+        )
 
     def _user_token(self, user_id: int) -> int:
         return self.base_user_token + int(user_id) % int(self.config.n_user_tokens)
 
     def _input_for_record(self, record: Mapping[str, Any]) -> tuple[list[int], list[int]]:
         history = tuple(int(item_id) for item_id in (record.get(HISTORY_ITEM_IDS) or ()))
-        max_items = int(self.config.history_max_length or 0)
-        if max_items > 0:
-            history = history[-max_items:]
+        if self.history_max_length is None:
+            pass
+        elif self.history_max_length > 0:
+            history = history[-self.history_max_length:]
         else:
             history = ()
 
@@ -163,12 +169,28 @@ class _TIGERBaseCollator(BaseCollator):
         input_ids.append(self.eos_token)
 
         attention_mask = [1] * len(input_ids)
-        pad_width = self.max_token_seq_len - len(input_ids)
+        return input_ids, attention_mask
+
+    def _pad_inputs(
+        self,
+        input_ids: list[int],
+        attention_mask: list[int],
+        *,
+        max_token_seq_len: int,
+    ) -> tuple[list[int], list[int]]:
+        pad_width = max_token_seq_len - len(input_ids)
         if pad_width < 0:
             raise ValueError("TIGER input sequence exceeded max_token_seq_len.")
         input_ids.extend([self.pad_token] * pad_width)
         attention_mask.extend([0] * pad_width)
         return input_ids, attention_mask
+
+    def _batch_max_token_seq_len(self, input_ids: Sequence[Sequence[int]]) -> int:
+        if self.max_token_seq_len is not None:
+            return self.max_token_seq_len
+        # None follows SequentialModelConfig semantics: keep unbounded history.
+        # Padding is therefore computed from the longest record in the current batch.
+        return max((len(row) for row in input_ids), default=2)
 
     def _records(self, feature_records: pd.DataFrame | Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
         if isinstance(feature_records, pd.DataFrame):
@@ -189,9 +211,14 @@ class TIGERTrainCollator(_TIGERBaseCollator):
             input_ids.append(cur_input_ids)
             attention_mask.append(cur_attention_mask)
             labels.append(list(self.codec.item_tokens(int(record[ITEM_ID]))) + [self.eos_token])
+        max_token_seq_len = self._batch_max_token_seq_len(input_ids)
+        padded = [
+            self._pad_inputs(cur_input_ids, cur_attention_mask, max_token_seq_len=max_token_seq_len)
+            for cur_input_ids, cur_attention_mask in zip(input_ids, attention_mask, strict=False)
+        ]
         return {
-            "input_ids": torch.tensor(input_ids, dtype=torch.long),
-            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+            "input_ids": torch.tensor([row[0] for row in padded], dtype=torch.long),
+            "attention_mask": torch.tensor([row[1] for row in padded], dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
         }
 
@@ -207,10 +234,21 @@ class TIGEREvalCollator(_TIGERBaseCollator):
             cur_input_ids, cur_attention_mask = self._input_for_record(record)
             input_ids.append(cur_input_ids)
             attention_mask.append(cur_attention_mask)
+        max_token_seq_len = self._batch_max_token_seq_len(input_ids)
+        padded = [
+            self._pad_inputs(cur_input_ids, cur_attention_mask, max_token_seq_len=max_token_seq_len)
+            for cur_input_ids, cur_attention_mask in zip(input_ids, attention_mask, strict=False)
+        ]
         return {
-            "input_ids": torch.tensor(input_ids, dtype=torch.long),
-            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+            "input_ids": torch.tensor([row[0] for row in padded], dtype=torch.long),
+            "attention_mask": torch.tensor([row[1] for row in padded], dtype=torch.long),
         }
+
+
+def _normalize_history_max_length(history_max_length: int | None) -> int | None:
+    if history_max_length is None:
+        return None
+    return int(history_max_length)
 
 
 __all__ = [

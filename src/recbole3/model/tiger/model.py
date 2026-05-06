@@ -5,6 +5,7 @@ from typing import Any, Mapping
 import torch
 
 from recbole3.model.base import BaseCollator, BaseRetrievalModel
+from recbole3.model.sequential import HISTORY_ITEM_IDS
 from recbole3.model.tiger.config import TIGERConfig
 from recbole3.model.tiger.data import TIGEREvalCollator, TIGERModelDataset, TIGERSIDCodec, TIGERTrainCollator
 
@@ -22,6 +23,7 @@ class TIGERModel(BaseRetrievalModel):
         self._base_user_token: int | None = None
         self._eos_token: int | None = None
         self._vocab_size: int | None = None
+        self._max_observed_history_items: int | None = None
 
     def build_train_collator(self, prepared_data) -> BaseCollator:
         self._ensure_initialized(prepared_data)
@@ -91,6 +93,7 @@ class TIGERModel(BaseRetrievalModel):
                 f"Got width {int(sequences.shape[-1])}, expected at least {codec.n_digit + 1}."
             )
         token_tuples = sequences[:, :, 1 : 1 + codec.n_digit]
+        token_tuples_cpu = token_tuples.detach().cpu()
         excluded = self._excluded_item_sets(exclude_item_ids, exclude_mask, batch_size=batch_size)
 
         predictions: list[list[int]] = []
@@ -98,7 +101,7 @@ class TIGERModel(BaseRetrievalModel):
             selected: list[int] = []
             selected_set: set[int] = set()
             for beam_index in range(beam_width):
-                item_id = codec.token_tuple_to_item(token_tuples[row_index, beam_index].detach().cpu().tolist())
+                item_id = codec.token_tuple_to_item(token_tuples_cpu[row_index, beam_index].tolist())
                 if item_id is None or item_id in selected_set or item_id in excluded[row_index]:
                     continue
                 selected.append(item_id)
@@ -132,6 +135,7 @@ class TIGERModel(BaseRetrievalModel):
         self._base_user_token = codec.semantic_vocab_size + 1
         self._eos_token = self._base_user_token + int(self.config.n_user_tokens)
         self._vocab_size = self._eos_token + 1
+        self._max_observed_history_items = _max_observed_history_items(prepared_data)
         self._t5 = self._build_t5()
 
     def _build_t5(self) -> torch.nn.Module:
@@ -140,7 +144,7 @@ class TIGERModel(BaseRetrievalModel):
         except ModuleNotFoundError as exc:
             raise ModuleNotFoundError("TIGER requires `transformers`. Install it before using model.name=tiger.") from exc
 
-        max_positions = int(self.config.history_max_length or 0) * self._sid_codec().n_digit + 2
+        max_positions = self._max_positions()
         t5_config = T5Config(
             num_layers=self.config.num_layers,
             num_decoder_layers=self.config.num_decoder_layers,
@@ -158,6 +162,17 @@ class TIGERModel(BaseRetrievalModel):
             n_positions=max_positions,
         )
         return T5ForConditionalGeneration(config=t5_config)
+
+    def _max_positions(self) -> int:
+        history_max_length = self.config.history_max_length
+        if history_max_length is None:
+            # None means unbounded history in SequentialModelConfig. The model dataset
+            # has already materialized histories, so use the observed maximum instead
+            # of collapsing to an empty-history T5 position budget.
+            max_history_items = max(int(self._max_observed_history_items or 0), 1)
+        else:
+            max_history_items = int(history_max_length)
+        return max_history_items * self._sid_codec().n_digit + 2
 
     def _t5_module(self) -> torch.nn.Module:
         if self._t5 is None:
@@ -198,6 +213,18 @@ class TIGERModel(BaseRetrievalModel):
                 if keep
             }
         return excluded
+
+
+def _max_observed_history_items(prepared_data: TIGERModelDataset) -> int:
+    max_history = 0
+    for split in ("train", "valid", "test"):
+        dataset = prepared_data.get_train_dataset() if split == "train" else prepared_data.get_eval_dataset(split)
+        frame = getattr(dataset, "frame", None)
+        if frame is None or HISTORY_ITEM_IDS not in frame:
+            continue
+        for history in frame[HISTORY_ITEM_IDS].tolist():
+            max_history = max(max_history, len(history or ()))
+    return max_history
 
 
 __all__ = ["TIGERModel"]

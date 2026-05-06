@@ -27,7 +27,7 @@ def _write_sid_file(path: Path, *, num_items: int = 8, width: int = 2) -> Path:
     return path
 
 
-def _prepared_tiger_data(tmp_path: Path, *, history_max_length: int = 2) -> TIGERModelDataset:
+def _prepared_tiger_data(tmp_path: Path, *, history_max_length: int | None = 2) -> TIGERModelDataset:
     sid_file = _write_sid_file(tmp_path / "item_sids.json")
     prepared = StubDataset(StubDatasetConfig()).prepare(eval_config=_full_eval_config())
     return TIGERModelDataset.from_task_dataset(
@@ -36,10 +36,10 @@ def _prepared_tiger_data(tmp_path: Path, *, history_max_length: int = 2) -> TIGE
     )
 
 
-def _tiny_tiger_config(sid_file: Path, *, num_beams: int = 3) -> TIGERConfig:
+def _tiny_tiger_config(sid_file: Path, *, num_beams: int = 3, history_max_length: int | None = 2) -> TIGERConfig:
     return TIGERConfig(
         sid_file=str(sid_file),
-        history_max_length=2,
+        history_max_length=history_max_length,
         n_user_tokens=1,
         num_beams=num_beams,
         eval_topk=(2, 3),
@@ -190,6 +190,55 @@ def test_tiger_collators_build_teacher_forcing_and_generation_batches(tmp_path: 
     assert eval_batch["input_ids"].shape == (2, 6)
 
 
+def test_tiger_collator_preserves_unbounded_history_when_history_max_length_is_none(tmp_path: Path) -> None:
+    tiger_data = _prepared_tiger_data(tmp_path, history_max_length=None)
+    config = TIGERConfig(sid_file=str(tmp_path / "item_sids.json"), history_max_length=None, num_beams=3, eval_topk=(2, 3))
+    eval_records = tiger_data.get_eval_dataset("test").frame
+
+    batch = TIGEREvalCollator(config, prepared_data=tiger_data)(eval_records)
+
+    user_token = tiger_data.tiger_codec.semantic_vocab_size + 1
+    eos_token = user_token + 1
+    assert eval_records[HISTORY_ITEM_IDS].tolist() == [(0, 1, 2), (4, 5, 6)]
+    assert batch["input_ids"].shape == (2, 8)
+    assert batch["input_ids"].tolist() == [
+        [user_token, 1, 11, 2, 12, 3, 13, eos_token],
+        [user_token, 5, 15, 6, 16, 7, 17, eos_token],
+    ]
+    assert batch["attention_mask"].tolist() == [[1] * 8, [1] * 8]
+
+
+def test_tiger_collator_truncates_to_recent_history_items(tmp_path: Path) -> None:
+    tiger_data = _prepared_tiger_data(tmp_path, history_max_length=None)
+    config = TIGERConfig(sid_file=str(tmp_path / "item_sids.json"), history_max_length=2, num_beams=3, eval_topk=(2, 3))
+    eval_records = tiger_data.get_eval_dataset("test").frame
+
+    batch = TIGEREvalCollator(config, prepared_data=tiger_data)(eval_records)
+
+    user_token = tiger_data.tiger_codec.semantic_vocab_size + 1
+    eos_token = user_token + 1
+    assert batch["input_ids"].shape == (2, 6)
+    assert batch["input_ids"].tolist() == [
+        [user_token, 2, 12, 3, 13, eos_token],
+        [user_token, 6, 16, 7, 17, eos_token],
+    ]
+
+
+def test_tiger_build_t5_uses_observed_history_budget_when_history_is_unbounded(tmp_path: Path) -> None:
+    pytest.importorskip("transformers")
+    sid_file = _write_sid_file(tmp_path / "item_sids.json")
+    prepared = StubDataset(StubDatasetConfig()).prepare(eval_config=_full_eval_config())
+    config = _tiny_tiger_config(sid_file, history_max_length=None)
+    tiger_data = TIGERModelDataset.from_task_dataset(prepared, model_config=config)
+    model = TIGERModel(config)
+
+    model.build_eval_collator(tiger_data)
+
+    assert model._t5 is not None
+    assert model._t5.config.n_positions == 8
+    assert model._t5.config.n_positions != 2
+
+
 def test_tiger_lightweight_forward_and_predict_on_cpu(tmp_path: Path) -> None:
     pytest.importorskip("transformers")
     sid_file = _write_sid_file(tmp_path / "item_sids.json")
@@ -211,6 +260,7 @@ def test_tiger_lightweight_forward_and_predict_on_cpu(tmp_path: Path) -> None:
 
     assert torch.isfinite(loss)
     assert predictions.shape == (2, 3)
+    assert predictions.device == eval_batch["input_ids"].device
     assert predictions.dtype == torch.long
     assert predictions.min() >= 0
     assert predictions.max() < tiger_data.get_num_items()
