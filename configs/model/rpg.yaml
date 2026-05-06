@@ -40,7 +40,7 @@ model:
   layer_norm_epsilon: 1.0e-12
   initializer_range: 0.02
 
-  temperature: 0.07
+  temperature: 0.03
   use_decoding_graph: false
   num_beams: 50
   n_edges: 50
@@ -53,13 +53,13 @@ trainer:
   shuffle: true
   max_epochs: 150
   steps: null
-  warmup_steps: 10000
+  warmup_steps: 500
   # Original RPG (KDD'25 release) clips gradients with max_grad_norm=1.0; keep aligned.
   max_grad_norm: 1.0
   monitor: ndcg@10
   early_stopping:
     enabled: true
-    patience: 20
+    patience: 30
     min_delta: 0.0
   checkpoint:
     save_best: true
@@ -67,7 +67,7 @@ trainer:
   optimizer:
     name: AdamW
     kwargs:
-      lr: 0.0003
+      lr: 0.001
       weight_decay: 0.0
   scheduler:
     name: cosine
