@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -71,7 +71,19 @@ class StubParser(BaseDatasetParser):
             ]
         )
         users = pd.DataFrame([{USER_ID: 0}, {USER_ID: 1}])
-        items = pd.DataFrame([{ITEM_ID: item_id} for item_id in range(8)])
+        item_titles = (
+            "Alpha Quest",
+            "Bravo Tales",
+            "Charlie Harbor",
+            "Delta Echo",
+            "Forest Signal",
+            "Golden River",
+            "Harbor Night",
+            "Ivory Path",
+        )
+        items = pd.DataFrame(
+            [{ITEM_ID: item_id, "metadata_text": item_titles[item_id], "title": item_titles[item_id]} for item_id in range(8)]
+        )
         return ParsedData(interactions=interactions, user_table=users, item_table=items)
 
 
@@ -247,9 +259,3 @@ def ensure_stub_tables() -> None:
         trainer_cls=StubRankingTrainer,
         trainer_config_cls=StubRankingTrainerConfig,
     )
-
-
-
-
-
-

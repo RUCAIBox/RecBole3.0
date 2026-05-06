@@ -105,7 +105,7 @@ class Amazon2023BaseParser(BaseDatasetParser):
         return merged
 
     def _attach_metadata_fields(self, item_table: pd.DataFrame, item_index: pd.Index) -> pd.DataFrame:
-        """Attach individual metadata columns (title, description) to the item table."""
+        """Attach individual metadata columns and a combined text field to the item table."""
         metadata = self._load_raw_metadata_frame()
         metadata = metadata.loc[metadata["parent_asin"].isin(set(item_index))].copy()
         metadata = metadata.drop_duplicates(subset=["parent_asin"], keep="first")
@@ -120,7 +120,8 @@ class Amazon2023BaseParser(BaseDatasetParser):
             ])).strip(),
             axis=1,
         )
-        keep_cols = ["parent_asin", "title", "description"]
+        metadata["metadata_text"] = metadata.apply(amazon2023_utils.build_metadata_text, axis=1)
+        keep_cols = ["parent_asin", "title", "description", "metadata_text"]
         merged = item_table.merge(
             metadata[keep_cols],
             how="left",
@@ -129,6 +130,7 @@ class Amazon2023BaseParser(BaseDatasetParser):
         ).drop(columns=["parent_asin"])
         merged["title"] = merged["title"].fillna("")
         merged["description"] = merged["description"].fillna("")
+        merged["metadata_text"] = merged["metadata_text"].fillna("")
         return merged
 
     def _load_parsed_data(self) -> ParsedData:

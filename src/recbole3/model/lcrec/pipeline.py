@@ -9,7 +9,8 @@ from omegaconf import DictConfig
 from recbole3.config import RuntimeConfig, instantiate_dataclass
 from recbole3.dataset import get_dataset_spec
 from recbole3.evaluation import EvalConfig
-from recbole3.model.lcrec import LCRecConfig, LCRecTrainer
+from recbole3.model.lcrec.config import LCRecConfig
+from recbole3.model.lcrec.trainer import LCRecTrainer
 from recbole3.pipeline import Pipeline
 from recbole3.utils import require_component_cfg, require_component_name
 

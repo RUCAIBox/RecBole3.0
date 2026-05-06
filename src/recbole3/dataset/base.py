@@ -26,6 +26,7 @@ from recbole3.dataset.utils import (
 if TYPE_CHECKING:
     from recbole3.evaluation.config import EvalConfig
 
+
 DatasetTask = Literal["ranking", "retrieval"]
 
 PARSER_INTERACTIONS_SCHEMA = FrameSchema(
@@ -42,7 +43,7 @@ RETRIEVAL_EVAL_SCHEMA = FrameSchema(
 )
 
 
-class FrameDataset(Dataset[pd.DataFrame | dict[str, Any]]):
+class FrameDataset(Dataset[pd.DataFrame]):
     """Map-style Dataset backed by a DataFrame.
 
     PyTorch DataLoader uses `__getitems__` for batched fetching when available,
@@ -536,12 +537,12 @@ class BaseTaskDataset:
         raise ValueError(f"Unsupported split strategy '{strategy}'.")
 
     def _ratio_boundaries(
-            self,
-            size: int,
-            *,
-            train_ratio: float,
-            valid_ratio: float,
-            test_ratio: float,
+        self,
+        size: int,
+        *,
+        train_ratio: float,
+        valid_ratio: float,
+        test_ratio: float,
     ) -> tuple[int, int]:
         ratios = np.asarray([train_ratio, valid_ratio, test_ratio], dtype=np.float64)
         if np.any(ratios < 0):
@@ -563,11 +564,11 @@ class BaseTaskDataset:
         return train_count, train_count + valid_count
 
     def _leave_one_out_boundaries(
-            self,
-            size: int,
-            *,
-            valid_holdout_num: int,
-            test_holdout_num: int,
+        self,
+        size: int,
+        *,
+        valid_holdout_num: int,
+        test_holdout_num: int,
     ) -> tuple[int, int]:
         test_size = min(size, int(test_holdout_num))
         valid_size = min(size - test_size, int(valid_holdout_num))

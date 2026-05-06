@@ -4,23 +4,30 @@ model:
   name: hstu
   history_max_length: 50
   embedding_dim: 64
-  num_layers: 2
+  num_layers: 4
   num_heads: 2
-  attention_dim: 16
-  linear_hidden_dim: 16
-  linear_dropout_rate: 0.1
+  input_dropout_rate: 0.5
+  attention_dim: 32
+  linear_hidden_dim: 32
+  linear_dropout_rate: 0.5
   attn_dropout_rate: 0.0
   temperature: 0.05
   l2_norm_eps: 1.0e-6
   normalize_embeddings: true
   num_time_buckets: 128
+  num_negatives: 512
 
 trainer:
-  batch_size: 256
+  batch_size: 128
   shuffle: true
+  monitor: ndcg@10
   max_epochs: 1
+  early_stopping:
+    enabled: True
+    patience: 10
+    min_delta: 0.001
   optimizer:
-    name: Adam
+    name: AdamW
     kwargs:
       lr: 0.001
   eval:
@@ -28,4 +35,6 @@ trainer:
     exclude_history: true
     metrics:
       - name: recall
-        ks: [10]
+        ks: [5, 10]
+      - name: ndcg
+        ks: [5, 10]
