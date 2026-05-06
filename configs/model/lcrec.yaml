@@ -4,10 +4,10 @@ model:
   name: lcrec
 
   # SID mapping
-  sid_file: "/home/cce/wzc/RecBole/RecBole3.0/outputs/letter/item_sids.json"           # Path to item_sids.json (required)
+  sid_file: "Path/to/item_sids.json"
 
   # LLM backbone
-  model_name_or_path: "/home/cce/wzc/Qwen2.5-1.5B" # HuggingFace model path (required)
+  model_name_or_path: "path/to/Qwen2.5-1.5B"
   attn_implementation: "flash_attention_2"
   torch_dtype: bfloat16
 

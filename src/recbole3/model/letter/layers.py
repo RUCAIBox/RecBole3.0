@@ -122,7 +122,7 @@ class LetterVQLayer(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        labels: list[int],
+        labels: list[int] | None,
         level: int,
         infer_use_sk: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, int, torch.Tensor]:
@@ -148,7 +148,9 @@ class LetterVQLayer(nn.Module):
         unused_codes = (embed_onehot_sum == 0).sum().item()
 
         x_q = F.embedding(embed_ind, code_embs).view(x.shape)
-        diversity_loss = self._compute_diversity_loss(x_q.view(-1, self.dim), embed_ind.view(-1), labels)
+        diversity_loss = x_q.new_zeros(())
+        if labels is not None and float(self.diversity_loss_weight) > 0:
+            diversity_loss = self._compute_diversity_loss(x_q.view(-1, self.dim), embed_ind.view(-1), labels)
         codebook_loss = F.mse_loss(x_q, x.detach())
         commitment_loss = F.mse_loss(x_q.detach(), x)
         quant_loss = codebook_loss + self.commit_loss_weight * commitment_loss + self.diversity_loss_weight * diversity_loss
@@ -164,12 +166,18 @@ class LetterVQLayer(nn.Module):
         from k_means_constrained import KMeansConstrained
 
         x_np = x.detach().cpu().numpy()
-        n_clusters = 256
-        size_min = min(len(x_np) // (n_clusters * 2), 50)
+        n_clusters = self.n_embed
+        n_samples = len(x_np)
+        if n_samples < n_clusters:
+            raise ValueError(
+                f"Cannot initialize codebook with {n_clusters} clusters from only {n_samples} samples."
+            )
+        size_min = max(1, min(n_samples // (n_clusters * 2), 50))
+        size_max = max(size_min, size_min * 4, (n_samples + n_clusters - 1) // n_clusters)
         km = KMeansConstrained(
             n_clusters=n_clusters,
             size_min=size_min,
-            size_max=size_min * 4,
+            size_max=size_max,
             max_iter=10,
             n_init=10,
             n_jobs=10,
@@ -203,9 +211,16 @@ class LetterRQLayer(nn.Module):
     def __init__(self, config: Any):
         super().__init__()
         self.config = config
-        self.codebook_num = len(config.codebook_size)
-        self.codebook_dim = config.codebook_dim
         self.codebook_sizes = list(config.codebook_size)
+        derived_codebook_num = len(self.codebook_sizes)
+        if config.codebook_num != derived_codebook_num:
+            raise ValueError(
+                "config.codebook_num must match len(config.codebook_size), "
+                f"got codebook_num={config.codebook_num} and "
+                f"len(codebook_size)={derived_codebook_num}"
+            )
+        self.codebook_num = derived_codebook_num
+        self.codebook_dim = config.codebook_dim
         sk_epsilons = list(config.sk_epsilons)
 
         self.vq_layers = nn.ModuleList(
@@ -226,7 +241,7 @@ class LetterRQLayer(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        labels: dict[str, list[int]],
+        labels: dict[str, list[int]] | None,
         infer_use_sk: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, float, torch.Tensor]:
         batch_size, _ = x.shape
@@ -236,7 +251,7 @@ class LetterRQLayer(nn.Module):
         output = torch.empty(batch_size, self.codebook_num, dtype=torch.long, device=x.device)
 
         for level, vq_layer in enumerate(self.vq_layers):
-            label = labels[str(level)]
+            label = None if labels is None else labels[str(level)]
             quant, quant_loss, unused_codes, output[:, level] = vq_layer(
                 x,
                 label,

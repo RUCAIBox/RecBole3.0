@@ -15,7 +15,12 @@ class LETTERTrainer(RQVAETrainer):
         import torch
 
         x = data
-        size_min = min(len(data) // (n_clusters * 2), 10)
+        num_points = len(x)
+        if num_points < int(n_clusters):
+            raise ValueError(
+                f"KMeansConstrained requires at least n_clusters points, got {num_points} < {int(n_clusters)}."
+            )
+        size_min = max(1, min(num_points // (int(n_clusters) * 2), 10))
         clf = KMeansConstrained(
             n_clusters=n_clusters,
             size_min=size_min,
@@ -53,8 +58,6 @@ class LETTERTrainer(RQVAETrainer):
         collator = model.build_train_collator(prepared_data)
         train_dataset = prepared_data.get_train_dataset()
         train_dataloader = self.build_dataloader(train_dataset, collator, shuffle=self.config.shuffle)
-
-        optimizer = self.build_optimizer(model)
         monitor_name = str(self.config.monitor or "").strip()
         monitor = None
         if monitor_name:
@@ -63,33 +66,37 @@ class LETTERTrainer(RQVAETrainer):
         checkpoint_paths = self._resolve_checkpoint_paths(output_dir)
         steps_per_epoch = max(1, len(train_dataloader))
         num_training_steps = max(1, steps_per_epoch * self.config.max_epochs)
+        scheduler_interval = self.config.scheduler.interval if self.config.scheduler is not None else None
+
+        # Initialize codebook before DDP wrapping so parameters are consistent across ranks.
+        from tqdm import tqdm
+        import torch
+
+        if getattr(model, "_initted", False) is False:
+            if accelerator.is_main_process:
+                all_embeddings = []
+                with torch.no_grad():
+                    for batch in tqdm(
+                        train_dataloader,
+                        desc="Collecting embeddings for codebook init",
+                        disable=not accelerator.is_main_process,
+                    ):
+                        all_embeddings.append(batch["item_embeddings"])
+                all_embeddings = torch.cat(all_embeddings, dim=0)
+                model.init_codebook(all_embeddings)
+            accelerator.wait_for_everyone()
+
+        optimizer = self.build_optimizer(model)
         scheduler = self.build_scheduler(
             optimizer,
             num_training_steps=num_training_steps,
             steps_per_epoch=steps_per_epoch,
         )
-        scheduler_interval = self.config.scheduler.interval if self.config.scheduler is not None else None
 
         if scheduler is None:
             model, optimizer, train_dataloader = accelerator.prepare(model, optimizer, train_dataloader)
         else:
-            model, optimizer, train_dataloader, scheduler = accelerator.prepare(
-                model,
-                optimizer,
-                train_dataloader,
-                scheduler,
-            )
-
-        from tqdm import tqdm
-        import torch
-
-        # Initialize codebook on whole train embedding set.
-        all_embeddings = []
-        with torch.no_grad():
-            for batch in tqdm(train_dataloader, desc="Collecting embeddings for codebook init"):
-                all_embeddings.append(batch["item_embeddings"])
-        all_embeddings = torch.cat(all_embeddings, dim=0)
-        model.init_codebook(all_embeddings)
+            model, optimizer, train_dataloader, scheduler = accelerator.prepare(model, optimizer, train_dataloader, scheduler)
 
         train_history: list[dict[str, Any]] = []
         valid_history: list[dict[str, Any]] = []
