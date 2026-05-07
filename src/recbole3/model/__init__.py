@@ -25,6 +25,11 @@ from recbole3.model.llmrank import (
     LLMRankModelDataset,
 )
 from recbole3.model.llmrank.trainer import LLMRankTrainer, LLMRankTrainerConfig
+from recbole3.model.rearec import (
+    ReaRecConfig,
+    ReaRecModel,
+    ReaRecModelDataset,
+)
 from recbole3.model.rqvae import (
     RQVAEConfig,
     RQVAEModel,
@@ -56,6 +61,14 @@ class ModelSpec:
 
 
 MODEL_TABLE: dict[str, ModelSpec] = {
+    "rearec": ModelSpec(
+        model_cls=ReaRecModel,
+        config_cls=ReaRecConfig,
+        model_data_cls=ReaRecModelDataset,
+        trainer_cls=Trainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
     "hstu": ModelSpec(
         model_cls=HSTUModel,
         config_cls=HSTUConfig,
@@ -98,6 +111,10 @@ def get_model_spec(name: str) -> ModelSpec:
 
 __all__ = [
     "BaseCollator",
+    "ReaRecConfig",
+    "ReaRecModel",
+    "ReaRecModelDataset",
+    "ReaRecTrainer",
     "BaseModel",
     "BaseModelDataset",
     "BaseRankingModel",
