@@ -1,0 +1,13 @@
+name: amazon2014_retrieval
+category: Beauty
+metadata_mode: sentence
+download_source: snap
+download_dir: data/raw
+processed_dir: data/processed
+refresh_cache: false
+split:
+  strategy: leave_one_out
+  order: chronological
+  per_user: true
+  valid_holdout_num: 1
+  test_holdout_num: 1
