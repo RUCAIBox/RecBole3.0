@@ -136,7 +136,10 @@ class LCRecTrainer:
             device_map: str | dict = {"": local_rank}
             torch.cuda.set_device(local_rank)
         else:
-            device_map = "auto"
+            # Avoid device_map="auto" (may shard/offload and kill throughput on single-node training).
+            device_map = {"": 0} if torch.cuda.is_available() else "auto"
+            if torch.cuda.is_available():
+                torch.cuda.set_device(0)
 
         model = self._load_model(llm_tokenizer, device_map=device_map)
 
@@ -157,6 +160,7 @@ class LCRecTrainer:
             logging_steps=self.config.logging_steps,
             optim=self.config.optim,
             gradient_checkpointing=self.config.gradient_checkpointing,
+            dataloader_num_workers=self.config.train_dataloader_num_workers,
             eval_strategy="epoch",
             save_strategy="epoch",
             output_dir=output_dir,
@@ -289,6 +293,7 @@ class LCRecTrainer:
             batch_size=self.config.eval_batch_size,
             collate_fn=collator,
             pin_memory=True,
+            num_workers=self.config.eval_dataloader_num_workers,
         )
 
         # DDP support
