@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +145,7 @@ class LETTERTrainer(RQVAETrainer):
         self._cached_eval_split: str | None = None
 
         for epoch in tqdm(range(1, total_epochs + 1), desc="Training"):
+            epoch_start = time.perf_counter()
             model.train()
 
             unwrapped_model = accelerator.unwrap_model(model)
@@ -173,18 +175,48 @@ class LETTERTrainer(RQVAETrainer):
                 cf_losses.append(float(loss_dict["cf_loss"].detach().float().item()))
                 unused_codes.append(int(outputs["unused_codes"]))
 
+            elapsed = time.perf_counter() - epoch_start
+            lr = optimizer.param_groups[0].get("lr", None)
+            avg_total_loss = self._mean_or_none(total_losses)
+            avg_recon_loss = self._mean_or_none(recon_losses)
+            avg_quant_loss = self._mean_or_none(quant_losses)
+            avg_cf_loss = self._mean_or_none(cf_losses)
+            avg_unused_codes = self._mean_or_none(unused_codes)
+
             train_history.append(
                 {
                     "epoch": epoch,
-                    "loss": self._mean_or_none(total_losses),
+                    "loss": avg_total_loss,
                     "losses": total_losses,
-                    "recon_loss": self._mean_or_none(recon_losses),
-                    "quant_loss": self._mean_or_none(quant_losses),
-                    "cf_loss": self._mean_or_none(cf_losses),
-                    "unused_codes": self._mean_or_none(unused_codes),
+                    "recon_loss": avg_recon_loss,
+                    "quant_loss": avg_quant_loss,
+                    "cf_loss": avg_cf_loss,
+                    "unused_codes": avg_unused_codes,
                     "num_batches": len(total_losses),
+                    "elapsed_seconds": elapsed,
+                    "lr": lr,
                 }
             )
+
+            print(
+                f"[train] epoch={epoch}/{total_epochs} "
+                f"avg_loss={(f'{avg_total_loss:.6f}' if avg_total_loss is not None else 'n/a')} "
+                f"recon_loss={(f'{avg_recon_loss:.6f}' if avg_recon_loss is not None else 'n/a')} "
+                f"num_batches={len(total_losses)}"
+            )
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_epoch(
+                    epoch=epoch,
+                    max_epochs=total_epochs,
+                    loss=avg_total_loss,
+                    num_batches=len(total_losses),
+                    elapsed_seconds=elapsed,
+                    lr=lr,
+                    recon_loss=avg_recon_loss,
+                    quant_loss=avg_quant_loss,
+                    cf_loss=avg_cf_loss,
+                    unused_codes=avg_unused_codes,
+                )
 
             should_evaluate = (epoch % eval_steps == 0) or (epoch == total_epochs)
             current_value: float | None = None
@@ -199,6 +231,13 @@ class LETTERTrainer(RQVAETrainer):
                 )
                 valid_result["epoch"] = epoch
                 valid_history.append(valid_result)
+
+                print(
+                    f"[eval:valid] epoch={epoch}/{total_epochs} "
+                    f"metrics={self._format_metrics(valid_result['metrics'])}"
+                )
+                if (logger := getattr(self, "_logger", None)) is not None:
+                    logger.log_validation(epoch=epoch, metrics=valid_result["metrics"])
 
                 if monitor is not None:
                     current_value = self._extract_monitor_value(valid_result["metrics"], monitor.name)
@@ -234,7 +273,21 @@ class LETTERTrainer(RQVAETrainer):
                 and bad_epoch_count >= int(self.config.early_stopping.patience)
             ):
                 stopped_early = True
+                if (logger := getattr(self, "_logger", None)) is not None:
+                    logger.log_early_stopping(
+                        stopped=True,
+                        epoch=epoch,
+                        patience=int(self.config.early_stopping.patience),
+                    )
                 break
+
+        if not stopped_early:
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_early_stopping(
+                    stopped=False,
+                    epoch=total_epochs,
+                    patience=int(self.config.early_stopping.patience),
+                )
 
         return {
             "train_history": train_history,
