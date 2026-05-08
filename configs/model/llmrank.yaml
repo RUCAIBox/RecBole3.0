@@ -1,0 +1,96 @@
+# @package _global_
+
+model:
+  name: llmrank
+  history_max_length: 50
+  backbone_topk: 100
+  recall_budget: 20
+  candidate_source: bm25 # bm25, random, or one registered retrieval backbone such as hstu
+  candidate_seed: 42
+  candidate_cache_dir: outputs/candidate_cache
+  candidate_file_dir: outputs/candidate_files
+  refresh_candidate_cache: true
+  use_candidate_file: true
+  selected_user_count: 200
+  has_gt: false
+  fix_pos: -1     # 如果要插入ground truth, -1表示插入末尾，0表示插入开头
+  shuffle: false  # shuffle the candidate list
+  boots: 0
+  item_text_field: title
+  fallback_item_text_field: metadata_text
+  bm25_item_text_field: title
+  bm25_fallback_text_field: metadata_text
+  backbone_checkpoint_path: null
+  backbone_model:
+    history_max_length: 50
+    embedding_dim: 64
+    num_layers: 2
+    num_heads: 2
+    attention_dim: 16
+    linear_hidden_dim: 16
+    linear_dropout_rate: 0.1
+    attn_dropout_rate: 0.0
+    temperature: 0.05
+    l2_norm_eps: 1.0e-6
+    normalize_embeddings: true
+    num_time_buckets: 128
+  backbone_trainer:
+    batch_size: 256
+    shuffle: true
+    max_epochs: 10
+    eval_steps: 2
+    save_inference_results: false
+    inference_topk: null
+    monitor: recall@10
+    stopping_step: 2
+    optimizer:
+      name: Adam
+      kwargs:
+        lr: 0.001
+    eval:
+      protocol: full
+      exclude_history: true
+      metrics:
+        - name: recall
+          ks: [10]
+  domain: product
+  backend: openai
+  parsing_strategy: title
+  prompt_strategy: sequential # sequential, recency_focused, in_context_learning
+  api_model_name: "/mnt/data/model/Qwen2.5-7B-Instruct"
+  api_base_url: http://localhost:8001/v1/chat/completions
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.2
+  max_output_tokens: 512
+  api_batch: 8
+  async_dispatch: true
+  request_retries: 3
+  retry_backoff_sec: 2.0
+  request_timeout_sec: 60.0
+  api_response_cache_path: outputs/candidate_cache/llmrank_api_responses.jsonl
+  refresh_api_response_cache: false
+  system_prompt: null
+
+dataset:
+  metadata_mode: fields
+  download_source: huggingface
+
+trainer:
+  batch_size: 100
+  shuffle: false
+  dataloader_num_workers: 0
+  max_epochs: 0
+  save_inference_results: false
+  inference_topk: null
+  checkpoint:
+    save_best: true
+    save_last: true
+  eval:
+    protocol: full
+    neg_sampling_num: 0
+    candidate_seed: 42
+    metrics:
+      - name: ndcg
+        ks: [10]
+      - name: recall
+        ks: [10]

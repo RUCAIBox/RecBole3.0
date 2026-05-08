@@ -9,7 +9,7 @@ from sklearn.decomposition import PCA
 from torch.utils.data import Dataset
 
 from recbole3.dataset.utils import ITEM_ID
-from recbole3.model.base import BaseCollator, ModelDatasets, BaseRetrievalModelDataset
+from recbole3.model.base import BaseCollator, BaseModelDataset, ModelDatasets
 from recbole3.model.rqvae.config import RQVAEConfig
 
 
@@ -27,7 +27,7 @@ class _ItemEmbeddingDataset(Dataset):
         return {ITEM_ID: self.item_ids[index], "embedding": self.embeddings[index]}
 
 
-class RQVAEModelDataset(BaseRetrievalModelDataset):
+class RQVAEModelDataset(BaseModelDataset):
     """Model-side dataset for RQ-VAE that handles dynamic embedding generation.
 
     This dataset:

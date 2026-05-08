@@ -1,10 +1,10 @@
-name: amazon2023_retrieval
-category: Musical_Instruments
-kcore: 5core
+name: amazon2014_retrieval
+category: Beauty
 metadata_mode: sentence
-download_source: modelscope
+download_source: snap
 download_dir: data/raw
 processed_dir: data/processed
+refresh_cache: false
 split:
   strategy: leave_one_out
   order: chronological

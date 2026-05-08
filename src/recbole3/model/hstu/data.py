@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import Dataset
 
 from recbole3.dataset import FrameDataset, ITEM_ID, LABEL, TIMESTAMP, USER_ID
-from recbole3.model.base import BaseCollator, BaseRetrievalModelDataset, ModelDatasets
+from recbole3.model.base import BaseCollator, BaseModelDataset, ModelDatasets
 from recbole3.model.hstu.config import HSTUConfig, HSTU_PADDING_ITEM_ID
 from recbole3.model.sequential import HISTORY_ITEM_IDS
 
@@ -57,7 +57,7 @@ def build_hstu_histories(
 
 
 class HSTUModelDataset(
-    BaseRetrievalModelDataset[pd.DataFrame, pd.DataFrame],
+    BaseModelDataset[pd.DataFrame, pd.DataFrame],
 ):
     """Model-side retrieval dataset that adds HSTU item and timestamp histories."""
 
@@ -67,8 +67,9 @@ class HSTUModelDataset(
         model_config: HSTUConfig,
     ) -> ModelDatasets[pd.DataFrame, pd.DataFrame]:
         history_max_length = _require_history_max_length(model_config)
-        train_frame, history_state = self._build_hstu_frame(
-            _dataset_frame(self.get_train_dataset()),
+        raw_train_frame = _dataset_frame(self.get_train_dataset())
+        train_frame, history_state = self._build_hstu_train_frame(
+            raw_train_frame,
             history_max_length=history_max_length,
         )
         valid_frame, history_state = self._build_hstu_frame(
@@ -86,6 +87,49 @@ class HSTUModelDataset(
             valid_dataset=FrameDataset(valid_frame),
             test_dataset=FrameDataset(test_frame),
         )
+
+    def _build_hstu_train_frame(
+        self,
+        records: pd.DataFrame,
+        *,
+        history_max_length: int,
+    ) -> tuple[pd.DataFrame, HistoryState]:
+        history_records = _filter_history_records(
+            records,
+            include_target_item=self._include_target_item_in_history,
+        )
+        _, _, history_state = build_hstu_histories(
+            history_records,
+            history_max_length=history_max_length,
+            include_target_item=self._include_target_item_in_history,
+        )
+        sequence_records = self._build_user_sequence_train_frame(
+            history_records,
+            history_max_length=history_max_length,
+        )
+        return sequence_records, history_state
+
+    def _build_user_sequence_train_frame(
+        self,
+        records: pd.DataFrame,
+        *,
+        history_max_length: int,
+    ) -> pd.DataFrame:
+        columns = _with_history_columns(records.columns)
+        if records.empty:
+            return pd.DataFrame(columns=columns)
+
+        rows: list[dict[str, Any]] = []
+        for _, user_records in records.groupby(USER_ID, sort=False):
+            user_rows = user_records.to_dict("records")
+            if len(user_rows) < 2:
+                continue
+            target_record = dict(user_rows[-1])
+            prefix_records = user_rows[:-1][-history_max_length:]
+            target_record[HISTORY_ITEM_IDS] = tuple(int(record[ITEM_ID]) for record in prefix_records)
+            target_record[HISTORY_TIMESTAMPS] = tuple(float(record[TIMESTAMP]) for record in prefix_records)
+            rows.append(target_record)
+        return pd.DataFrame(rows, columns=columns)
 
     def _build_hstu_frame(
         self,
@@ -113,7 +157,7 @@ class HSTUTrainCollator(BaseCollator):
     """Collate HSTU training records into padded history tensors."""
 
     def __call__(self, feature_records: pd.DataFrame) -> dict[str, torch.Tensor]:
-        batch = _build_hstu_history_batch(feature_records)
+        batch = _build_hstu_history_batch(feature_records, include_target_item=True)
         batch[ITEM_ID] = torch.as_tensor(feature_records[ITEM_ID].to_numpy(), dtype=torch.long)
         return batch
 
@@ -122,23 +166,32 @@ class HSTUEvalCollator(BaseCollator):
     """Collate HSTU evaluation records into padded history tensors."""
 
     def __call__(self, feature_records: pd.DataFrame) -> dict[str, torch.Tensor]:
-        return _build_hstu_history_batch(feature_records)
+        return _build_hstu_history_batch(feature_records, include_target_item=False)
 
 
-def _build_hstu_history_batch(records: pd.DataFrame) -> dict[str, torch.Tensor]:
+def _build_hstu_history_batch(records: pd.DataFrame, *, include_target_item: bool) -> dict[str, torch.Tensor]:
     history_items = [tuple(values) for values in records[HISTORY_ITEM_IDS].tolist()]
     history_times = [tuple(values) for values in records[HISTORY_TIMESTAMPS].tolist()]
     history_lengths = torch.tensor([len(values) for values in history_items], dtype=torch.long)
     batch_size = len(records)
-    max_length = int(torch.max(history_lengths).item()) if batch_size > 0 else 0
+    max_length = int(torch.max(history_lengths).item()) + 1 if batch_size > 0 else 0
     history_item_ids = torch.full((batch_size, max_length), HSTU_PADDING_ITEM_ID, dtype=torch.long)
     history_timestamps = torch.zeros((batch_size, max_length), dtype=torch.float32)
+    target_timestamps = records[TIMESTAMP].tolist() if batch_size > 0 else []
+    target_item_ids = records[ITEM_ID].tolist() if include_target_item and batch_size > 0 else []
     for row_index, (item_history, time_history) in enumerate(zip(history_items, history_times, strict=True)):
         row_length = len(item_history)
-        if row_length == 0:
-            continue
-        history_item_ids[row_index, :row_length] = torch.tensor(item_history, dtype=torch.long)
-        history_timestamps[row_index, :row_length] = torch.tensor(time_history, dtype=torch.float32)
+        if len(time_history) != row_length:
+            raise ValueError("HSTU history item and timestamp lengths must match.")
+        if row_length > 0:
+            history_item_ids[row_index, :row_length] = torch.tensor(item_history, dtype=torch.long)
+            history_timestamps[row_index, :row_length] = torch.tensor(time_history, dtype=torch.float32)
+        target_timestamp = target_timestamps[row_index]
+        if pd.isna(target_timestamp):
+            raise ValueError("HSTU requires timestamp on every interaction used for sequence construction.")
+        history_timestamps[row_index, row_length] = float(target_timestamp)
+        if include_target_item:
+            history_item_ids[row_index, row_length] = int(target_item_ids[row_index])
     return {
         HISTORY_ITEM_IDS: history_item_ids,
         HISTORY_TIMESTAMPS: history_timestamps,
@@ -158,10 +211,30 @@ def _default_include_target_item(record: Mapping[str, Any]) -> bool:
     return label is None or pd.isna(label) or float(label) > 0
 
 
+def _filter_history_records(
+    records: pd.DataFrame,
+    *,
+    include_target_item: Callable[[Mapping[str, Any]], bool],
+) -> pd.DataFrame:
+    if records.empty:
+        return records.copy()
+    mask = [include_target_item(record) for record in records.to_dict("records")]
+    return records.loc[mask].copy()
+
+
 def _dataset_frame(dataset: Dataset[Any]) -> pd.DataFrame:
     if not isinstance(dataset, FrameDataset):
         raise TypeError(f"HSTU model datasets require FrameDataset, got {type(dataset).__name__}.")
     return dataset.frame.copy()
+
+
+def _with_history_columns(columns: pd.Index) -> list[str]:
+    result = list(columns)
+    if HISTORY_ITEM_IDS not in result:
+        result.append(HISTORY_ITEM_IDS)
+    if HISTORY_TIMESTAMPS not in result:
+        result.append(HISTORY_TIMESTAMPS)
+    return result
 
 
 __all__ = [

@@ -7,8 +7,7 @@ from recbole3.dataset import ITEM_ID, LABEL, SEEN_ITEM_IDS, TIMESTAMP, USER_ID
 from recbole3.evaluation import EvalConfig
 from recbole3.model import (
     HISTORY_ITEM_IDS,
-    BaseSequentialRankingModelDataset,
-    BaseSequentialRetrievalModelDataset,
+    BaseSequentialModelDataset,
     ModelConfig,
     SequentialModelConfig,
     build_history_item_ids,
@@ -16,11 +15,11 @@ from recbole3.model import (
 from tests.test_helpers import StubDataset, StubDatasetConfig, StubRankingDataset, StubRankingDatasetConfig
 
 
-class StubSequentialRankingDataset(BaseSequentialRankingModelDataset):
+class StubSequentialRankingDataset(BaseSequentialModelDataset):
     pass
 
 
-class StubSequentialRetrievalDataset(BaseSequentialRetrievalModelDataset):
+class StubSequentialRetrievalDataset(BaseSequentialModelDataset):
     pass
 
 

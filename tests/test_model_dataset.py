@@ -6,7 +6,7 @@ import pytest
 
 from recbole3.dataset import FrameDataset
 from recbole3.evaluation import EvalConfig
-from recbole3.model import BaseRetrievalModelDataset, ModelConfig, ModelDatasets
+from recbole3.model import BaseModelDataset, ModelConfig, ModelDatasets
 from tests.test_helpers import StubDataset, StubDatasetConfig
 
 
@@ -14,29 +14,29 @@ def _full_eval_config() -> EvalConfig:
     return EvalConfig(protocol="full")
 
 
-class PartialUpdateModelDataset(BaseRetrievalModelDataset[Any, Any]):
+class PartialUpdateModelDataset(BaseModelDataset[Any, Any]):
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[Any, Any]:
         train_frame = self.get_train_dataset().frame.iloc[:-1].copy()
         return ModelDatasets(train_dataset=FrameDataset(train_frame))
 
 
-class MetadataOnlyModelDataset(BaseRetrievalModelDataset[Any, Any]):
+class MetadataOnlyModelDataset(BaseModelDataset[Any, Any]):
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[Any, Any]:
         self.model_name = model_config.name
         return ModelDatasets()
 
 
-class LegacyStyleModelDataset(BaseRetrievalModelDataset[Any, Any]):
+class LegacyStyleModelDataset(BaseModelDataset[Any, Any]):
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[Any, Any]:
         return None  # type: ignore[return-value]
 
 
-class InvalidReturnModelDataset(BaseRetrievalModelDataset[Any, Any]):
+class InvalidReturnModelDataset(BaseModelDataset[Any, Any]):
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[Any, Any]:
         return "invalid"  # type: ignore[return-value]
 
 
-class InvalidTrainDatasetModelDataset(BaseRetrievalModelDataset[Any, Any]):
+class InvalidTrainDatasetModelDataset(BaseModelDataset[Any, Any]):
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[Any, Any]:
         return ModelDatasets(train_dataset=[1, 2, 3])  # type: ignore[arg-type]
 

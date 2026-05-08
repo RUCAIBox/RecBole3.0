@@ -69,14 +69,23 @@ class TrainerConfig:
         metadata={"help": "Number of optimizer accumulation steps handled by accelerate."},
     )
     max_epochs: int = field(default=1, metadata={"help": "Number of epochs executed by fit()."})
-    eval_step: int = field(
+    eval_steps: int = field(
         default=1,
         metadata={
             "help": (
-                "Run validation (and best-checkpointing) every `eval_step` epochs. "
+                "Run validation (and best-checkpointing) every `eval_steps` epochs. "
                 "The last epoch is always evaluated. Set to 2000 to reproduce the original LETTER schedule."
             ),
         },
+    )
+    save_inference_results: bool = field(
+        default=False,
+        metadata={"help": "Whether evaluation returns raw inference outputs together with metrics."},
+    )
+    inference_topk: int | None = field(
+        default=None,
+        metadata={"help": "Optional top-k width requested during evaluation when raw inference outputs are needed."},
+    )
     )
     optimizer: OptimizerConfig = field(
         default_factory=OptimizerConfig,

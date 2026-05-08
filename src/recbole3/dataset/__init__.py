@@ -1,26 +1,40 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 
-from recbole3.dataset.amazon2023 import Amazon2023RetrievalParser, Amazon2023RetrievalConfig, Amazon2023RetrievalDataset
-from recbole3.dataset.config import DatasetConfig, SplitConfig
+from recbole3.dataset.amazon2014 import (
+    Amazon2014BaseConfig,
+    Amazon2014BaseParser,
+    Amazon2014RetrievalConfig,
+    Amazon2014RetrievalDataset,
+    Amazon2014RetrievalParser,
+)
+from recbole3.dataset.amazon2023 import (
+    Amazon2023BaseConfig,
+    Amazon2023BaseParser,
+    Amazon2023RetrievalConfig,
+    Amazon2023RetrievalDataset,
+    Amazon2023RetrievalParser,
+)
 from recbole3.dataset.base import (
     BaseTaskDataset,
     DatasetTask,
     FrameDataset,
     PARSER_INTERACTIONS_SCHEMA,
     PREPARED_INTERACTIONS_SCHEMA,
-    RankingDataset,
     RETRIEVAL_EVAL_SCHEMA,
-    RetrievalDataset,
 )
-from recbole3.dataset.parser import (
-    BaseDatasetParser,
-    ParsedData,
-)
+from recbole3.dataset.config import DatasetConfig, SplitConfig
+from recbole3.dataset.parser import BaseDatasetParser, ParsedData
 from recbole3.dataset.utils import (
+    CANDIDATE_ITEM_IDS,
+    ITEM_ID,
+    LABEL,
+    SEEN_ITEM_IDS,
+    TIMESTAMP,
+    USER_ID,
     FrameSchema,
-    require_columns, USER_ID, ITEM_ID, TIMESTAMP, LABEL, SEEN_ITEM_IDS, CANDIDATE_ITEM_IDS,
+    require_columns,
 )
 
 
@@ -33,6 +47,10 @@ class DatasetSpec:
 
 
 DATASET_TABLE: dict[str, DatasetSpec] = {
+    "amazon2014_retrieval": DatasetSpec(
+        dataset_cls=Amazon2014RetrievalDataset,
+        config_cls=Amazon2014RetrievalConfig,
+    ),
     "amazon2023_retrieval": DatasetSpec(
         dataset_cls=Amazon2023RetrievalDataset,
         config_cls=Amazon2023RetrievalConfig,
@@ -49,9 +67,16 @@ def get_dataset_spec(name: str) -> DatasetSpec:
 
 
 __all__ = [
-    "Amazon2023RetrievalParser",
+    "Amazon2014BaseConfig",
+    "Amazon2014BaseParser",
+    "Amazon2014RetrievalConfig",
+    "Amazon2014RetrievalDataset",
+    "Amazon2014RetrievalParser",
+    "Amazon2023BaseConfig",
+    "Amazon2023BaseParser",
     "Amazon2023RetrievalConfig",
     "Amazon2023RetrievalDataset",
+    "Amazon2023RetrievalParser",
     "BaseDatasetParser",
     "BaseTaskDataset",
     "CANDIDATE_ITEM_IDS",
@@ -66,9 +91,7 @@ __all__ = [
     "PARSER_INTERACTIONS_SCHEMA",
     "PREPARED_INTERACTIONS_SCHEMA",
     "ParsedData",
-    "RankingDataset",
     "RETRIEVAL_EVAL_SCHEMA",
-    "RetrievalDataset",
     "SEEN_ITEM_IDS",
     "SplitConfig",
     "TIMESTAMP",

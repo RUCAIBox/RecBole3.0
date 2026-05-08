@@ -9,7 +9,7 @@ import pandas as pd
 from torch.utils.data import Dataset
 
 from recbole3.dataset import FrameDataset, ITEM_ID, LABEL, USER_ID
-from recbole3.model.base import BaseRankingModelDataset, BaseRetrievalModelDataset, ModelConfig, ModelDatasets
+from recbole3.model.base import BaseModelDataset, ModelConfig, ModelDatasets
 
 
 HISTORY_ITEM_IDS = "history_item_ids"
@@ -73,66 +73,13 @@ def _truncate_history(item_ids: list[int], *, history_max_length: int | None) ->
     return item_ids[-history_max_length:]
 
 
-class BaseSequentialRankingModelDataset(
-    BaseRankingModelDataset[pd.DataFrame, pd.DataFrame],
+class BaseSequentialModelDataset(
+    BaseModelDataset[pd.DataFrame, pd.DataFrame],
     ABC,
 ):
-    """Model-side ranking dataset that adds history_item_ids to every split."""
+    """Model-side dataset that adds history_item_ids to every split."""
 
     def _build_model_datasets(self, *, model_config: ModelConfig) -> ModelDatasets[pd.DataFrame, pd.DataFrame]:
-        history_max_length = _get_history_max_length(model_config)
-        train_frame, history_state = self._build_sequential_frame(
-            _dataset_frame(self.get_train_dataset()),
-            history_max_length=history_max_length,
-        )
-        valid_frame, history_state = self._build_sequential_frame(
-            _dataset_frame(self.get_eval_dataset("valid")),
-            initial_histories=history_state,
-            history_max_length=history_max_length,
-        )
-        test_frame, _ = self._build_sequential_frame(
-            _dataset_frame(self.get_eval_dataset("test")),
-            initial_histories=history_state,
-            history_max_length=history_max_length,
-        )
-        return ModelDatasets(
-            train_dataset=FrameDataset(train_frame),
-            valid_dataset=FrameDataset(valid_frame),
-            test_dataset=FrameDataset(test_frame),
-        )
-
-    def _build_sequential_frame(
-        self,
-        records: pd.DataFrame,
-        *,
-        initial_histories: Mapping[int, tuple[int, ...]] | None = None,
-        history_max_length: int | None = None,
-    ) -> tuple[pd.DataFrame, dict[int, tuple[int, ...]]]:
-        history_item_ids, history_state = build_history_item_ids(
-            records,
-            initial_histories=initial_histories,
-            include_target_item=self._include_target_item_in_history,
-            history_max_length=history_max_length,
-        )
-        sequential_records = records.copy()
-        sequential_records[HISTORY_ITEM_IDS] = history_item_ids
-        return sequential_records, history_state
-
-    def _include_target_item_in_history(self, record: Mapping[str, Any]) -> bool:
-        return _default_include_target_item(record)
-
-
-class BaseSequentialRetrievalModelDataset(
-    BaseRetrievalModelDataset[pd.DataFrame, pd.DataFrame],
-    ABC,
-):
-    """Model-side retrieval dataset that adds history_item_ids to train and eval splits."""
-
-    def _build_model_datasets(
-        self,
-        *,
-        model_config: ModelConfig,
-    ) -> ModelDatasets[pd.DataFrame, pd.DataFrame]:
         history_max_length = _get_history_max_length(model_config)
         train_frame, history_state = self._build_sequential_frame(
             _dataset_frame(self.get_train_dataset()),
@@ -186,8 +133,7 @@ def _dataset_frame(dataset: Dataset[Any]) -> pd.DataFrame:
 
 
 __all__ = [
-    "BaseSequentialRankingModelDataset",
-    "BaseSequentialRetrievalModelDataset",
+    "BaseSequentialModelDataset",
     "HISTORY_ITEM_IDS",
     "SequentialModelConfig",
     "build_history_item_ids",

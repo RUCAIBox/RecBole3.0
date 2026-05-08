@@ -275,7 +275,7 @@ def get_lcrec_sft_datasets(
         config: LCRecConfig instance.
         item_tokenizer: LCRecItemTokenizer instance.
         llm_tokenizer: HuggingFace tokenizer with item tokens added.
-        task_data: Prepared BaseTaskDataset (RetrievalDataset).
+        task_data: Prepared retrieval-style BaseTaskDataset.
 
     Returns:
         (train_dataset, val_dataset, test_dataset)

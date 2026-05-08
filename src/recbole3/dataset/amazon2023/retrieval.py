@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from recbole3.dataset.base import RetrievalDataset
+from recbole3.dataset.base import BaseTaskDataset
 from recbole3.dataset.utils import ITEM_ID, LABEL, TIMESTAMP, USER_ID
 
 from .base import Amazon2023BaseConfig, Amazon2023BaseParser
@@ -34,7 +34,7 @@ class Amazon2023RetrievalParser(Amazon2023BaseParser):
         )
 
 
-class Amazon2023RetrievalDataset(RetrievalDataset):
+class Amazon2023RetrievalDataset(BaseTaskDataset):
     """Amazon Reviews 2023 retrieval dataset implementation."""
 
     config_cls = Amazon2023RetrievalConfig
