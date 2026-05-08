@@ -36,9 +36,12 @@ rqvae = [
   "sentence-transformers",
 ]
 rpg = [
-  "transformers>=4.40,<5.0",
-  "sentence-transformers",
-  "faiss-cpu",
+    "transformers>=4.40,<5.0",
+    "sentence-transformers",
+    "faiss-cpu",
+]
+tiger = [
+    "transformers>=4.40,<5.0",
 ]
 lc-rec = [
   "transformers>=4.40,<5.0",

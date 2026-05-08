@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Literal
@@ -36,19 +37,45 @@ class RQVAETrainer(Trainer):
         *,
         output_dir: str | Path | None = None,
     ) -> dict[str, Any]:
-        fit_result = self.fit(model, prepared_data, output_dir=output_dir)
-        best_checkpoint = fit_result["checkpoint_paths"].get("best")
-        if best_checkpoint:
-            state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
-            model.load_state_dict(state_dict)
-        test_result = self.evaluate(model, prepared_data, split="test")
+        self._setup_logger(model, prepared_data, output_dir)
+        total_start = time.perf_counter()
+        try:
+            fit_result = self.fit(model, prepared_data, output_dir=output_dir)
 
-        self.generate_sids(model, prepared_data, output_dir=output_dir)
+            if (logger := getattr(self, "_logger", None)) is not None:
+                best_metric = fit_result.get("best_metric")
+                if best_metric:
+                    logger.log_best(
+                        epoch=fit_result["best_epoch"],
+                        monitor_name=best_metric["name"],
+                        best_value=best_metric["value"],
+                    )
 
-        return {
-            "fit": fit_result,
-            "test": test_result,
-        }
+            best_checkpoint = fit_result["checkpoint_paths"].get("best")
+            if best_checkpoint:
+                state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
+                model.load_state_dict(state_dict)
+            test_result = self.evaluate(model, prepared_data, split="test")
+
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_test(test_result)
+                total_elapsed = time.perf_counter() - total_start
+                logger.log_summary(
+                    stopped_early=fit_result.get("stopped_early", False),
+                    total_epochs=len(fit_result.get("train_history", [])),
+                    best_epoch=fit_result.get("best_epoch"),
+                    total_time=total_elapsed,
+                )
+
+            self.generate_sids(model, prepared_data, output_dir=output_dir)
+
+            return {
+                "fit": fit_result,
+                "test": test_result,
+            }
+        finally:
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.close()
 
     def fit(
         self,
@@ -115,6 +142,7 @@ class RQVAETrainer(Trainer):
         stopped_early = False
 
         for epoch in tqdm(range(1, self.config.max_epochs + 1), desc="Training"):
+            epoch_start = time.perf_counter()
             model.train()
             total_losses: list[float] = []
             recon_losses: list[float] = []
@@ -137,17 +165,39 @@ class RQVAETrainer(Trainer):
                 quant_losses.append(float(loss_dict["quant_loss"].detach().float().item()))
                 unused_codes.append(int(outputs["unused_codes"]))
 
+            elapsed = time.perf_counter() - epoch_start
+            lr = optimizer.param_groups[0].get("lr", None)
+            avg_total_loss = self._mean_or_none(total_losses)
+            avg_recon_loss = self._mean_or_none(recon_losses)
+            avg_quant_loss = self._mean_or_none(quant_losses)
+            avg_unused_codes = self._mean_or_none(unused_codes)
+
             train_history.append(
                 {
                     "epoch": epoch,
-                    "loss": self._mean_or_none(total_losses),
+                    "loss": avg_total_loss,
                     "losses": total_losses,
-                    "recon_loss": self._mean_or_none(recon_losses),
-                    "quant_loss": self._mean_or_none(quant_losses),
-                    "unused_codes": self._mean_or_none(unused_codes),
+                    "recon_loss": avg_recon_loss,
+                    "quant_loss": avg_quant_loss,
+                    "unused_codes": avg_unused_codes,
                     "num_batches": len(total_losses),
+                    "elapsed_seconds": elapsed,
+                    "lr": lr,
                 }
             )
+
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_epoch(
+                    epoch=epoch,
+                    max_epochs=int(self.config.max_epochs),
+                    loss=avg_total_loss,
+                    num_batches=len(total_losses),
+                    elapsed_seconds=elapsed,
+                    lr=lr,
+                    recon_loss=avg_recon_loss,
+                    quant_loss=avg_quant_loss,
+                    unused_codes=avg_unused_codes,
+                )
 
             valid_result = self._run_evaluation(
                 model,
@@ -158,6 +208,9 @@ class RQVAETrainer(Trainer):
             )
             valid_result["epoch"] = epoch
             valid_history.append(valid_result)
+
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_validation(epoch=epoch, metrics=valid_result["metrics"])
 
             current_value: float | None = None
             improved = False
@@ -183,7 +236,21 @@ class RQVAETrainer(Trainer):
                 self._save_model_checkpoint(model, accelerator, checkpoint_paths["last"])
             if self.config.early_stopping.enabled and not improved and bad_epoch_count >= int(self.config.early_stopping.patience):
                 stopped_early = True
+                if (logger := getattr(self, "_logger", None)) is not None:
+                    logger.log_early_stopping(
+                        stopped=True,
+                        epoch=epoch,
+                        patience=int(self.config.early_stopping.patience),
+                    )
                 break
+
+        if not stopped_early:
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_early_stopping(
+                    stopped=False,
+                    epoch=int(self.config.max_epochs),
+                    patience=int(self.config.early_stopping.patience),
+                )
 
         return {
             "train_history": train_history,

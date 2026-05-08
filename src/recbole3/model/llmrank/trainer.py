@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -124,21 +125,39 @@ class LLMRankTrainer(Trainer):
         *,
         output_dir: str | Path | None = None,
     ) -> dict[str, Any]:
-        del output_dir
-        valid_result: dict[str, Any] | None = None
-        prepared_eval_data = self._build_llmrank_prepared_data(prepared_data, model=model)
-        if len(prepared_eval_data.get_eval_dataset("valid")) > 0:
-            print("[llmrank] starting validation evaluation")
-            valid_result = super().evaluate(model, prepared_eval_data, split="valid")
-            print("[llmrank] finished validation evaluation")
+        self._setup_logger(model, prepared_data, output_dir)
+        total_start = time.perf_counter()
+        try:
+            valid_result: dict[str, Any] | None = None
+            prepared_eval_data = self._build_llmrank_prepared_data(prepared_data, model=model)
+            if len(prepared_eval_data.get_eval_dataset("valid")) > 0:
+                print("[llmrank] starting validation evaluation")
+                valid_result = super().evaluate(model, prepared_eval_data, split="valid")
+                print("[llmrank] finished validation evaluation")
+                if (logger := getattr(self, "_logger", None)) is not None:
+                    logger.log_validation(epoch=0, metrics=valid_result["metrics"])
 
-        print("[trainer] starting test evaluation")
-        test_result = super().evaluate(model, prepared_eval_data, split="test")
-        print("[trainer] finished test evaluation")
-        return {
-            "valid": valid_result,
-            "test": test_result,
-        }
+            print("[trainer] starting test evaluation")
+            test_result = super().evaluate(model, prepared_eval_data, split="test")
+            print("[trainer] finished test evaluation")
+
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_test(test_result)
+                total_elapsed = time.perf_counter() - total_start
+                logger.log_summary(
+                    stopped_early=False,
+                    total_epochs=0,
+                    best_epoch=None,
+                    total_time=total_elapsed,
+                )
+
+            return {
+                "valid": valid_result,
+                "test": test_result,
+            }
+        finally:
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.close()
 
     def _build_llmrank_prepared_data(self, prepared_data: BaseTaskDataset, *, model: Any) -> BaseTaskDataset:
         cloned = type(prepared_data).__new__(type(prepared_data))

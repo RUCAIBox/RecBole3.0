@@ -38,6 +38,11 @@ from recbole3.model.rqvae import (
     RQVAEModelDataset,
     RQVAETrainer,
 )
+from recbole3.model.tiger import (
+    TIGERConfig,
+    TIGERModel,
+    TIGERModelDataset,
+)
 from recbole3.model.sequential import (
     BaseSequentialModelDataset,
     HISTORY_ITEM_IDS,
@@ -100,6 +105,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=RPGTrainerConfig,
         pipeline_cls=Pipeline,
     ),
+    "tiger": ModelSpec(
+        model_cls=TIGERModel,
+        config_cls=TIGERConfig,
+        model_data_cls=TIGERModelDataset,
+        trainer_cls=Trainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
 }
 
 
@@ -140,6 +153,9 @@ __all__ = [
     "ModelDatasets",
     "ModelSpec",
     "SequentialModelConfig",
+    "TIGERConfig",
+    "TIGERModel",
+    "TIGERModelDataset",
     "build_history_item_ids",
     "get_model_spec",
 ]

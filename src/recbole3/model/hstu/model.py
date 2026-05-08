@@ -266,6 +266,9 @@ class HSTUModel(BaseRetrievalModel):
         self._encoder: HSTUJagged | None = None
         self._empty_history_embedding: nn.Parameter | None = None
 
+    def ensure_initialized(self, prepared_data) -> None:
+        self._ensure_initialized(int(prepared_data.get_num_items()))
+
     def build_train_collator(self, prepared_data) -> BaseCollator:
         self._ensure_initialized(int(prepared_data.get_num_items()))
         return HSTUTrainCollator(self.config, prepared_data=prepared_data)
