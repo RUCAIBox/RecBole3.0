@@ -16,6 +16,7 @@ from recbole3.model.rpg import (
     RPGConfig,
     RPGModel,
     RPGModelDataset,
+    RPGSemanticTokenizer,
     RPGTrainCollator,
     RPGTrainer,
     RPGTrainerConfig,
@@ -154,6 +155,78 @@ def test_rpg_predict_supports_sampled_and_full_modes(monkeypatch: pytest.MonkeyP
 
     assert sampled_pred.tolist() == [[1], [2]]
     assert full_pred.tolist() == [[1, 2], [1, 0]]
+
+
+def test_rpg_predict_rejects_out_of_range_candidate_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = RPGModel(RPGConfig(n_codebook=2, codebook_size=4, temperature=1.0))
+    model._num_items = 3
+    model._n_pred_head = 2
+    model._codebook_size = 4
+    model.register_buffer(
+        "item_id2tokens",
+        torch.tensor([[0, 0], [1, 5], [2, 6], [3, 7]], dtype=torch.long),
+        persistent=False,
+    )
+
+    def fake_token_logits(self, batch):
+        return batch["token_logits"]
+
+    monkeypatch.setattr(RPGModel, "_token_logits", fake_token_logits)
+    batch = {
+        RPG_INPUT_IDS: torch.zeros((1, 1), dtype=torch.long),
+        "token_logits": torch.zeros((1, 8), dtype=torch.float32),
+    }
+
+    with pytest.raises(ValueError, match="RPG item ids must be in"):
+        model.predict(batch, k=1, candidate_item_ids=torch.tensor([[0, 3]], dtype=torch.long))
+
+
+def test_rpg_semantic_id_file_validation_rejects_bad_codes(tmp_path: Path) -> None:
+    sid_file = _write_sid_file(tmp_path)
+    item2sids = json.loads(sid_file.read_text(encoding="utf-8"))
+    item2sids["0"] = [0, 4]
+    sid_file.write_text(json.dumps(item2sids), encoding="utf-8")
+
+    prepared = StubDataset(StubDatasetConfig()).prepare(eval_config=_full_eval_config())
+    with pytest.raises(ValueError, match="must be in"):
+        RPGModelDataset.from_task_dataset(prepared, model_config=_rpg_config(sid_file))
+
+
+def test_rpg_missing_explicit_semantic_id_file_fails(tmp_path: Path) -> None:
+    prepared = StubDataset(StubDatasetConfig()).prepare(eval_config=_full_eval_config())
+    config = _rpg_config(tmp_path / "missing_sids.json")
+
+    with pytest.raises(FileNotFoundError, match="semantic_id_file"):
+        RPGModelDataset.from_task_dataset(prepared, model_config=config)
+
+
+def test_rpg_metadata_text_falls_back_to_title_and_description(tmp_path: Path) -> None:
+    prepared = StubDataset(StubDatasetConfig()).prepare(eval_config=_full_eval_config())
+    tokenizer = RPGSemanticTokenizer(_rpg_config(_write_sid_file(tmp_path)), prepared)
+
+    assert tokenizer._metadata_text({"title": "Alpha", "description": "Quest"}) == "Alpha Quest"
+    assert tokenizer._metadata_text({"metadata_text": "Configured text", "title": "Alpha"}) == "Configured text"
+
+
+def test_rpg_codebook_size_must_be_power_of_two() -> None:
+    with pytest.raises(ValueError, match="positive power of two"):
+        RPGSemanticTokenizer._get_codebook_bits(3)
+
+
+def test_rpg_trainer_steps_count_optimizer_steps_with_accumulation() -> None:
+    trainer = RPGTrainer(
+        RPGTrainerConfig(
+            max_epochs=3,
+            steps=None,
+            gradient_accumulation_steps=4,
+        )
+    )
+
+    assert trainer._optimizer_steps_per_epoch(10) == 3
+    assert trainer._resolve_total_steps(10) == 9
+
+    trainer.config.steps = 5
+    assert trainer._resolve_epoch_count(10) == 2
 
 
 def test_rpg_forward_computes_finite_loss(tmp_path: Path) -> None:

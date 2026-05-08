@@ -77,6 +77,9 @@ class RPGModel(BaseRetrievalModel):
         self._ensure_initialized(prepared_data)
         return RPGEvalCollator(self.config, prepared_data=prepared_data)
 
+    def ensure_initialized(self, prepared_data) -> None:
+        self._ensure_initialized(prepared_data)
+
     def forward(self, batch: Mapping[str, torch.Tensor], return_loss: bool = True) -> dict[str, torch.Tensor]:
         gpt2 = self._gpt2_module()
         item_id2tokens = self._item_id2tokens()
@@ -369,6 +372,12 @@ class RPGModel(BaseRetrievalModel):
         if item_ids.numel() == 0:
             return
         invalid = (item_ids < 0) | (item_ids >= num_items)
+        if torch.any(invalid):
+            invalid_values = item_ids[invalid].detach().cpu().tolist()
+            preview = invalid_values[:5]
+            raise ValueError(
+                f"RPG item ids must be in [0, {num_items - 1}], got invalid values {preview}."
+            )
 
     def _require_num_items(self) -> int:
         return self._num_items

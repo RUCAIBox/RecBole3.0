@@ -43,6 +43,12 @@ class RPGConfig(ModelConfig):
             )
         },
     )
+    semantic_id_wait_timeout_seconds: int = field(
+        default=3600,
+        metadata={
+            "help": "Maximum seconds non-zero distributed ranks wait for rank 0 to write generated semantic IDs."
+        },
+    )
     semantic_embedding_file: str = field(
         default="",
         metadata={"help": "Optional .npy semantic embedding file. If absent, embeddings are generated from item metadata."},

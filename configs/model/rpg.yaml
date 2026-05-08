@@ -12,6 +12,7 @@ model:
   # (sent_emb_model, n_codebook, codebook_size, sent_emb_pca, semantic_embedding_file)
   # so different generation configs never silently share a cache.
   semantic_id_cache_file: ""
+  semantic_id_wait_timeout_seconds: 3600
   semantic_embedding_file: ""
   metadata_text_field: metadata_text
   item_title_field: title
