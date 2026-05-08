@@ -36,7 +36,7 @@ trainer:
   batch_size: 1024
   shuffle: true
   max_epochs: 20000
-  eval_step: 2000
+  eval_steps: 2000
   # Align with HonghuiBao2000/LETTER RQ-VAE/main.py defaults: num_workers=4, pin_memory=True.
   dataloader_num_workers: 4
   pin_memory: true

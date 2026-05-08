@@ -25,7 +25,6 @@ from recbole3.model.letter import (
     LETTERTrainer,
 )
 from recbole3.model.lcrec.config import LCRecConfig
-from recbole3.model.lcrec.pipeline import LCRecPipeline
 from recbole3.model.llmrank import (
     LLMRankConfig,
     LLMRankModel,

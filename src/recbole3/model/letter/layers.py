@@ -145,6 +145,10 @@ class LetterVQLayer(nn.Module):
 
         embed_onehot = F.one_hot(embed_ind, self.n_embed)
         embed_onehot_sum = embed_onehot.sum(0)
+        import torch.distributed as distributed
+
+        if distributed.is_available() and distributed.is_initialized():
+            distributed.all_reduce(embed_onehot_sum, op=distributed.ReduceOp.SUM)
         unused_codes = (embed_onehot_sum == 0).sum().item()
 
         x_q = F.embedding(embed_ind, code_embs).view(x.shape)
@@ -222,6 +226,11 @@ class LetterRQLayer(nn.Module):
         self.codebook_num = derived_codebook_num
         self.codebook_dim = config.codebook_dim
         sk_epsilons = list(config.sk_epsilons)
+        if len(sk_epsilons) != self.codebook_num:
+            raise ValueError(
+                "config.sk_epsilons must have the same length as config.codebook_size, "
+                f"got len(sk_epsilons)={len(sk_epsilons)} and len(codebook_size)={self.codebook_num}."
+            )
 
         self.vq_layers = nn.ModuleList(
             [

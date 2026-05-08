@@ -10,8 +10,12 @@ from recbole3.config import RuntimeConfig, instantiate_dataclass
 from recbole3.dataset import BaseTaskDataset, get_dataset_spec
 from recbole3.model import get_model_spec
 from recbole3.model.hstu.config import ITEM_ID_OFFSET
+from recbole3.model.letter.config import LETTERConfig
 from recbole3.run import compose_config
 from recbole3.utils import require_component_cfg, require_component_name
+
+
+DEFAULT_CF_EMBEDDING_DIM = LETTERConfig().codebook_dim
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -22,6 +26,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--cf-emb-file",
         default="cf_embeddings.pt",
         help="Output collaborative embedding file path. Relative paths are resolved under dataset.data_dir.",
+    )
+    parser.add_argument(
+        "--embedding-dim",
+        type=int,
+        default=DEFAULT_CF_EMBEDDING_DIM,
+        help=(
+            "HSTU item embedding dimension to export. Defaults to LETTER's codebook_dim "
+            f"({DEFAULT_CF_EMBEDDING_DIM}) so the CF alignment loss has compatible shapes."
+        ),
     )
     parser.add_argument(
         "overrides",
@@ -61,7 +74,7 @@ def _resolve_output_path(cf_emb_file: str, data_dir: Path) -> Path:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = _parse_args(argv)
-    cfg = compose_config(overrides=["model=hstu", *args.overrides])
+    cfg = compose_config(overrides=["model=hstu", f"model.embedding_dim={args.embedding_dim}", *args.overrides])
     model_spec = get_model_spec("hstu")
     runtime_cfg = instantiate_dataclass(RuntimeConfig, cfg.get("runtime"))
     dataset_cfg = require_component_cfg(cfg, "dataset")
@@ -79,12 +92,19 @@ def main(argv: Sequence[str] | None = None) -> None:
     with pipeline._accelerate_runtime_device(runtime_cfg.device):
         trainer.fit(model, prepared_data, output_dir=runtime_cfg.output_dir)
 
-    item_embeddings = model._item_embedding_module().weight[ITEM_ID_OFFSET:].detach().cpu()
+    from accelerate import PartialState
 
-    output_path = _resolve_output_path(args.cf_emb_file, Path(dataset._parser.data_dir))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(item_embeddings, output_path)
-    print(f"Saved HSTU collaborative embeddings to: {output_path}")
+    distributed_state = PartialState()
+    distributed_state.wait_for_everyone()
+
+    if distributed_state.is_main_process:
+        item_embeddings = model._item_embedding_module().weight[ITEM_ID_OFFSET:].detach().cpu()
+
+        output_path = _resolve_output_path(args.cf_emb_file, Path(dataset._parser.data_dir))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(item_embeddings, output_path)
+        print(f"Saved HSTU collaborative embeddings to: {output_path}")
+    distributed_state.wait_for_everyone()
 
 
 if __name__ == "__main__":

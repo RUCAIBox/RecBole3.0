@@ -86,7 +86,6 @@ class TrainerConfig:
         default=None,
         metadata={"help": "Optional top-k width requested during evaluation when raw inference outputs are needed."},
     )
-    )
     optimizer: OptimizerConfig = field(
         default_factory=OptimizerConfig,
         metadata={"help": "Optimizer settings used during fit()."},

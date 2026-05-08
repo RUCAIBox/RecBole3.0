@@ -44,6 +44,38 @@ class LETTERTrainer(RQVAETrainer):
             labels[str(idx)] = label
         return labels
 
+    def _sync_diversity_labels(self, model: Any, accelerator: Any) -> dict[str, list[int]]:
+        labels = self._build_diversity_labels(model) if accelerator.is_main_process else None
+        label_payload = [labels]
+
+        import torch.distributed as distributed
+
+        if distributed.is_available() and distributed.is_initialized():
+            distributed.broadcast_object_list(label_payload, src=0)
+        synced_labels = label_payload[0]
+        if synced_labels is None:
+            raise RuntimeError("Failed to synchronize LETTER diversity labels from the main process.")
+        return synced_labels
+
+    @staticmethod
+    def _reduce_sum(tensor: Any, accelerator: Any) -> Any:
+        if hasattr(accelerator, "reduce"):
+            return accelerator.reduce(tensor, reduction="sum")
+
+        import torch.distributed as distributed
+
+        if distributed.is_available() and distributed.is_initialized():
+            distributed.all_reduce(tensor, op=distributed.ReduceOp.SUM)
+        return tensor
+
+    @staticmethod
+    def _gather_for_metrics(tensor: Any, accelerator: Any) -> Any:
+        if hasattr(accelerator, "gather_for_metrics"):
+            return accelerator.gather_for_metrics(tensor)
+        if hasattr(accelerator, "gather"):
+            return accelerator.gather(tensor)
+        return tensor
+
     def fit(
         self,
         model: Any,
@@ -106,7 +138,7 @@ class LETTERTrainer(RQVAETrainer):
         bad_epoch_count = 0
         stopped_early = False
 
-        eval_step = max(1, int(getattr(self.config, "eval_step", 1) or 1))
+        eval_steps = max(1, int(getattr(self.config, "eval_steps", 1) or 1))
         total_epochs = int(self.config.max_epochs)
         self._cached_eval_dataloader: Any | None = None
         self._cached_eval_split: str | None = None
@@ -115,7 +147,7 @@ class LETTERTrainer(RQVAETrainer):
             model.train()
 
             unwrapped_model = accelerator.unwrap_model(model)
-            diversity_labels = self._build_diversity_labels(unwrapped_model)
+            diversity_labels = self._sync_diversity_labels(unwrapped_model, accelerator)
             unwrapped_model.set_diversity_labels(diversity_labels)
 
             total_losses: list[float] = []
@@ -128,7 +160,7 @@ class LETTERTrainer(RQVAETrainer):
                 with accelerator.accumulate(model):
                     optimizer.zero_grad()
                     outputs = model.forward(batch)
-                    loss_dict = model.compute_loss(batch, outputs)
+                    loss_dict = unwrapped_model.compute_loss(batch, outputs)
 
                     accelerator.backward(loss_dict["loss"])
                     optimizer.step()
@@ -154,7 +186,7 @@ class LETTERTrainer(RQVAETrainer):
                 }
             )
 
-            should_evaluate = (epoch % eval_step == 0) or (epoch == total_epochs)
+            should_evaluate = (epoch % eval_steps == 0) or (epoch == total_epochs)
             current_value: float | None = None
             improved = False
             if should_evaluate:
@@ -182,13 +214,19 @@ class LETTERTrainer(RQVAETrainer):
                         bad_epoch_count = 0
                         if checkpoint_paths["best"] is not None:
                             self._save_model_checkpoint(model, accelerator, checkpoint_paths["best"])
+                            accelerator.wait_for_everyone()
                     elif self.config.early_stopping.enabled:
                         bad_epoch_count += 1
 
             if scheduler is not None and scheduler_interval == "epoch":
-                self._step_epoch_scheduler(scheduler, current_value=current_value)
+                if self._scheduler_requires_monitor():
+                    if current_value is not None:
+                        self._step_epoch_scheduler(scheduler, current_value=current_value)
+                else:
+                    self._step_epoch_scheduler(scheduler, current_value=current_value)
             if checkpoint_paths["last"] is not None:
                 self._save_model_checkpoint(model, accelerator, checkpoint_paths["last"])
+                accelerator.wait_for_everyone()
             if (
                 should_evaluate
                 and self.config.early_stopping.enabled
@@ -217,7 +255,7 @@ class LETTERTrainer(RQVAETrainer):
         model_is_prepared: bool,
     ) -> dict[str, Any]:
         unwrapped_for_labels = accelerator.unwrap_model(model)
-        diversity_labels = self._build_diversity_labels(unwrapped_for_labels)
+        diversity_labels = self._sync_diversity_labels(unwrapped_for_labels, accelerator)
         unwrapped_for_labels.set_diversity_labels(diversity_labels)
 
         collator_model = accelerator.unwrap_model(model)
@@ -240,49 +278,85 @@ class LETTERTrainer(RQVAETrainer):
                 self._cached_eval_split = split
 
         import torch
+        import torch.nn.functional as F
 
         prepared_model.eval()
         all_tokens: list[torch.Tensor] = []
-        total_losses: list[float] = []
-        total_recon_losses: list[float] = []
-        total_quant_losses: list[float] = []
-        total_cf_losses: list[float] = []
-        total_unused_codes: list[int] = []
+        per_example_metrics: list[torch.Tensor] = []
+        unused_codes_sum = torch.zeros((), dtype=torch.float64, device=accelerator.device)
         num_batches = 0
 
         with torch.no_grad():
             for batch in eval_dataloader:
                 outputs = prepared_model.forward(batch)
-                loss_dict = prepared_model.compute_loss(batch, outputs)
 
-                all_tokens.append(outputs["tokens"].cpu())
-                total_losses.append(float(loss_dict["loss"].item()))
-                total_recon_losses.append(float(loss_dict["recon_loss"].item()))
-                total_quant_losses.append(float(loss_dict["quant_loss"].item()))
-                total_cf_losses.append(float(loss_dict["cf_loss"].item()))
-                total_unused_codes.append(int(outputs["unused_codes"]))
+                all_tokens.append(self._gather_for_metrics(outputs["tokens"].detach(), accelerator).cpu())
+                per_example_metrics.append(
+                    self._gather_for_metrics(
+                        self._compute_eval_example_metrics(unwrapped_for_labels.config, batch, outputs, F),
+                        accelerator,
+                    ).double().cpu()
+                )
+                unused_codes_sum += float(outputs["unused_codes"])
                 num_batches += 1
 
-        all_tokens_tensor = torch.cat(all_tokens, dim=0)
+        if all_tokens:
+            all_tokens_tensor = torch.cat(all_tokens, dim=0)
+        else:
+            all_tokens_tensor = torch.empty(
+                (0, int(unwrapped_for_labels.config.codebook_num)),
+                dtype=torch.long,
+            )
         collision_rate = self._compute_collision_rate(all_tokens_tensor)
         self._collision_rates[split].append(collision_rate)
 
+        reduced_num_batches = int(
+            self._reduce_sum(torch.tensor(num_batches, dtype=torch.long, device=accelerator.device), accelerator)
+            .cpu()
+            .item()
+        )
+        all_example_metrics = torch.cat(per_example_metrics, dim=0) if per_example_metrics else torch.empty((0, 4))
+        loss_means = [float(value.item()) for value in all_example_metrics.mean(dim=0)] if all_example_metrics.numel() else [None, None, None, None]
+        reduced_unused_codes_sum = self._reduce_sum(unused_codes_sum, accelerator).cpu()
+        unused_codes_mean = (
+            float(reduced_unused_codes_sum.item()) / reduced_num_batches
+            if reduced_num_batches > 0
+            else None
+        )
+
         metrics = {
             "collision_rate": collision_rate,
-            "loss": self._mean_or_none(total_losses),
-            "recon_loss": self._mean_or_none(total_recon_losses),
-            "quant_loss": self._mean_or_none(total_quant_losses),
-            "cf_loss": self._mean_or_none(total_cf_losses),
-            "unused_codes": self._mean_or_none(total_unused_codes),
+            "loss": loss_means[0],
+            "recon_loss": loss_means[1],
+            "quant_loss": loss_means[2],
+            "cf_loss": loss_means[3],
+            "unused_codes": unused_codes_mean,
         }
         return {
             "split": split,
             "protocol": "full",
-            "loss": self._mean_or_none(total_losses),
+            "loss": loss_means[0],
             "metrics": metrics,
-            "num_batches": num_batches,
+            "num_batches": reduced_num_batches,
             "data_stats": self._build_result_data_stats(prepared_data),
         }
+
+    def _compute_eval_example_metrics(self, config: Any, batch: dict[str, Any], outputs: dict[str, Any], functional: Any) -> Any:
+        import torch
+
+        if config.loss_type == "mse":
+            recon_loss = functional.mse_loss(outputs["reconstruction"], batch["item_embeddings"], reduction="none").mean(dim=1)
+        elif config.loss_type == "l1":
+            recon_loss = functional.l1_loss(outputs["reconstruction"], batch["item_embeddings"], reduction="none").mean(dim=1)
+        else:
+            raise ValueError(f"Unsupported loss_type: {config.loss_type}. Expected 'mse' or 'l1'.")
+
+        quant_loss = outputs["quant_loss"].detach().expand_as(recon_loss) * config.quant_loss_weight
+        similarities = torch.matmul(outputs["quantized"], batch["cf_embeddings"].transpose(0, 1))
+        labels = torch.arange(outputs["quantized"].size(0), dtype=torch.long, device=outputs["quantized"].device)
+        cf_loss = functional.cross_entropy(similarities, labels, reduction="none")
+        loss = recon_loss + quant_loss + config.cf_loss_weight * cf_loss
+        return torch.stack([loss, recon_loss, quant_loss, cf_loss], dim=1).detach()
 
     def generate_sids(
         self,
@@ -291,11 +365,11 @@ class LETTERTrainer(RQVAETrainer):
         *,
         output_dir: str | Path,
     ) -> None:
-        unwrapped_model = model
-        if hasattr(model, "module"):
-            unwrapped_model = model.module
-        diversity_labels = self._build_diversity_labels(unwrapped_model)
-        unwrapped_model.set_diversity_labels(diversity_labels)
+        accelerator = self.create_accelerator()
+        if accelerator.is_main_process:
+            unwrapped_model = accelerator.unwrap_model(model)
+            diversity_labels = self._build_diversity_labels(unwrapped_model)
+            unwrapped_model.set_diversity_labels(diversity_labels)
         super().generate_sids(model, prepared_data, output_dir=output_dir)
 
 

@@ -68,6 +68,14 @@ class LETTERModel(BaseModel):
         }
 
     def _compute_cf_loss(self, quantized_repr: torch.Tensor, cf_embeddings: torch.Tensor) -> torch.Tensor:
+        if quantized_repr.size(-1) != cf_embeddings.size(-1):
+            raise ValueError(
+                "LETTER CF loss requires quantized representations and collaborative embeddings "
+                "to have the same last dimension, "
+                f"got {quantized_repr.size(-1)} and {cf_embeddings.size(-1)}. "
+                f"Set HSTU model.embedding_dim to LETTER codebook_dim={self.config.codebook_dim} "
+                "when generating model.cf_emb_file."
+            )
         labels = torch.arange(quantized_repr.size(0), dtype=torch.long, device=quantized_repr.device)
         similarities = torch.matmul(quantized_repr, cf_embeddings.transpose(0, 1))
         return F.cross_entropy(similarities, labels)
@@ -79,8 +87,14 @@ class LETTERModel(BaseModel):
         return tokens
 
     def init_codebook(self, x: torch.Tensor) -> None:
-        encoded = self._encoder(x)
-        self._rq_layer.init_codebook(encoded, x.device)
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.no_grad():
+                encoded = self._encoder(x)
+                self._rq_layer.init_codebook(encoded, x.device)
+        finally:
+            self.train(was_training)
         self._initted = True
 
     def set_diversity_labels(self, labels: dict[str, list[int]]) -> None:

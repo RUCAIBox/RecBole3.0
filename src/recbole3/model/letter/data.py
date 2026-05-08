@@ -37,6 +37,11 @@ class LETTERModelDataset(RQVAEModelDataset):
     def _build_model_datasets(self, *, model_config: LETTERConfig) -> ModelDatasets:
         sem_embeddings = self._load_or_generate_semantic_embeddings(model_config)
         cf_embeddings = self._load_collaborative_embeddings(model_config)
+        if cf_embeddings.size(0) != sem_embeddings.size(0):
+            raise ValueError(
+                "LETTER collaborative embeddings must contain one row per semantic embedding, "
+                f"got {cf_embeddings.size(0)} CF rows and {sem_embeddings.size(0)} semantic rows."
+            )
 
         train_item_ids = self._get_training_item_ids()
         train_dataset = self._create_dataset(sem_embeddings, cf_embeddings, train_item_ids)
@@ -63,12 +68,27 @@ class LETTERModelDataset(RQVAEModelDataset):
                 "Run `python -m recbole3.tools.generate_letter_cf_hstu ...` to generate it first."
             )
 
-        return (
-            torch.load(str(cf_path), map_location="cpu")
-            .squeeze()
-            .detach()
-            .to(dtype=torch.float32)
-        )
+        loaded = torch.load(str(cf_path), map_location="cpu", weights_only=True)
+        if not isinstance(loaded, torch.Tensor):
+            raise TypeError(
+                f"Collaborative embedding file must contain a torch.Tensor, got {type(loaded).__name__}."
+            )
+        cf_embeddings = loaded.detach().to(dtype=torch.float32)
+        while cf_embeddings.ndim > 2 and cf_embeddings.size(0) == 1:
+            cf_embeddings = cf_embeddings.squeeze(0)
+        if cf_embeddings.ndim != 2:
+            raise ValueError(
+                "Collaborative embeddings must be a 2D tensor of shape "
+                f"(num_items, {config.codebook_dim}), got shape {tuple(cf_embeddings.shape)}."
+            )
+        if cf_embeddings.size(1) != config.codebook_dim:
+            raise ValueError(
+                "Collaborative embedding dimension must match LETTER codebook_dim for CF alignment, "
+                f"got {cf_embeddings.size(1)} and codebook_dim={config.codebook_dim}. "
+                "Regenerate the file with `python -m recbole3.tools.generate_letter_cf_hstu "
+                f"--embedding-dim {config.codebook_dim} ...` or set matching model dimensions."
+            )
+        return cf_embeddings
 
     def _create_dataset(
         self,
