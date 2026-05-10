@@ -18,6 +18,12 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
+from recbole3.model.lares import (
+    LARESConfig,
+    LARESModel,
+    LARESModelDataset,
+    LARESTrainer,
+)
 from recbole3.model.letter import (
     LETTERConfig,
     LETTERModel,
@@ -72,6 +78,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         config_cls=HSTUConfig,
         model_data_cls=HSTUModelDataset,
         trainer_cls=Trainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
+    "lares": ModelSpec(
+        model_cls=LARESModel,
+        config_cls=LARESConfig,
+        model_data_cls=LARESModelDataset,
+        trainer_cls=LARESTrainer,
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),

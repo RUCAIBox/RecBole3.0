@@ -1,0 +1,50 @@
+# @package _global_
+
+model:
+  name: lares
+  history_max_length: 50
+  n_pre_layers: 1
+  n_core_layers: 1
+  n_heads: 2
+  hidden_size: 64
+  inner_size: 256
+  hidden_dropout_prob: 0.5
+  attn_dropout_prob: 0.5
+  hidden_act: gelu
+  layer_norm_eps: 1.0e-12
+  initializer_range: 0.02
+  mean_recurrence: 4
+  state_init_method: normal
+  state_std: 1.0
+  state_scale: 3.0
+  sampling_scheme: poisson-lognormal
+  test_recurrence_ratios: [0.15, 0.25, 0.5, 1, 2, 3, 4]
+  adapter_type: add
+  tau: 0.07
+  alpha: 0.1
+  gamma: 0.1
+  sem_func: cos
+  same_step: true
+
+trainer:
+  batch_size: 1024
+  shuffle: true
+  monitor: ndcg@10
+  max_epochs: 200
+  eval_steps: 1
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.001
+  optimizer:
+    name: Adam
+    kwargs:
+      lr: 0.001
+  eval:
+    protocol: full
+    exclude_history: true
+    metrics:
+      - name: recall
+        ks: [5, 10]
+      - name: ndcg
+        ks: [5, 10]
