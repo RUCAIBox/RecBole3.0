@@ -28,8 +28,8 @@ class LARESModelDataset(BaseSequentialModelDataset):
         valid_frame = _filter_empty_histories(_dataset_frame(model_datasets.valid_dataset))
         test_frame = _filter_empty_histories(_dataset_frame(model_datasets.test_dataset))
 
-        train_frame["_row_idx"] = range(len(train_frame))
         self._same_target_index = _build_same_target_index(train_frame)
+        train_frame["aug_history_item_ids"] = _precompute_augmentations(train_frame, self._same_target_index)
         self._full_train_frame = train_frame
 
         return ModelDatasets(
@@ -60,26 +60,31 @@ def _build_same_target_index(train_frame: pd.DataFrame) -> dict[int, list[int]]:
     return {k: v for k, v in same_target_index.items() if len(v) >= 2}
 
 
+def _precompute_augmentations(
+    train_frame: pd.DataFrame,
+    same_target_index: dict[int, list[int]],
+) -> list[tuple[int, ...]]:
+    aug_seqs: list[tuple[int, ...]] = []
+    for idx, (_, row) in enumerate(train_frame.iterrows()):
+        item_id = int(row[ITEM_ID])
+        candidates = same_target_index.get(item_id, [])
+        valid = [c for c in candidates if c != idx]
+        if valid:
+            pick = valid[np.random.randint(0, len(valid))]
+            aug_seqs.append(tuple(train_frame.iloc[pick][HISTORY_ITEM_IDS]))
+        else:
+            aug_seqs.append(tuple(row[HISTORY_ITEM_IDS]))
+    return aug_seqs
+
+
 class LARESTrainCollator(BaseCollator):
     """Collate LARES training records with semantic augmentation."""
 
     def __call__(self, feature_records: pd.DataFrame) -> dict[str, torch.Tensor]:
         batch = _pad_history_batch(feature_records)
         batch[ITEM_ID] = torch.as_tensor(feature_records[ITEM_ID].to_numpy(), dtype=torch.long)
-
-        model_dataset = self.prepared_data
-        if isinstance(model_dataset, LARESModelDataset):
-            aug_ids, aug_lengths = _sample_augmentations(
-                feature_records,
-                model_dataset.same_target_index,
-                model_dataset.full_train_frame,
-                feature_records[HISTORY_ITEM_IDS],
-                feature_records[ITEM_ID],
-            )
-        else:
-            aug_ids, aug_lengths = _fallback_augmentations(feature_records)
-
-        batch["aug_history_item_ids"] = aug_ids
+        aug_padded, aug_lengths = _pad_sequence_column(feature_records, "aug_history_item_ids")
+        batch["aug_history_item_ids"] = aug_padded
         batch["aug_history_lengths"] = aug_lengths
         return batch
 
@@ -91,67 +96,21 @@ class LARESEvalCollator(BaseCollator):
         return _pad_history_batch(feature_records)
 
 
-def _pad_history_batch(records: pd.DataFrame) -> dict[str, torch.Tensor]:
-    history_items = [tuple(values) for values in records[HISTORY_ITEM_IDS].tolist()]
-    history_lengths = torch.tensor([len(values) for values in history_items], dtype=torch.long)
-    batch_size = len(records)
-    max_length = int(torch.max(history_lengths).item()) if batch_size > 0 else 0
-    padded = torch.zeros((batch_size, max_length), dtype=torch.long)
-    for row_index, item_history in enumerate(history_items):
-        if len(item_history) > 0:
-            padded[row_index, : len(item_history)] = torch.tensor(item_history, dtype=torch.long)
-    return {
-        HISTORY_ITEM_IDS: padded,
-        "history_lengths": history_lengths,
-    }
-
-
-def _sample_augmentations(
-    feature_records: pd.DataFrame,
-    same_target_index: dict[int, list[int]],
-    full_train_frame: pd.DataFrame | None,
-    history_column: pd.Series,
-    item_id_column: pd.Series,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Sample augmented sequences (same target item, different record)."""
-    if full_train_frame is None:
-        return _fallback_augmentations(feature_records)
-
-    aug_seqs: list[tuple[int, ...]] = []
-    for _, row in feature_records.iterrows():
-        item_id = int(row[ITEM_ID])
-        candidates = same_target_index.get(item_id, [])
-        current_idx = int(row["_row_idx"])
-        valid_candidates = [c for c in candidates if c != current_idx]
-        if valid_candidates:
-            pick_idx = valid_candidates[np.random.randint(0, len(valid_candidates))]
-            aug_seqs.append(tuple(full_train_frame.iloc[pick_idx][HISTORY_ITEM_IDS]))
-        else:
-            aug_seqs.append(tuple(row[HISTORY_ITEM_IDS]))
-
-    aug_lengths = torch.tensor([len(seq) for seq in aug_seqs], dtype=torch.long)
-    batch_size = len(aug_seqs)
-    max_length = int(torch.max(aug_lengths).item()) if batch_size > 0 else 0
-    padded = torch.zeros((batch_size, max_length), dtype=torch.long)
-    for row_index, seq in enumerate(aug_seqs):
+def _pad_sequence_column(records: pd.DataFrame, column: str) -> tuple[torch.Tensor, torch.Tensor]:
+    seqs = [tuple(values) for values in records[column].tolist()]
+    lengths = torch.tensor([len(s) for s in seqs], dtype=torch.long)
+    B = len(seqs)
+    max_len = int(torch.max(lengths).item()) if B > 0 else 0
+    padded = torch.zeros((B, max_len), dtype=torch.long)
+    for i, seq in enumerate(seqs):
         if len(seq) > 0:
-            padded[row_index, : len(seq)] = torch.tensor(seq, dtype=torch.long)
-    return padded, aug_lengths
+            padded[i, :len(seq)] = torch.tensor(seq, dtype=torch.long)
+    return padded, lengths
 
 
-def _fallback_augmentations(
-    feature_records: pd.DataFrame,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Fallback: use original sequence as augmentation."""
-    history_items = [tuple(values) for values in feature_records[HISTORY_ITEM_IDS].tolist()]
-    history_lengths = torch.tensor([len(values) for values in history_items], dtype=torch.long)
-    batch_size = len(history_items)
-    max_length = int(torch.max(history_lengths).item()) if batch_size > 0 else 0
-    padded = torch.zeros((batch_size, max_length), dtype=torch.long)
-    for row_index, item_history in enumerate(history_items):
-        if len(item_history) > 0:
-            padded[row_index, : len(item_history)] = torch.tensor(item_history, dtype=torch.long)
-    return padded, history_lengths
+def _pad_history_batch(records: pd.DataFrame) -> dict[str, torch.Tensor]:
+    padded, lengths = _pad_sequence_column(records, HISTORY_ITEM_IDS)
+    return {HISTORY_ITEM_IDS: padded, "history_lengths": lengths}
 
 
 def _dataset_frame(dataset: Dataset[Any]) -> pd.DataFrame:
