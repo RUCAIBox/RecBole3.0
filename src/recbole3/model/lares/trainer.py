@@ -54,10 +54,10 @@ class LARESTrainer(Trainer):
         result["test_scaling"] = scaling_results
 
         if (logger := getattr(self, "_logger", None)) is not None:
-            logger.log_validation(
-                recurrence_scaling={
-                    f"r={r}": metrics for r, metrics in scaling_results.items()
-                }
-            )
+            flat: dict[str, float] = {}
+            for r, metrics in scaling_results.items():
+                for name, val in metrics.items():
+                    flat[f"{name} (r={r})"] = val
+            logger.log_test({"protocol": "recurrence_scaling", "metrics": flat})
 
         return result
