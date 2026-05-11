@@ -228,34 +228,34 @@ def _initialized_model(
         attn_dropout_prob=0.0,
     )
     model = LARESModel(config)
-    model._ensure_initialized(num_items)
+    model._init_modules(num_items)
     return model
 
 
 def test_lares_model_lazy_initialization() -> None:
     model = LARESModel(LARESConfig())
     assert model._num_items is None
-    assert model._item_embeddings is None
+    assert model._item_emb is None
 
-    model._ensure_initialized(8)
+    model._init_modules(8)
     assert model._num_items == 8
-    assert model._item_embeddings is not None
+    assert model._item_emb is not None
     assert model._pre_encoder is not None
     assert model._core_encoder is not None
-    assert model._position_embeddings is not None
+    assert model._pos_emb is not None
 
     # Re-initialization with same num_items should be a no-op
-    model._ensure_initialized(8)
+    model._init_modules(8)
 
     # Re-initialization with different num_items should raise
     with pytest.raises(ValueError, match="initialized for num_items"):
-        model._ensure_initialized(9)
+        model._init_modules(9)
 
 
 def test_lares_model_item_embedding_offset() -> None:
     """Item ID 0 is padding, real items start at index 1."""
     model = _initialized_model(num_items=5, hidden_size=8)
-    emb = model._item_embedding_module()
+    emb = model._item_emb
     assert emb.weight.shape[0] == 6  # num_items + 1
     assert emb.padding_idx == 0
 
@@ -391,7 +391,7 @@ def test_lares_model_predict_sampled() -> None:
 def test_lares_recurrence_sampling_deterministic_at_eval() -> None:
     model = _initialized_model(num_items=8, hidden_size=16, n_pre_layers=1, n_core_layers=1)
     model.eval()
-    steps = model._sample_recurrence_steps()
+    steps = model._sample_T()
     assert isinstance(steps, int)
     assert steps == int(model.config.mean_recurrence)
 
@@ -399,7 +399,7 @@ def test_lares_recurrence_sampling_deterministic_at_eval() -> None:
 def test_lares_recurrence_sampling_stochastic_at_train() -> None:
     model = _initialized_model(num_items=8, hidden_size=16)
     model.train()
-    steps = model._sample_recurrence_steps()
+    steps = model._sample_T()
     assert isinstance(steps, int)
     assert steps >= 1
 
@@ -409,11 +409,11 @@ def test_lares_recurrence_override() -> None:
     model.eval()
 
     model._eval_recurrence_override = 10
-    steps = model._sample_recurrence_steps()
+    steps = model._sample_T()
     assert steps == 10
 
     model._eval_recurrence_override = None
-    steps = model._sample_recurrence_steps()
+    steps = model._sample_T()
     assert steps == int(model.config.mean_recurrence)
 
 
