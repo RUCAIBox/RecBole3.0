@@ -23,10 +23,20 @@ class LARESModelDataset(BaseSequentialModelDataset):
         model_config: LARESConfig,
     ) -> ModelDatasets[pd.DataFrame, pd.DataFrame]:
         model_datasets = super()._build_model_datasets(model_config=model_config)
-        train_frame = _dataset_frame(model_datasets.train_dataset)
+
+        train_frame = _filter_empty_histories(_dataset_frame(model_datasets.train_dataset))
+        valid_frame = _filter_empty_histories(_dataset_frame(model_datasets.valid_dataset))
+        test_frame = _filter_empty_histories(_dataset_frame(model_datasets.test_dataset))
+
+        train_frame["_row_idx"] = range(len(train_frame))
         self._same_target_index = _build_same_target_index(train_frame)
         self._full_train_frame = train_frame
-        return model_datasets
+
+        return ModelDatasets(
+            train_dataset=FrameDataset(train_frame),
+            valid_dataset=FrameDataset(valid_frame),
+            test_dataset=FrameDataset(test_frame),
+        )
 
     @property
     def same_target_index(self) -> dict[int, list[int]]:
@@ -35,6 +45,10 @@ class LARESModelDataset(BaseSequentialModelDataset):
     @property
     def full_train_frame(self) -> pd.DataFrame | None:
         return getattr(self, "_full_train_frame", None)
+
+
+def _filter_empty_histories(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame[frame[HISTORY_ITEM_IDS].apply(len) > 0].reset_index(drop=True)
 
 
 def _build_same_target_index(train_frame: pd.DataFrame) -> dict[int, list[int]]:
@@ -104,10 +118,10 @@ def _sample_augmentations(
         return _fallback_augmentations(feature_records)
 
     aug_seqs: list[tuple[int, ...]] = []
-    for i, (_, row) in enumerate(feature_records.iterrows()):
+    for _, row in feature_records.iterrows():
         item_id = int(row[ITEM_ID])
         candidates = same_target_index.get(item_id, [])
-        current_idx = i
+        current_idx = int(row["_row_idx"])
         valid_candidates = [c for c in candidates if c != current_idx]
         if valid_candidates:
             pick_idx = valid_candidates[np.random.randint(0, len(valid_candidates))]

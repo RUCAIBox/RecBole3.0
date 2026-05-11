@@ -82,7 +82,7 @@ def test_lares_model_dataset_builds_histories() -> None:
 
     train_frame = lares_data.get_train_dataset().frame
     assert HISTORY_ITEM_IDS in train_frame.columns
-    assert train_frame[HISTORY_ITEM_IDS].tolist() == [(), (0,), (), (4,)]
+    assert train_frame[HISTORY_ITEM_IDS].tolist() == [(0,), (4,)]
 
     eval_frame = lares_data.get_eval_dataset("valid").frame
     assert eval_frame[HISTORY_ITEM_IDS].tolist() == [(0, 1), (4, 5)]
@@ -104,7 +104,7 @@ def test_lares_model_dataset_stores_full_train_frame() -> None:
     frame = lares_data.full_train_frame
     assert frame is not None
     assert HISTORY_ITEM_IDS in frame.columns
-    assert len(frame) == 4
+    assert len(frame) == 2
 
 
 # ---- Collators ----
@@ -125,14 +125,14 @@ def test_lares_train_collator_pads_histories_and_augmentations() -> None:
     assert "aug_history_item_ids" in batch
     assert "aug_history_lengths" in batch
 
-    # history_lengths should match actual histories
-    assert batch["history_lengths"].tolist() == [0, 1, 0, 1]
+    # history_lengths should match actual histories (empty histories filtered out)
+    assert batch["history_lengths"].tolist() == [1, 1]
 
     # padding check: max length should be >= the longest history
-    assert batch[HISTORY_ITEM_IDS].shape[0] == 4
+    assert batch[HISTORY_ITEM_IDS].shape[0] == 2
     # Augmented sequences fallback to original when no same-target pairs exist
-    assert batch["aug_history_item_ids"].shape[0] == 4
-    assert batch["aug_history_lengths"].shape[0] == 4
+    assert batch["aug_history_item_ids"].shape[0] == 2
+    assert batch["aug_history_lengths"].shape[0] == 2
 
 
 def test_lares_eval_collator_pads_histories_only() -> None:

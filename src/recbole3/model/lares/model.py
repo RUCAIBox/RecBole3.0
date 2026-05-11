@@ -158,8 +158,6 @@ class LARESModel(BaseRetrievalModel):
         else:
             self._adapter = None
 
-        self._empty_emb = nn.Parameter(torch.empty(H))
-
         # weight init
         rng = cfg.initializer_range
         for m in self.modules():
@@ -173,7 +171,6 @@ class LARESModel(BaseRetrievalModel):
                 m.bias.data.zero_()
         with torch.no_grad():
             self._item_emb.weight[0].zero_()
-        self._empty_emb.data.normal_(mean=0.0, std=rng)
 
     # -- recurrence sampling --
 
@@ -249,21 +246,13 @@ class LARESModel(BaseRetrievalModel):
             all_states.append(states)
 
         # gather last valid position
-        user_emb = self._empty_emb.unsqueeze(0).expand(B, -1).clone()
-        non_empty = lengths > 0
-        if torch.any(non_empty):
-            idx = (lengths[non_empty].to(dev) - 1).view(-1, 1, 1).expand(-1, 1, x.shape[-1])
-            user_emb[non_empty] = states[non_empty].gather(1, idx).squeeze(1)
+        idx = (lengths.to(dev) - 1).view(-1, 1, 1).expand(-1, 1, x.shape[-1])
+        user_emb = states.gather(1, idx).squeeze(1)
 
         if not return_all_states:
             return user_emb, None
 
-        step_outputs = []
-        for s in all_states:
-            out = self._empty_emb.unsqueeze(0).expand(B, -1).clone()
-            if torch.any(non_empty):
-                out[non_empty] = s[non_empty].gather(1, idx).squeeze(1)
-            step_outputs.append(out)
+        step_outputs = [s.gather(1, idx).squeeze(1) for s in all_states]
         return user_emb, torch.stack(step_outputs, dim=1)
 
     # -- public API --
