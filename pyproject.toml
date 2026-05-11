@@ -36,9 +36,13 @@ rqvae = [
   "sentence-transformers",
 ]
 rpg = [
-    "transformers>=4.40,<5.0",
+    "transformers>=4.40",
     "sentence-transformers",
     "faiss-cpu",
+]
+letter = [
+    "sentence-transformers",
+    "k-means-constrained",
 ]
 tiger = [
     "transformers>=4.40,<5.0",

@@ -18,6 +18,12 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
+from recbole3.model.letter import (
+    LETTERConfig,
+    LETTERModel,
+    LETTERModelDataset,
+    LETTERTrainer,
+)
 from recbole3.model.lcrec.config import LCRecConfig
 from recbole3.model.llmrank import (
     LLMRankConfig,
@@ -84,6 +90,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),
+    "letter": ModelSpec(
+        model_cls=LETTERModel,
+        config_cls=LETTERConfig,
+        model_data_cls=LETTERModelDataset,
+        trainer_cls=LETTERTrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
     "lcrec": ModelSpec(
         model_cls=LazyImport("transformers", "PreTrainedModel"),
         config_cls=LCRecConfig,
@@ -136,6 +150,10 @@ __all__ = [
     "HSTUConfig",
     "HSTUModel",
     "HSTUModelDataset",
+    "LETTERConfig",
+    "LETTERModel",
+    "LETTERModelDataset",
+    "LETTERTrainer",
     "LLMRankConfig",
     "LLMRankModel",
     "LLMRankModelDataset",

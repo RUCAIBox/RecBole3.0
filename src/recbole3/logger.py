@@ -145,7 +145,8 @@ class TrainingLogger:
         )
         for key in self._epoch_extra_keys:
             val = extra.get(key)
-            row += f"  {val:<14}" if val is not None else f"  {'-':<14}"
+            val = f"{val:.6f}" if isinstance(val, float) else str(val) if val is not None else "-"
+            row += f"  {val:<14}"
         self._writeln(row)
 
     def log_validation(self, epoch: int, metrics: Mapping[str, Any]) -> None:
