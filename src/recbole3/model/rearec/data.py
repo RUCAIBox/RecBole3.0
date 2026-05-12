@@ -16,10 +16,16 @@ HSTU backbone
   Delegates dataset construction to ``HSTUModelDataset`` which additionally
   builds ``history_timestamps`` for every split (timestamps are required by
   HSTU's relative time-bucketed attention bias).  The collators produce
-  RIGHT-PADDED sequences of fixed length ``history_max_length`` — consistent
-  with the HSTU right-padding convention::
+  RIGHT-PADDED sequences of length ``history_max_length + 1``::
 
-      [item_0, ..., item_{L-1}, 0, ..., 0]   (0 = HSTU_PADDING_ITEM_ID)
+      [item_0, ..., item_{L-1}, 0, ..., 0, 0]   (0 = HSTU_PADDING_ITEM_ID)
+       ← L real history slots →               ← 1 virtual query-timestamp slot
+
+  The extra slot at position ``history_lengths[b]`` carries the target item's
+  timestamp (but NOT the target item ID).  This mirrors the standalone
+  ``HSTUEvalCollator`` behaviour and is required so that
+  ``HSTUModel._encode_sequence_embeddings`` computes correct relative-time
+  attention bias for the virtual "query" position.
 
   The target item is kept as a separate ``ITEM_ID`` key and is NOT appended to
   the history sequence (unlike ``HSTUTrainCollator``).  ReaRec uses CE loss
@@ -33,10 +39,10 @@ from typing import Any
 import pandas as pd
 import torch
 
-from recbole3.dataset import FrameDataset, ITEM_ID
+from recbole3.dataset import FrameDataset, ITEM_ID, TIMESTAMP
 from recbole3.model.base import BaseCollator, ModelConfig
 from recbole3.model.hstu.config import HSTU_PADDING_ITEM_ID
-from recbole3.model.hstu.data import HISTORY_TIMESTAMPS, HSTUModelDataset
+from recbole3.model.hstu.data import HISTORY_TIMESTAMPS, HistoryState, HSTUModelDataset
 from recbole3.model.sequential import BaseSequentialModelDataset, HISTORY_ITEM_IDS
 
 
@@ -64,6 +70,21 @@ class ReaRecModelDataset(HSTUModelDataset, BaseSequentialModelDataset):
         return BaseSequentialModelDataset._build_model_datasets(
             self, model_config=model_config  # type: ignore[arg-type]
         )
+
+    def _build_hstu_train_frame(
+        self,
+        records: pd.DataFrame,
+        *,
+        history_max_length: int,
+    ) -> tuple[pd.DataFrame, HistoryState]:
+        """Use prefix splitting for HSTU training: one record per interaction, not one per user.
+
+        Standalone HSTU compensates for its one-per-user scheme with all-position loss
+        (O(T) signals per record). ReaRec applies last-position CE only, so that scheme
+        yields O(1) signals per user per epoch. Prefix splitting restores O(T) signals,
+        matching the SASRec backbone's training density.
+        """
+        return self._build_hstu_frame(records, history_max_length=history_max_length)
 
 
 # ---------------------------------------------------------------------------
@@ -218,36 +239,50 @@ def _build_hstu_rearec_history_batch(
     records: pd.DataFrame,
     history_max_length: int,
 ) -> dict[str, torch.Tensor]:
-    """Right-padded history batch with timestamps.  Target NOT appended to sequence.
+    """Right-padded history batch with timestamps and a query-timestamp slot.
+
+    Allocates ``history_max_length + 1`` columns so that the virtual query slot
+    at position ``history_lengths[b]`` is always within bounds.  The target item
+    timestamp is written into that slot — mirroring what the standalone
+    ``HSTUEvalCollator`` (``include_target_item=False``) does — without appending
+    the target item ID to the sequence.  This is required because
+    ``_encode_sequence_embeddings`` uses
+    ``sequence_lengths = min(history_lengths + 1, tensor_width)``; without the
+    extra column, full-history users would have their virtual slot clipped and
+    the relative-time bias would be computed against a zero timestamp.
 
     Returns:
-        history_item_ids:  [B, history_max_length]  right-padded with HSTU_PADDING_ITEM_ID (0).
-        history_timestamps:[B, history_max_length]  timestamps aligned with item positions.
-        history_lengths:   [B] actual history length per sample.
+        history_item_ids:   [B, L+1]  right-padded with HSTU_PADDING_ITEM_ID (0).
+        history_timestamps: [B, L+1]  item timestamps + query timestamp at slot L_b.
+        history_lengths:    [B]       actual (non-padded) history length per sample.
     """
     history_items = [tuple(v) for v in records[HISTORY_ITEM_IDS].tolist()]
     history_times = [tuple(v) for v in records[HISTORY_TIMESTAMPS].tolist()]
+    target_timestamps = records[TIMESTAMP].tolist()
     B = len(records)
     L = history_max_length
+    W = L + 1  # tensor width: L real slots + 1 virtual query slot
 
     history_lengths = torch.tensor(
         [min(len(h), L) for h in history_items], dtype=torch.long
     )
-    history_item_ids = torch.full((B, L), HSTU_PADDING_ITEM_ID, dtype=torch.long)
-    history_timestamps = torch.zeros((B, L), dtype=torch.float32)
+    history_item_ids = torch.full((B, W), HSTU_PADDING_ITEM_ID, dtype=torch.long)
+    history_timestamps = torch.zeros((B, W), dtype=torch.float32)
 
     for i, (items, times) in enumerate(zip(history_items, history_times)):
         n = min(len(items), L)
         if n > 0:
-            # Take most-recent n items
             items_t = list(items)[-L:]
             times_t = list(times)[-L:]
             history_item_ids[i, :n] = torch.tensor(items_t, dtype=torch.long)
             history_timestamps[i, :n] = torch.tensor(times_t, dtype=torch.float32)
+        # Write query timestamp into the virtual slot (position = actual history length).
+        # This is required for correct relative-time bias in HSTU attention.
+        history_timestamps[i, n] = float(target_timestamps[i])
 
     return {
-        HISTORY_ITEM_IDS: history_item_ids,     # [B, L]
-        HISTORY_TIMESTAMPS: history_timestamps,  # [B, L]
+        HISTORY_ITEM_IDS: history_item_ids,     # [B, L+1]
+        HISTORY_TIMESTAMPS: history_timestamps,  # [B, L+1]
         "history_lengths": history_lengths,      # [B]
     }
 

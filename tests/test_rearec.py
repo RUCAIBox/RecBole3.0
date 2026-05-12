@@ -194,6 +194,26 @@ def test_rearec_model_dataset_hstu_builds_both_history_item_ids_and_timestamps()
     assert HISTORY_TIMESTAMPS in train_frame.columns
 
 
+def test_rearec_model_dataset_hstu_train_uses_prefix_splitting() -> None:
+    """HSTU training must produce one record per interaction, not one per user."""
+    prepared = StubDataset(StubDatasetConfig()).prepare(eval_config=_full_eval_config())
+    rearec_data = ReaRecModelDataset.from_task_dataset(
+        prepared,
+        model_config=ReaRecConfig(backbone="hstu", history_max_length=10),
+    )
+    train_frame = rearec_data.get_train_dataset().frame
+    # StubDataset leave-one-out: 2 users × 2 training interactions = 4 records total.
+    assert len(train_frame) == 4
+    # First interaction of each user must have an empty prefix history.
+    for uid in [0, 1]:
+        user_rows = train_frame[train_frame[USER_ID] == uid].sort_values(TIMESTAMP)
+        assert user_rows.iloc[0][HISTORY_ITEM_IDS] == ()
+        assert user_rows.iloc[0][HISTORY_TIMESTAMPS] == ()
+        # Second interaction carries the first item as its history.
+        assert len(user_rows.iloc[1][HISTORY_ITEM_IDS]) == 1
+        assert len(user_rows.iloc[1][HISTORY_TIMESTAMPS]) == 1
+
+
 # ---------------------------------------------------------------------------
 # SASRec collators
 # ---------------------------------------------------------------------------
@@ -260,11 +280,13 @@ def test_rearec_hstu_train_collator_right_pads_with_timestamps_and_target() -> N
                 HISTORY_ITEM_IDS: (0, 1, 2),
                 HISTORY_TIMESTAMPS: (1.0, 2.0, 3.0),
                 ITEM_ID: 3,
+                TIMESTAMP: 10.0,
             },
             {
                 HISTORY_ITEM_IDS: (4,),
                 HISTORY_TIMESTAMPS: (5.0,),
                 ITEM_ID: 6,
+                TIMESTAMP: 20.0,
             },
         ]
     )
@@ -273,18 +295,25 @@ def test_rearec_hstu_train_collator_right_pads_with_timestamps_and_target() -> N
     )
     batch = collator(records)
 
-    assert batch[HISTORY_ITEM_IDS].shape == (2, max_len)
-    assert batch[HISTORY_TIMESTAMPS].shape == (2, max_len)
+    # Shape is (B, max_len + 1): L real slots + 1 virtual query-timestamp slot.
+    assert batch[HISTORY_ITEM_IDS].shape == (2, max_len + 1)
+    assert batch[HISTORY_TIMESTAMPS].shape == (2, max_len + 1)
     assert ITEM_ID in batch
-    assert batch[HISTORY_ITEM_IDS][0].tolist() == [0, 1, 2, HSTU_PADDING_ITEM_ID]
+    # Item IDs: history items then HSTU_PADDING_ITEM_ID; target NOT in sequence.
+    assert batch[HISTORY_ITEM_IDS][0].tolist() == [0, 1, 2, HSTU_PADDING_ITEM_ID, HSTU_PADDING_ITEM_ID]
     assert batch[HISTORY_ITEM_IDS][1].tolist() == [
         4,
         HSTU_PADDING_ITEM_ID,
         HSTU_PADDING_ITEM_ID,
         HSTU_PADDING_ITEM_ID,
+        HSTU_PADDING_ITEM_ID,
     ]
+    # history_lengths is the real (non-padded) history length, NOT including the query slot.
     assert batch["history_lengths"].tolist() == [3, 1]
     assert batch[ITEM_ID].tolist() == [3, 6]
+    # Query timestamp written at position == history_lengths[b].
+    assert batch[HISTORY_TIMESTAMPS][0][3].item() == pytest.approx(10.0)
+    assert batch[HISTORY_TIMESTAMPS][1][1].item() == pytest.approx(20.0)
 
 
 def test_rearec_hstu_eval_collator_right_pads_without_target() -> None:
@@ -295,6 +324,7 @@ def test_rearec_hstu_eval_collator_right_pads_without_target() -> None:
                 HISTORY_ITEM_IDS: (1, 2),
                 HISTORY_TIMESTAMPS: (2.0, 3.0),
                 ITEM_ID: 9,
+                TIMESTAMP: 99.0,
             }
         ]
     )
@@ -304,8 +334,11 @@ def test_rearec_hstu_eval_collator_right_pads_without_target() -> None:
     batch = collator(records)
 
     assert ITEM_ID not in batch
-    assert batch[HISTORY_ITEM_IDS][0].tolist() == [1, 2, HSTU_PADDING_ITEM_ID]
-    assert batch[HISTORY_TIMESTAMPS][0].tolist() == [2.0, 3.0, 0.0]
+    # Shape is (B, max_len + 1).
+    assert batch[HISTORY_ITEM_IDS].shape == (1, max_len + 1)
+    assert batch[HISTORY_ITEM_IDS][0].tolist() == [1, 2, HSTU_PADDING_ITEM_ID, HSTU_PADDING_ITEM_ID]
+    # Query timestamp (99.0) written at position 2 (== history_lengths[0]).
+    assert batch[HISTORY_TIMESTAMPS][0].tolist() == pytest.approx([2.0, 3.0, 99.0, 0.0])
 
 
 def test_rearec_hstu_train_collator_does_not_append_target_to_sequence() -> None:
@@ -317,6 +350,7 @@ def test_rearec_hstu_train_collator_does_not_append_target_to_sequence() -> None
                 HISTORY_ITEM_IDS: (1, 2),
                 HISTORY_TIMESTAMPS: (1.0, 2.0),
                 ITEM_ID: target_item,
+                TIMESTAMP: 50.0,
             }
         ]
     )
@@ -327,11 +361,12 @@ def test_rearec_hstu_train_collator_does_not_append_target_to_sequence() -> None
 
     history_ids = batch[HISTORY_ITEM_IDS][0].tolist()
     assert target_item not in history_ids
-    assert history_ids == [1, 2, HSTU_PADDING_ITEM_ID]
+    # Shape is (B, max_len + 1): history slots + 1 virtual query slot.
+    assert history_ids == [1, 2, HSTU_PADDING_ITEM_ID, HSTU_PADDING_ITEM_ID]
     assert batch[ITEM_ID].tolist() == [target_item]
 
 
-def test_rearec_hstu_collator_timestamps_right_padded_with_zeros() -> None:
+def test_rearec_hstu_collator_timestamps_query_slot_and_zero_padding() -> None:
     max_len = 4
     records = pd.DataFrame(
         [
@@ -339,6 +374,7 @@ def test_rearec_hstu_collator_timestamps_right_padded_with_zeros() -> None:
                 HISTORY_ITEM_IDS: (0,),
                 HISTORY_TIMESTAMPS: (10.0,),
                 ITEM_ID: 1,
+                TIMESTAMP: 20.0,
             }
         ]
     )
@@ -347,7 +383,9 @@ def test_rearec_hstu_collator_timestamps_right_padded_with_zeros() -> None:
     )
     batch = collator(records)
 
-    assert batch[HISTORY_TIMESTAMPS][0].tolist() == [10.0, 0.0, 0.0, 0.0]
+    # Width = max_len + 1 = 5.
+    # Position 0 = item history timestamp; position 1 = query timestamp; 2..4 = zeros.
+    assert batch[HISTORY_TIMESTAMPS][0].tolist() == pytest.approx([10.0, 20.0, 0.0, 0.0, 0.0])
 
 
 # ---------------------------------------------------------------------------
