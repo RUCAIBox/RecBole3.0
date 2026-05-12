@@ -830,6 +830,72 @@ def test_rearec_effective_noise_zero_in_eval_mode() -> None:
     assert model._effective_noise_factor() == 0.0
 
 
+def test_rearec_effective_loss_type_auto_sasrec() -> None:
+    model = ReaRecModel(_sasrec_config(backbone="sasrec", loss_type="auto"))
+    assert model._effective_loss_type() == "ce"
+
+
+def test_rearec_effective_loss_type_auto_hstu() -> None:
+    model = ReaRecModel(ReaRecConfig(backbone="hstu", loss_type="auto"))
+    assert model._effective_loss_type() == "sampled_softmax"
+
+
+def test_rearec_effective_loss_type_explicit_override() -> None:
+    model = ReaRecModel(_sasrec_config(backbone="sasrec", loss_type="sampled_softmax"))
+    assert model._effective_loss_type() == "sampled_softmax"
+
+    model2 = ReaRecModel(ReaRecConfig(backbone="hstu", loss_type="ce"))
+    assert model2._effective_loss_type() == "ce"
+
+
+def test_rearec_effective_loss_type_invalid_raises() -> None:
+    model = ReaRecModel(_sasrec_config(loss_type="unknown"))
+    with pytest.raises(ValueError, match="loss_type"):
+        model._effective_loss_type()
+
+
+def test_rearec_sampled_softmax_erl_loss_is_finite() -> None:
+    model = ReaRecModel(
+        _sasrec_config(learning_strategy="erl", loss_type="sampled_softmax", num_negatives=16)
+    )
+    model._init_params(_NUM_ITEMS)
+    model.train()
+
+    batch = _make_sasrec_batch()
+    loss = model.compute_loss(batch, model.forward(batch))
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+
+
+def test_rearec_sampled_softmax_prl_loss_is_finite() -> None:
+    model = ReaRecModel(
+        _sasrec_config(learning_strategy="prl", loss_type="sampled_softmax", num_negatives=16, noise_factor=0.1)
+    )
+    model._init_params(_NUM_ITEMS)
+    model.train()
+
+    batch = _make_sasrec_batch()
+    loss = model.compute_loss(batch, model.forward(batch))
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+
+
+def test_rearec_sampled_softmax_erl_kl_term_is_finite() -> None:
+    model = ReaRecModel(
+        _sasrec_config(learning_strategy="erl", loss_type="sampled_softmax", num_negatives=16, kl_weight=0.1)
+    )
+    model._init_params(_NUM_ITEMS)
+    model.train()
+
+    batch = _make_sasrec_batch()
+    loss = model.compute_loss(batch, model.forward(batch))
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+
+
 def test_rearec_prl_reason_step_zero_no_progressive_loss() -> None:
     model = ReaRecModel(_sasrec_config(reason_step=0, learning_strategy="prl"))
     model._init_params(_NUM_ITEMS)

@@ -69,6 +69,21 @@ class ReaRecConfig(SequentialModelConfig):
         metadata={"help": "Noise injection is enabled only when current_epoch > warmup_epochs (PRL only). 0 = always on, matching official default behaviour."},
     )
 
+    # --- Loss function ---
+    loss_type: str = field(
+        default="auto",
+        metadata={"help": (
+            "Item-level CE loss variant used for all reasoning steps. "
+            "'auto': full-vocab CE for SASRec backbone, sampled softmax for HSTU backbone. "
+            "'ce': always full-vocabulary CrossEntropyLoss. "
+            "'sampled_softmax': always InfoNCE-style sampled softmax (1 positive + num_negatives)."
+        )},
+    )
+    num_negatives: int = field(
+        default=128,
+        metadata={"help": "Number of random negative samples per positive for sampled_softmax loss."},
+    )
+
     # --- HSTU backbone hyperparameters (only used when backbone='hstu') ---
     attention_dim: int = field(
         default=32,

@@ -276,31 +276,39 @@ class ReaRecModel(BaseRetrievalModel):
 
         L_ERL = CE(mean_of_K+1_steps) - lambda * KL_diversity
 
-        The KL term encourages diverse distributions across reasoning steps.
+        CE variant (full-vocab or sampled softmax) is controlled by config.loss_type.
+        The KL term uses the same item set as the CE to keep the distribution support
+        consistent; for sampled_softmax, one shared negative set is drawn for all T steps.
         """
         B = target_ids.shape[0]
         thinking_embs = model_output[:B]        # [B, K+1, D]
         T = thinking_embs.shape[1]              # K+1
+        temperature = float(self.config.temperature)
 
-        # Ensemble: average all K+1 step embeddings
         ensemble_embs = thinking_embs.mean(dim=1)   # [B, D]
-        el_logits = torch.matmul(ensemble_embs, scoring_embs.t()) / self.config.temperature
-        loss = self._loss_fct(el_logits, target_ids)
+        loss = self._item_ce_loss(ensemble_embs, target_ids, scoring_embs, temperature)
 
         if self.config.kl_weight > 0 and T > 1:
-            # KL divergence across all pairs of reasoning step distributions.
-            # Avoid materialising [B, T, T, num_items] via unsqueeze broadcast; instead
-            # compute kl(p_t || p_s) = self_ent[b,t] - cross[b,t,s] using a batched matmul
-            # that only allocates [B, T, T].
-            step_logits = torch.matmul(thinking_embs, scoring_embs.t()) / self.config.temperature
-            # [B, T, num_items]
+            if self._effective_loss_type() == "sampled_softmax":
+                # Share one negative set across all T steps for a consistent support.
+                num_neg = int(self.config.num_negatives)
+                neg_ids = torch.randint(
+                    0, self._num_items, (B, num_neg),
+                    device=thinking_embs.device, dtype=torch.long,
+                )
+                pos_embs = scoring_embs[target_ids]   # [B, D]
+                neg_embs = scoring_embs[neg_ids]       # [B, num_neg, D]
+                pos_logits = torch.einsum("btd,bd->bt", thinking_embs, pos_embs).unsqueeze(-1) / temperature
+                neg_logits = torch.einsum("btd,bnd->btn", thinking_embs, neg_embs) / temperature
+                step_logits = torch.cat([pos_logits, neg_logits], dim=-1)  # [B, T, num_neg+1]
+            else:
+                step_logits = torch.matmul(thinking_embs, scoring_embs.t()) / temperature
+                # [B, T, num_items]
             step_probs = F.softmax(step_logits, dim=-1)                   # [B, T, N]
             step_log_probs = F.log_softmax(step_logits.detach(), dim=-1)  # [B, T, N]
-            # cross[b,t,s] = sum_n p_t[n] * log_p_s[n]  →  [B, T, T]
-            cross = torch.bmm(step_probs, step_log_probs.transpose(1, 2))
-            # self_ent[b,t] = sum_n p_t[n] * log_p_t[n]  →  [B, T, 1]
-            self_ent = (step_probs * step_log_probs).sum(-1, keepdim=True)
-            kl_div = self_ent - cross  # kl_div[b,t,s] = KL(p_t || p_s),  [B, T, T]
+            cross = torch.bmm(step_probs, step_log_probs.transpose(1, 2)) # [B, T, T]
+            self_ent = (step_probs * step_log_probs).sum(-1, keepdim=True) # [B, T, 1]
+            kl_div = self_ent - cross  # KL(p_t || p_s),  [B, T, T]
             off_diag = ~torch.eye(T, device=thinking_embs.device, dtype=torch.bool)
             kl_loss = kl_div[:, off_diag].mean()
             loss = loss - self.config.kl_weight * kl_loss
@@ -321,54 +329,49 @@ class ReaRecModel(BaseRetrievalModel):
 
         L_PRL = CE(final_step) + pl_weight * progressive_CE + cl_weight * contrastive_CE
 
-        Progressive CE uses decreasing temperature across steps 0..K-1 to
-        represent increasing difficulty.
-        Contrastive CE aligns clean and noisy reasoning trajectories (steps 1..K).
+        Progressive CE uses decreasing temperature across steps 0..K-1.
+        Contrastive CE aligns clean and noisy reasoning trajectories (batch-level, not item-level).
+        CE variant (full-vocab or sampled softmax) is controlled by config.loss_type.
         """
         B = target_ids.shape[0]
         repeat_times = model_output.shape[0] // B  # 1 or 2
 
         clean_output = model_output[:B]             # [B, K+1, D]
         K1 = clean_output.shape[1]                  # K+1
+        temperature = float(self.config.temperature)
 
         # --- 1. Primary CE on the final reasoning step ---
         final_embs = clean_output[:, -1, :]         # [B, D]
-        final_logits = torch.matmul(final_embs, scoring_embs.t()) / self.config.temperature
-        loss = self._loss_fct(final_logits, target_ids)
+        loss = self._item_ce_loss(final_embs, target_ids, scoring_embs, temperature)
 
         # --- 2. Progressive learning CE on steps 0..K-1 ---
         if K1 > 1:
             prior_embs = clean_output[:, :-1, :]    # [B, K, D]
             K = prior_embs.shape[1]
-            # Temperatures: tau * alpha^K, tau * alpha^(K-1), ..., tau * alpha^1
-            # (higher temperature = flatter distribution for earlier, easier steps)
             exponents = torch.arange(K, 0, -1, device=clean_output.device, dtype=torch.float32)
             temps = self.config.temperature * (self.config.temp_scale ** exponents)  # [K]
-            # Compute CE for each step separately to avoid peak [B, K, num_items] tensor.
             pl_loss_acc = clean_output.new_tensor(0.0)
             for k in range(K):
-                logits_k = prior_embs[:, k, :] @ scoring_embs.t() / temps[k]  # [B, N]
-                pl_loss_acc = pl_loss_acc + self._loss_fct(logits_k, target_ids)
-            pl_loss = pl_loss_acc / K  # mean over K steps, equivalent to the batched form
+                pl_loss_acc = pl_loss_acc + self._item_ce_loss(
+                    prior_embs[:, k, :], target_ids, scoring_embs, float(temps[k])
+                )
+            pl_loss = pl_loss_acc / K
             loss = loss + self.config.pl_weight * pl_loss
 
         # --- 3. Reasoning-aware contrastive loss (clean vs noisy, steps 1..K) ---
+        # This is batch-level contrastive (not item-level), so it is unaffected by loss_type.
         if repeat_times > 1 and self.config.cl_weight > 0 and K1 > 1:
             noisy_output = model_output[B:]         # [B, K+1, D]
-            # Compare reasoning steps 1..K (exclude step-0 = initial encoding)
             view1 = clean_output[:, 1:, :]          # [B, K, D]
             view2 = noisy_output[:, 1:, :]          # [B, K, D]
             K = view1.shape[1]
-            # Similarity: for each (batch, step), score against all batch items' same step
-            # similarity_matrix[b, step, j] = dot(view2[b, step], view1[j, step])
-            sim = torch.einsum("bkd,jkd->bjk", view2, view1) / self.config.temperature
-            # sim[b, j, k] = dot(view2[b,k], view1[j,k]) / temp → [B, B, K]
-            # CE input [N=B, C=B, d=K]: for each (b, k) predict j=b (same batch item)
+            sim = torch.einsum("bkd,jkd->bjk", view2, view1) / temperature
+            # sim[b, j, k] → [B, B, K]; for each (b, k) predict j=b
             cl_labels = (
                 torch.arange(B, device=clean_output.device)
                 .unsqueeze(1)
                 .expand(B, K)
-            )  # [B, K], label[b, k] = b
+            )  # [B, K]
             cl_loss = self._loss_fct(sim, cl_labels)
             loss = loss + self.config.cl_weight * cl_loss
 
@@ -563,6 +566,61 @@ class ReaRecModel(BaseRetrievalModel):
         if isinstance(backbone, HSTUBackbone):
             return backbone.get_item_embs()  # [num_items, D]
         return self._item_emb_module().weight[: self._num_items]  # [num_items, D]
+
+    # ------------------------------------------------------------------
+    # Loss-type helpers
+    # ------------------------------------------------------------------
+
+    def _effective_loss_type(self) -> str:
+        """Resolve 'auto' to the concrete loss type based on backbone."""
+        loss_type = str(self.config.loss_type).lower()
+        if loss_type == "auto":
+            return "sampled_softmax" if str(self.config.backbone).lower() == "hstu" else "ce"
+        if loss_type not in ("ce", "sampled_softmax"):
+            raise ValueError(
+                f"Unknown loss_type '{loss_type}'. Choose 'auto', 'ce', or 'sampled_softmax'."
+            )
+        return loss_type
+
+    def _item_ce_loss(
+        self,
+        user_embs: torch.Tensor,     # [B, D]
+        target_ids: torch.Tensor,    # [B]
+        scoring_embs: torch.Tensor,  # [num_items, D]
+        temperature: float,
+    ) -> torch.Tensor:
+        """Dispatch to full-vocab CE or sampled softmax depending on config.loss_type."""
+        if self._effective_loss_type() == "sampled_softmax":
+            return self._sampled_softmax_loss(user_embs, target_ids, scoring_embs, temperature)
+        logits = torch.matmul(user_embs, scoring_embs.t()) / temperature  # [B, num_items]
+        return self._loss_fct(logits, target_ids)
+
+    def _sampled_softmax_loss(
+        self,
+        user_embs: torch.Tensor,     # [B, D]
+        target_ids: torch.Tensor,    # [B]
+        scoring_embs: torch.Tensor,  # [num_items, D]
+        temperature: float,
+    ) -> torch.Tensor:
+        """InfoNCE-style sampled softmax: 1 positive + num_negatives random negatives."""
+        B = user_embs.shape[0]
+        num_neg = int(self.config.num_negatives)
+        neg_ids = torch.randint(
+            0, self._num_items, (B, num_neg),  # type: ignore[arg-type]
+            device=user_embs.device, dtype=torch.long,
+        )
+        pos_embs = scoring_embs[target_ids]             # [B, D]
+        neg_embs = scoring_embs[neg_ids]                # [B, num_neg, D]
+        pos_logits = (user_embs * pos_embs).sum(-1, keepdim=True) / temperature  # [B, 1]
+        neg_logits = torch.bmm(
+            user_embs.unsqueeze(1), neg_embs.transpose(1, 2)
+        ).squeeze(1) / temperature                       # [B, num_neg]
+        neg_logits = neg_logits.masked_fill(
+            neg_ids == target_ids.unsqueeze(1), -5e4
+        )
+        logits = torch.cat([pos_logits, neg_logits], dim=1)  # [B, num_neg+1]
+        labels = torch.zeros(B, dtype=torch.long, device=user_embs.device)
+        return F.cross_entropy(logits, labels)
 
     def _require_initialized(self) -> None:
         if self._num_items is None:

@@ -20,6 +20,10 @@ model:
   reason_step: 2
   temperature: 0.07
 
+  # --- Loss function ---
+  loss_type: auto      # auto / ce / sampled_softmax
+  num_negatives: 128   # negative samples per positive (sampled_softmax only)
+
   # --- ERL-specific ---
   kl_weight: 0.05
 
