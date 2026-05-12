@@ -23,6 +23,7 @@ model:
   # --- Loss function ---
   loss_type: auto      # auto / ce / sampled_softmax
   num_negatives: 128   # negative samples per positive (sampled_softmax only)
+  normalize_embeddings: true   # L2-normalize user/item embeddings before scoring (matches standalone HSTU)
 
   # --- ERL-specific ---
   kl_weight: 0.05
@@ -37,12 +38,12 @@ model:
   # --- HSTU backbone (only used when backbone: hstu) ---
   # Uncomment and tune when switching to backbone: hstu.
   # Requires fbgemm-gpu and a dataset with timestamps.
-  # attention_dim: 32
-  # linear_hidden_dim: 32
-  # input_dropout_rate: 0.0
-  # attn_dropout_rate: 0.0
-  # linear_dropout_rate: 0.0
-  # num_time_buckets: 128
+  attention_dim: 32
+  linear_hidden_dim: 32
+  input_dropout_rate: 0.0
+  attn_dropout_rate: 0.0
+  linear_dropout_rate: 0.0
+  num_time_buckets: 128
 
 dataset:
   metadata_mode: fields

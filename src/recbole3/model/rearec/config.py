@@ -83,6 +83,14 @@ class ReaRecConfig(SequentialModelConfig):
         default=128,
         metadata={"help": "Number of random negative samples per positive for sampled_softmax loss."},
     )
+    normalize_embeddings: bool = field(
+        default=True,
+        metadata={"help": (
+            "L2-normalize user and item embeddings before scoring. "
+            "Matches standalone HSTU default (True). "
+            "Set False for SASRec-style raw dot-product scoring."
+        )},
+    )
 
     # --- HSTU backbone hyperparameters (only used when backbone='hstu') ---
     attention_dim: int = field(

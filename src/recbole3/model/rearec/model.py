@@ -212,6 +212,11 @@ class ReaRecModel(BaseRetrievalModel):
         # For HSTU the weight is already [num_items, D], so this is a no-op.
         scoring_embs = item_emb_weight[: self._num_items]  # [num_items, D]
 
+        # Pre-normalize item scoring embeddings once so all downstream CE and KL
+        # calls receive unit-norm item vectors (matching standalone HSTU behaviour).
+        if self.config.normalize_embeddings:
+            scoring_embs = F.normalize(scoring_embs, p=2, dim=-1)
+
         strategy = str(self.config.learning_strategy).lower()
         if strategy == "erl":
             return self._compute_erl_loss(model_output, target_item_ids, scoring_embs)
@@ -238,6 +243,10 @@ class ReaRecModel(BaseRetrievalModel):
         self._require_initialized()
         user_embs = self._encode_user_embeddings(model_inputs)  # [B, D]
         scoring_embs = self._scoring_embs()                     # [num_items, D]
+
+        if self.config.normalize_embeddings:
+            user_embs = F.normalize(user_embs, p=2, dim=-1)
+            scoring_embs = F.normalize(scoring_embs, p=2, dim=-1)
 
         if candidate_item_ids is not None:
             candidate_item_ids = candidate_item_ids.to(
@@ -284,6 +293,12 @@ class ReaRecModel(BaseRetrievalModel):
         thinking_embs = model_output[:B]        # [B, K+1, D]
         T = thinking_embs.shape[1]              # K+1
         temperature = float(self.config.temperature)
+
+        # Normalize per-step embeddings before any scoring (matches HSTU _score_embeddings).
+        # The mean of unit vectors is not itself unit-norm, but its direction captures the
+        # ensemble intent; _item_ce_loss will re-normalize before the dot-product.
+        if self.config.normalize_embeddings:
+            thinking_embs = F.normalize(thinking_embs, p=2, dim=-1)
 
         ensemble_embs = thinking_embs.mean(dim=1)   # [B, D]
         loss = self._item_ce_loss(ensemble_embs, target_ids, scoring_embs, temperature)
@@ -364,6 +379,9 @@ class ReaRecModel(BaseRetrievalModel):
             noisy_output = model_output[B:]         # [B, K+1, D]
             view1 = clean_output[:, 1:, :]          # [B, K, D]
             view2 = noisy_output[:, 1:, :]          # [B, K, D]
+            if self.config.normalize_embeddings:
+                view1 = F.normalize(view1, p=2, dim=-1)
+                view2 = F.normalize(view2, p=2, dim=-1)
             K = view1.shape[1]
             sim = torch.einsum("bkd,jkd->bjk", view2, view1) / temperature
             # sim[b, j, k] → [B, B, K]; for each (b, k) predict j=b
@@ -516,8 +534,8 @@ class ReaRecModel(BaseRetrievalModel):
                 linear_dropout_rate=float(cfg.linear_dropout_rate),
                 num_time_buckets=int(cfg.num_time_buckets),
                 temperature=float(cfg.temperature),
-                normalize_embeddings=False,  # ReaRec handles scoring independently
-                num_negatives=128,           # unused by ReaRec's CE loss
+                normalize_embeddings=bool(cfg.normalize_embeddings),
+                num_negatives=int(cfg.num_negatives),
             )
             hstu_model = HSTUModel(hstu_cfg)
             hstu_model._ensure_initialized(self._num_items)
@@ -586,10 +604,12 @@ class ReaRecModel(BaseRetrievalModel):
         self,
         user_embs: torch.Tensor,     # [B, D]
         target_ids: torch.Tensor,    # [B]
-        scoring_embs: torch.Tensor,  # [num_items, D]
+        scoring_embs: torch.Tensor,  # [num_items, D] — expected pre-normalized when normalize_embeddings=True
         temperature: float,
     ) -> torch.Tensor:
         """Dispatch to full-vocab CE or sampled softmax depending on config.loss_type."""
+        if self.config.normalize_embeddings:
+            user_embs = F.normalize(user_embs, p=2, dim=-1)
         if self._effective_loss_type() == "sampled_softmax":
             return self._sampled_softmax_loss(user_embs, target_ids, scoring_embs, temperature)
         logits = torch.matmul(user_embs, scoring_embs.t()) / temperature  # [B, num_items]

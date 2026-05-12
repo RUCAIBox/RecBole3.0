@@ -1003,3 +1003,113 @@ def test_rearec_hstu_scoring_embs_delegates_to_backbone(
 
     assert scoring.shape == (_NUM_ITEMS, _D)
     assert isinstance(model._ar_wrapper.backbone, HSTUBackbone)
+
+
+# ---------------------------------------------------------------------------
+# normalize_embeddings
+# ---------------------------------------------------------------------------
+
+
+def test_rearec_config_normalize_embeddings_defaults_to_true() -> None:
+    cfg = ReaRecConfig()
+    assert cfg.normalize_embeddings is True
+
+
+def test_rearec_normalize_embeddings_true_erl_loss_is_finite() -> None:
+    model = ReaRecModel(
+        _sasrec_config(learning_strategy="erl", normalize_embeddings=True)
+    )
+    model._init_params(_NUM_ITEMS)
+    model.train()
+
+    batch = _make_sasrec_batch()
+    loss = model.compute_loss(batch, model.forward(batch))
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+
+
+def test_rearec_normalize_embeddings_true_prl_loss_is_finite() -> None:
+    model = ReaRecModel(
+        _sasrec_config(learning_strategy="prl", normalize_embeddings=True, noise_factor=0.1)
+    )
+    model._init_params(_NUM_ITEMS)
+    model.train()
+
+    batch = _make_sasrec_batch()
+    loss = model.compute_loss(batch, model.forward(batch))
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+
+
+def test_rearec_normalize_embeddings_false_erl_loss_is_finite() -> None:
+    model = ReaRecModel(
+        _sasrec_config(learning_strategy="erl", normalize_embeddings=False)
+    )
+    model._init_params(_NUM_ITEMS)
+    model.train()
+
+    batch = _make_sasrec_batch()
+    loss = model.compute_loss(batch, model.forward(batch))
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+
+
+def test_rearec_normalize_embeddings_changes_loss_value() -> None:
+    """normalize_embeddings=True and False must produce different loss values."""
+    torch.manual_seed(42)
+    model_norm = ReaRecModel(_sasrec_config(normalize_embeddings=True))
+    model_norm._init_params(_NUM_ITEMS)
+    model_norm.train()
+
+    torch.manual_seed(42)
+    model_raw = ReaRecModel(_sasrec_config(normalize_embeddings=False))
+    model_raw._init_params(_NUM_ITEMS)
+    model_raw.train()
+
+    batch = _make_sasrec_batch()
+    torch.manual_seed(0)
+    loss_norm = model_norm.compute_loss(batch, model_norm.forward(batch))
+    torch.manual_seed(0)
+    loss_raw = model_raw.compute_loss(batch, model_raw.forward(batch))
+
+    assert not torch.isclose(loss_norm, loss_raw)
+
+
+def test_rearec_normalize_embeddings_predict_returns_valid_shape() -> None:
+    model = ReaRecModel(_sasrec_config(normalize_embeddings=True))
+    model._init_params(_NUM_ITEMS)
+    model.eval()
+
+    batch = _make_sasrec_batch()
+    with torch.no_grad():
+        top_k = model.predict(batch, k=5)
+
+    assert top_k.shape == (_B, 5)
+    assert top_k.dtype == torch.long
+
+
+def test_rearec_hstu_config_inherits_normalize_embeddings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HSTUConfig built inside _init_params should reflect ReaRec's normalize_embeddings."""
+    monkeypatch.setattr(HSTUModel, "_require_runtime_support", lambda self: None)
+    cfg = ReaRecConfig(
+        backbone="hstu",
+        history_max_length=_L,
+        embedding_dim=_D,
+        num_layers=1,
+        num_heads=2,
+        attention_dim=8,
+        linear_hidden_dim=8,
+        num_time_buckets=16,
+        normalize_embeddings=False,
+    )
+    model = ReaRecModel(cfg)
+    model._init_params(_NUM_ITEMS)
+
+    backbone = model._ar_wrapper.backbone
+    assert isinstance(backbone, HSTUBackbone)
+    assert backbone._hstu.config.normalize_embeddings is False
