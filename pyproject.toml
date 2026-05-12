@@ -35,14 +35,20 @@ hstu = [
 rqvae = [
   "sentence-transformers",
 ]
+rpg = [
+    "transformers>=4.40",
+    "sentence-transformers",
+    "faiss-cpu",
+]
 letter = [
-  "sentence-transformers",
-  "k-means-constrained",
+    "sentence-transformers",
+    "k-means-constrained",
 ]
 tiger = [
-  "transformers>=4.40,<5.0",
+    "transformers>=4.40,<5.0",
 ]
 lc-rec = [
+  "transformers>=4.40,<5.0",
   "peft<0.19.0",
   "flash-attn",
 ]
