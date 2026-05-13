@@ -212,9 +212,10 @@ class ReaRecModel(BaseRetrievalModel):
         # For HSTU the weight is already [num_items, D], so this is a no-op.
         scoring_embs = item_emb_weight[: self._num_items]  # [num_items, D]
 
-        # Pre-normalize item scoring embeddings once so all downstream CE and KL
-        # calls receive unit-norm item vectors (matching standalone HSTU behaviour).
-        if self.config.normalize_embeddings:
+        # For HSTU backbone: pre-normalize item scoring embeddings once so all
+        # downstream CE and KL calls receive unit-norm item vectors (matching
+        # standalone HSTU behaviour). No-op for SASRec backbone.
+        if self._should_normalize():
             scoring_embs = F.normalize(scoring_embs, p=2, dim=-1)
 
         strategy = str(self.config.learning_strategy).lower()
@@ -244,7 +245,7 @@ class ReaRecModel(BaseRetrievalModel):
         user_embs = self._encode_user_embeddings(model_inputs)  # [B, D]
         scoring_embs = self._scoring_embs()                     # [num_items, D]
 
-        if self.config.normalize_embeddings:
+        if self._should_normalize():
             user_embs = F.normalize(user_embs, p=2, dim=-1)
             scoring_embs = F.normalize(scoring_embs, p=2, dim=-1)
 
@@ -297,7 +298,7 @@ class ReaRecModel(BaseRetrievalModel):
         # Normalize per-step embeddings before any scoring (matches HSTU _score_embeddings).
         # The mean of unit vectors is not itself unit-norm, but its direction captures the
         # ensemble intent; _item_ce_loss will re-normalize before the dot-product.
-        if self.config.normalize_embeddings:
+        if self._should_normalize():
             thinking_embs = F.normalize(thinking_embs, p=2, dim=-1)
 
         ensemble_embs = thinking_embs.mean(dim=1)   # [B, D]
@@ -379,7 +380,7 @@ class ReaRecModel(BaseRetrievalModel):
             noisy_output = model_output[B:]         # [B, K+1, D]
             view1 = clean_output[:, 1:, :]          # [B, K, D]
             view2 = noisy_output[:, 1:, :]          # [B, K, D]
-            if self.config.normalize_embeddings:
+            if self._should_normalize():
                 view1 = F.normalize(view1, p=2, dim=-1)
                 view2 = F.normalize(view2, p=2, dim=-1)
             K = view1.shape[1]
@@ -589,6 +590,16 @@ class ReaRecModel(BaseRetrievalModel):
     # Loss-type helpers
     # ------------------------------------------------------------------
 
+    def _should_normalize(self) -> bool:
+        """Whether to L2-normalize embeddings before scoring.
+
+        Normalization is meaningful only for the HSTU backbone (matching standalone
+        HSTU default behaviour). SASRec uses raw dot-product per the official ReaRec
+        paper, so this always returns False for the SASRec backbone regardless of the
+        config value.
+        """
+        return bool(self.config.normalize_embeddings) and str(self.config.backbone).lower() == "hstu"
+
     def _effective_loss_type(self) -> str:
         """Resolve 'auto' to the concrete loss type based on backbone."""
         loss_type = str(self.config.loss_type).lower()
@@ -604,11 +615,11 @@ class ReaRecModel(BaseRetrievalModel):
         self,
         user_embs: torch.Tensor,     # [B, D]
         target_ids: torch.Tensor,    # [B]
-        scoring_embs: torch.Tensor,  # [num_items, D] — expected pre-normalized when normalize_embeddings=True
+        scoring_embs: torch.Tensor,  # [num_items, D] — pre-normalized upstream when _should_normalize() is True
         temperature: float,
     ) -> torch.Tensor:
         """Dispatch to full-vocab CE or sampled softmax depending on config.loss_type."""
-        if self.config.normalize_embeddings:
+        if self._should_normalize():
             user_embs = F.normalize(user_embs, p=2, dim=-1)
         if self._effective_loss_type() == "sampled_softmax":
             return self._sampled_softmax_loss(user_embs, target_ids, scoring_embs, temperature)

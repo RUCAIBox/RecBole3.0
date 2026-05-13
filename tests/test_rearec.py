@@ -1057,8 +1057,34 @@ def test_rearec_normalize_embeddings_false_erl_loss_is_finite() -> None:
     assert torch.isfinite(loss)
 
 
-def test_rearec_normalize_embeddings_changes_loss_value() -> None:
-    """normalize_embeddings=True and False must produce different loss values."""
+def test_rearec_should_normalize_is_false_for_sasrec() -> None:
+    """normalize_embeddings has no effect on SASRec backbone (_should_normalize always False)."""
+    model_true = ReaRecModel(_sasrec_config(normalize_embeddings=True))
+    model_false = ReaRecModel(_sasrec_config(normalize_embeddings=False))
+
+    assert model_true._should_normalize() is False
+    assert model_false._should_normalize() is False
+
+
+def test_rearec_should_normalize_respects_config_for_hstu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """normalize_embeddings is respected for HSTU backbone."""
+    monkeypatch.setattr(HSTUModel, "_require_runtime_support", lambda self: None)
+
+    base_kwargs = dict(
+        backbone="hstu", history_max_length=_L, embedding_dim=_D,
+        num_layers=1, num_heads=2, attention_dim=8, linear_hidden_dim=8, num_time_buckets=16,
+    )
+    model_true = ReaRecModel(ReaRecConfig(**base_kwargs, normalize_embeddings=True))
+    model_false = ReaRecModel(ReaRecConfig(**base_kwargs, normalize_embeddings=False))
+
+    assert model_true._should_normalize() is True
+    assert model_false._should_normalize() is False
+
+
+def test_rearec_normalize_embeddings_sasrec_loss_unchanged() -> None:
+    """SASRec loss must be identical regardless of normalize_embeddings value."""
     torch.manual_seed(42)
     model_norm = ReaRecModel(_sasrec_config(normalize_embeddings=True))
     model_norm._init_params(_NUM_ITEMS)
@@ -1075,7 +1101,8 @@ def test_rearec_normalize_embeddings_changes_loss_value() -> None:
     torch.manual_seed(0)
     loss_raw = model_raw.compute_loss(batch, model_raw.forward(batch))
 
-    assert not torch.isclose(loss_norm, loss_raw)
+    # normalize_embeddings is ignored for SASRec: losses must be equal
+    assert torch.isclose(loss_norm, loss_raw)
 
 
 def test_rearec_normalize_embeddings_predict_returns_valid_shape() -> None:

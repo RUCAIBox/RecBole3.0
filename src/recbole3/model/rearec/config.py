@@ -87,8 +87,8 @@ class ReaRecConfig(SequentialModelConfig):
         default=True,
         metadata={"help": (
             "L2-normalize user and item embeddings before scoring. "
-            "Matches standalone HSTU default (True). "
-            "Set False for SASRec-style raw dot-product scoring."
+            "Only effective when backbone='hstu', matching standalone HSTU default (True). "
+            "Has no effect on the SASRec backbone, which always uses raw dot-product scoring."
         )},
     )
 
