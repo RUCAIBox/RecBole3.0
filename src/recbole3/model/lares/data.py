@@ -9,7 +9,7 @@ from torch.utils.data import Dataset
 
 from recbole3.dataset import FrameDataset, ITEM_ID
 from recbole3.model.base import BaseCollator, ModelDatasets
-from recbole3.model.lares.config import LARESConfig
+from recbole3.model.lares.config import LARESConfig, LARES_PADDING_ITEM_ID, ITEM_ID_OFFSET
 from recbole3.model.sequential import HISTORY_ITEM_IDS, BaseSequentialModelDataset
 
 
@@ -47,6 +47,10 @@ class LARESModelDataset(BaseSequentialModelDataset):
         return getattr(self, "_full_train_frame", None)
 
 
+# ---------------------------------------------------------------------------
+# Dataset (generates augmentations on __getitems__)
+# ---------------------------------------------------------------------------
+
 class LARESFrameDataset(FrameDataset):
 
     def __init__(
@@ -58,19 +62,23 @@ class LARESFrameDataset(FrameDataset):
         self._same_target = same_target
         self._full_frame = self.frame
 
-    def __getitems__(self, indices: list[int]) -> pd.DataFrame:  # type: ignore[override]
+    def __getitems__(self, indices: list[int]) -> pd.DataFrame:
         batch = self.frame.take(indices).reset_index(drop=True)
         batch["aug_history_item_ids"] = _sample_augmentations(
             batch, self._same_target, self._full_frame,
         )
         return batch
-    
+
+
+# ---------------------------------------------------------------------------
+# Collators
+# ---------------------------------------------------------------------------
 
 class LARESTrainCollator(BaseCollator):
 
     def __call__(self, feature_records: pd.DataFrame) -> dict[str, torch.Tensor]:
         batch = _pad_history(feature_records)
-        batch[ITEM_ID] = torch.as_tensor(feature_records[ITEM_ID].to_numpy(), dtype=torch.long)
+        batch[ITEM_ID] = torch.as_tensor(feature_records[ITEM_ID].to_numpy(), dtype=torch.long) + ITEM_ID_OFFSET
 
         aug, aug_len = _pad_column(feature_records, "aug_history_item_ids")
         batch["aug_history_item_ids"] = aug
@@ -83,6 +91,10 @@ class LARESEvalCollator(BaseCollator):
     def __call__(self, feature_records: pd.DataFrame) -> dict[str, torch.Tensor]:
         return _pad_history(feature_records)
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _filter_empty(frame: pd.DataFrame) -> pd.DataFrame:
     return frame[frame[HISTORY_ITEM_IDS].apply(len) > 0].reset_index(drop=True)
@@ -121,10 +133,10 @@ def _pad_column(records: pd.DataFrame, column: str) -> tuple[torch.Tensor, torch
     lengths = torch.tensor([len(s) for s in seqs], dtype=torch.long)
     B = len(seqs)
     max_len = int(torch.max(lengths).item()) if B > 0 else 0
-    padded = torch.zeros((B, max_len), dtype=torch.long)
+    padded = torch.full((B, max_len), LARES_PADDING_ITEM_ID, dtype=torch.long)
     for i, seq in enumerate(seqs):
         if len(seq) > 0:
-            padded[i, :len(seq)] = torch.tensor(seq, dtype=torch.long)
+            padded[i, :len(seq)] = torch.tensor(seq, dtype=torch.long) + ITEM_ID_OFFSET
     return padded, lengths
 
 
