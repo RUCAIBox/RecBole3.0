@@ -64,7 +64,7 @@ class LARESFrameDataset(FrameDataset):
             batch, self._same_target, self._full_frame,
         )
         return batch
-
+    
 
 class LARESTrainCollator(BaseCollator):
 

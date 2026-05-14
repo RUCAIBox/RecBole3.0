@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 
 from recbole3.model.sequential import SequentialModelConfig
 
+LARES_PADDING_ITEM_ID = 0
+ITEM_ID_OFFSET = 1
 
 @dataclass(slots=True)
 class LARESConfig(SequentialModelConfig):

@@ -9,7 +9,7 @@ from torch import nn
 
 from recbole3.dataset import ITEM_ID
 from recbole3.model.base import BaseCollator, BaseRetrievalModel
-from recbole3.model.lares.config import LARESConfig
+from recbole3.model.lares.config import LARESConfig, ITEM_ID_OFFSET
 from recbole3.model.lares.data import LARESEvalCollator, LARESTrainCollator
 from recbole3.model.sequential import HISTORY_ITEM_IDS
 
@@ -78,10 +78,6 @@ class TransformerEncoder(nn.Module):
         return x
 
 
-# ---------------------------------------------------------------------------
-# Contrastive loss
-# ---------------------------------------------------------------------------
-
 class ContrastiveLoss(nn.Module):
     def __init__(self, tau: float, sem_func: str):
         super().__init__()
@@ -97,10 +93,6 @@ class ContrastiveLoss(nn.Module):
         return F.cross_entropy(logits, torch.arange(B, device=x.device, dtype=torch.long))
 
 
-# ---------------------------------------------------------------------------
-# LARES Model
-# ---------------------------------------------------------------------------
-
 class LARESModel(BaseRetrievalModel):
     def __init__(self, config: LARESConfig) -> None:
         super().__init__(config)
@@ -110,8 +102,6 @@ class LARESModel(BaseRetrievalModel):
         self._pos_emb: nn.Embedding | None = None
         self._pre_encoder: TransformerEncoder | None = None
         self._core_encoder: TransformerEncoder | None = None
-
-    # -- framework hooks --
 
     def ensure_initialized(self, prepared_data) -> None:
         self._init_modules(int(prepared_data.get_num_items()))
@@ -124,8 +114,6 @@ class LARESModel(BaseRetrievalModel):
         self._init_modules(int(prepared_data.get_num_items()))
         return LARESEvalCollator(self.config, prepared_data=prepared_data)
 
-    # -- lazy init --
-
     def _init_modules(self, num_items: int) -> None:
         if self._num_items is not None:
             if self._num_items != num_items:
@@ -137,7 +125,7 @@ class LARESModel(BaseRetrievalModel):
         H = cfg.hidden_size
         max_L = int(cfg.history_max_length)
 
-        self._item_emb = nn.Embedding(num_items + 1, H, padding_idx=0)
+        self._item_emb = nn.Embedding(num_items + ITEM_ID_OFFSET, H, padding_idx=0)
         self._pos_emb = nn.Embedding(max_L, H)
         self._ln1 = nn.LayerNorm(H, eps=cfg.layer_norm_eps)
         self._dropout = nn.Dropout(cfg.hidden_dropout_prob)
@@ -172,8 +160,6 @@ class LARESModel(BaseRetrievalModel):
         with torch.no_grad():
             self._item_emb.weight[0].zero_()
 
-    # -- recurrence sampling --
-
     @torch.no_grad()
     def _sample_T(self) -> int:
         if not self.training:
@@ -197,8 +183,6 @@ class LARESModel(BaseRetrievalModel):
             t = torch.full((1,), int(mean_T), dtype=torch.long)
         return max(1, int(t.item()))
 
-    # -- state init --
-
     def _init_state(self, pre_output: torch.Tensor) -> torch.Tensor:
         x = torch.zeros_like(pre_output)
         method = self.config.state_init_method
@@ -209,7 +193,8 @@ class LARESModel(BaseRetrievalModel):
             nn.init.trunc_normal_(x, mean=0.0, std=std, a=-3 * std, b=3 * std)
         return self.config.state_scale * x
 
-    # -- core encoding --
+    def _to_model_item_ids(self, item_ids: torch.Tensor) -> torch.Tensor:
+        return item_ids + ITEM_ID_OFFSET
 
     def _encode(self, item_ids: torch.Tensor, lengths: torch.Tensor, *, return_all_states: bool = False, num_steps: int | None = None) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, L = item_ids.shape
@@ -255,8 +240,6 @@ class LARESModel(BaseRetrievalModel):
         step_outputs = [s.gather(1, idx).squeeze(1) for s in all_states]
         return user_emb, torch.stack(step_outputs, dim=1)
 
-    # -- public API --
-
     def forward(self, batch: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         user_emb, _ = self._encode(batch[HISTORY_ITEM_IDS], batch["history_lengths"])
         result = {"user_embeddings": user_emb}
@@ -272,7 +255,7 @@ class LARESModel(BaseRetrievalModel):
 
         # CE loss (next-item prediction)
         user_emb = outputs["user_embeddings"]
-        logits = self._score(user_emb, self._item_emb.weight[1:])
+        logits = self._score(user_emb, self._item_emb.weight)
         ce_loss = F.cross_entropy(logits, pos_items.to(device=logits.device))
 
         # re-encode original for contrastive
@@ -296,19 +279,17 @@ class LARESModel(BaseRetrievalModel):
         user_emb = self.forward(model_inputs)["user_embeddings"]
 
         if candidate_item_ids is not None:
-            cand = candidate_item_ids.to(device=user_emb.device, dtype=torch.long)
-            scores = self._score(user_emb, self._item_emb(cand + 1))
+            cand = self._to_model_item_ids(candidate_item_ids).to(device=user_emb.device, dtype=torch.long)
+            scores = self._score(user_emb, self._item_emb(cand))
             return torch.gather(cand, 1, torch.topk(scores, k=k, dim=1).indices)
 
-        scores = self._score(user_emb, self._item_emb.weight[1:])
+        scores = self._score(user_emb, self._item_emb.weight[ITEM_ID_OFFSET:])
         if exclude_item_ids is not None and exclude_mask is not None and exclude_item_ids.numel() > 0:
             mask = torch.zeros_like(scores, dtype=torch.bool)
             mask.scatter_(1, exclude_item_ids.to(device=scores.device, dtype=torch.long),
                           exclude_mask.to(device=scores.device, dtype=torch.bool))
             scores = scores.masked_fill(mask, float("-inf"))
         return torch.topk(scores, k=k, dim=1).indices.to(dtype=torch.long)
-
-    # -- scoring helper --
 
     def _score(self, user_emb: torch.Tensor, item_emb: torch.Tensor) -> torch.Tensor:
         if self.config.sem_func == "cos":
