@@ -62,3 +62,22 @@ class LARESConfig(SequentialModelConfig):
         default=True,
         metadata={"help": "Whether augmented sequences use the same recurrence steps as original."},
     )
+
+    # Training stage
+    stage: str = field(
+        default="SL",
+        metadata={"help": "Training stage: SL (supervised) or RL (reinforcement)."},
+    )
+
+    # RL (GRPO) parameters
+    k: int = field(default=10, metadata={"help": "Top-k for RL reward computation."})
+    beta: float = field(default=0.1, metadata={"help": "KL penalty coefficient in GRPO loss."})
+    group_num: int = field(default=8, metadata={"help": "Group size for GRPO advantage normalization."})
+    reward_metric: str = field(
+        default="recall",
+        metadata={"help": "RL reward metric: recall or ndcg."},
+    )
+    pretrain_model_path: str = field(
+        default="",
+        metadata={"help": "Path to pretrained SL checkpoint for RL training."},
+    )

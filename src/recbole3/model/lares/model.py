@@ -196,7 +196,7 @@ class LARESModel(BaseRetrievalModel):
     def _to_model_item_ids(self, item_ids: torch.Tensor) -> torch.Tensor:
         return item_ids + ITEM_ID_OFFSET
 
-    def _encode(self, item_ids: torch.Tensor, lengths: torch.Tensor, *, return_all_states: bool = False, num_steps: int | None = None) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def _encode(self, item_ids: torch.Tensor, lengths: torch.Tensor, *, return_all_states: bool = False, num_steps: int | None = None) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         B, L = item_ids.shape
         dev = self._item_emb.weight.device
 
@@ -235,16 +235,18 @@ class LARESModel(BaseRetrievalModel):
         user_emb = states.gather(1, idx).squeeze(1)
 
         if not return_all_states:
-            return user_emb, None
+            return user_emb, None, None
 
-        step_outputs = [s.gather(1, idx).squeeze(1) for s in all_states]
-        return user_emb, torch.stack(step_outputs, dim=1)
+        step_outputs = torch.stack([s.gather(1, idx).squeeze(1) for s in all_states], dim=1)
+        per_step_logits = torch.matmul(step_outputs, self._item_emb.weight.T)
+        per_step_logps = torch.log_softmax(per_step_logits, dim=-1)
+        return user_emb, step_outputs, per_step_logps
 
     def forward(self, batch: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        user_emb, _ = self._encode(batch[HISTORY_ITEM_IDS], batch["history_lengths"])
+        user_emb, _, _ = self._encode(batch[HISTORY_ITEM_IDS], batch["history_lengths"])
         result = {"user_embeddings": user_emb}
         if "aug_history_item_ids" in batch:
-            aug_emb, _ = self._encode(batch["aug_history_item_ids"], batch["aug_history_lengths"])
+            aug_emb, _, _ = self._encode(batch["aug_history_item_ids"], batch["aug_history_lengths"])
             result["aug_user_embeddings"] = aug_emb
         return result
 
@@ -260,11 +262,11 @@ class LARESModel(BaseRetrievalModel):
 
         # re-encode original for contrastive
         n_step = self._sample_T() if self.config.same_step else None
-        aug1, all_steps = self._encode(history_ids, history_lengths, return_all_states=True, num_steps=n_step)
+        aug1, all_steps, _ = self._encode(history_ids, history_lengths, return_all_states=True, num_steps=n_step)
 
         aug2 = outputs.get("aug_user_embeddings")
         if aug2 is None:
-            aug2, _ = self._encode(history_ids, history_lengths)
+            aug2, _, _ = self._encode(history_ids, history_lengths)
 
         cl = ContrastiveLoss(self.config.tau, self.config.sem_func)
         loss = ce_loss + self.config.alpha * (cl(aug1, aug2) + cl(aug2, aug1)) / 2
@@ -281,7 +283,7 @@ class LARESModel(BaseRetrievalModel):
         if candidate_item_ids is not None:
             cand = self._to_model_item_ids(candidate_item_ids).to(device=user_emb.device, dtype=torch.long)
             scores = self._score(user_emb, self._item_emb(cand))
-            return torch.gather(cand, 1, torch.topk(scores, k=k, dim=1).indices)
+            return torch.gather(cand, 1, torch.topk(scores, k=k, dim=1).indices) - ITEM_ID_OFFSET
 
         scores = self._score(user_emb, self._item_emb.weight[ITEM_ID_OFFSET:])
         if exclude_item_ids is not None and exclude_mask is not None and exclude_item_ids.numel() > 0:
