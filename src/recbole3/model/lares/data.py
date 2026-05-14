@@ -47,10 +47,6 @@ class LARESModelDataset(BaseSequentialModelDataset):
         return getattr(self, "_full_train_frame", None)
 
 
-# ---------------------------------------------------------------------------
-# Dataset (generates augmentations on __getitems__)
-# ---------------------------------------------------------------------------
-
 class LARESFrameDataset(FrameDataset):
 
     def __init__(
@@ -70,10 +66,6 @@ class LARESFrameDataset(FrameDataset):
         return batch
 
 
-# ---------------------------------------------------------------------------
-# Collators
-# ---------------------------------------------------------------------------
-
 class LARESTrainCollator(BaseCollator):
 
     def __call__(self, feature_records: pd.DataFrame) -> dict[str, torch.Tensor]:
@@ -91,10 +83,6 @@ class LARESEvalCollator(BaseCollator):
     def __call__(self, feature_records: pd.DataFrame) -> dict[str, torch.Tensor]:
         return _pad_history(feature_records)
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _filter_empty(frame: pd.DataFrame) -> pd.DataFrame:
     return frame[frame[HISTORY_ITEM_IDS].apply(len) > 0].reset_index(drop=True)
