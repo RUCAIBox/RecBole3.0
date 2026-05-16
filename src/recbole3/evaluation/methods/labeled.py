@@ -26,7 +26,19 @@ class LabeledEvaluationMethod(BaseRankingEvaluationMethod):
         if records[LABEL].isna().any():
             raise TypeError("Labeled evaluation requires row-based labeled records with non-null label values.")
         labels = records[LABEL].to_numpy(dtype=np.float64, copy=False)
-        group_ids = records[USER_ID].to_numpy(dtype=np.int64, copy=False)
+
+        if USER_ID in records.columns:
+            user_values = records[USER_ID]
+            numeric_user_values = pd.to_numeric(user_values, errors="coerce")
+            if numeric_user_values.notna().all():
+                group_ids = numeric_user_values.to_numpy(dtype=np.int64, copy=False)
+            else:
+                group_ids = pd.factorize(user_values, sort=False)[0].astype(np.int64, copy=False)
+        else:
+            # Some CTR datasets do not provide explicit user_id fields.
+            # For point-wise CTR evaluation, AUC/logloss can still be
+            # computed without user-level grouping.
+            group_ids = np.arange(len(labels), dtype=np.int64)
 
         scores = model.predict(model_inputs).reshape(-1)
         if scores.numel() != len(labels):

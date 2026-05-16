@@ -1,0 +1,11 @@
+name: avazu_ctr
+train_path: data/avazu/train.csv
+valid_path: data/avazu/valid.csv
+test_path: data/avazu/test.csv
+processed_dir: data/processed
+refresh_cache: false
+hash_size: 1000000
+split:
+  strategy: ratio
+  order: chronological
+  per_user: false
