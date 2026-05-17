@@ -100,8 +100,8 @@ def _filter_empty(frame: pd.DataFrame) -> pd.DataFrame:
     return frame[frame[HISTORY_ITEM_IDS].apply(len) > 0].reset_index(drop=True)
 
 
-def _build_item_maps(frame: pd.DataFrame) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
-    """Return (same_target_index, item_row_map) in one pass."""
+def _build_item_maps(frame: pd.DataFrame) -> dict[int, list[int]]:
+    """Return same_target_index mapping item_id -> row indices with repeated targets."""
     item_rows: dict[int, list[int]] = {}
     for i, (_, row) in enumerate(frame.iterrows()):
         item_rows.setdefault(int(row[ITEM_ID]), []).append(i)
