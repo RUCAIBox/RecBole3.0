@@ -90,10 +90,9 @@ def test_lares_model_dataset_computes_same_target_index() -> None:
 
     idx = lares_data.same_target_index
     assert isinstance(idx, dict)
-    # StubDataset has 4 train records with items [0,1,4,5] — each unique
-    # so no items have >= 2 occurrences, means same_target_index is empty
-    for item_id, indices in idx.items():
-        assert len(indices) >= 2
+    # StubDataset has 4 train records with items [0, 1, 4, 5] — each unique,
+    # so no items have >= 2 occurrences and same_target_index should be empty.
+    assert idx == {}
 
 
 def test_lares_model_dataset_stores_full_train_frame() -> None:
