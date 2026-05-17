@@ -69,22 +69,22 @@ class LARESFrameDataset(FrameDataset):
 class LARESTrainCollator(BaseCollator):
 
     def __call__(self, feature_records: pd.DataFrame) -> dict[str, torch.Tensor]:
-        batch = _pad_history(feature_records)
-        batch[ITEM_ID] = torch.as_tensor(feature_records[ITEM_ID].to_numpy(), dtype=torch.long) + ITEM_ID_OFFSET
+        records = feature_records
+        if "aug_history_item_ids" not in records.columns:
+            ds = self.prepared_data
+            records = records.copy()
+            if isinstance(ds, LARESModelDataset) and ds.full_train_frame is not None:
+                records["aug_history_item_ids"] = _sample_augmentations(
+                    records, ds.same_target_index, ds.full_train_frame,
+                )
+            else:
+                records["aug_history_item_ids"] = [
+                    tuple(row[HISTORY_ITEM_IDS]) for _, row in records.iterrows()
+                ]
 
-        if "aug_history_item_ids" not in feature_records.columns:                                                            
-            ds = self.prepared_data                                                                                          
-            if isinstance(ds, LARESModelDataset) and ds.full_train_frame is not None:                                        
-                feature_records = feature_records.copy()                                                                     
-                feature_records["aug_history_item_ids"] = _sample_augmentations(                                             
-                    feature_records, ds.same_target_index, ds.full_train_frame,                                              
-                )                                                                                                            
-            else:                                                                                                            
-                feature_records = feature_records.copy()                                                                     
-                feature_records["aug_history_item_ids"] = [                                                                  
-                    tuple(row[HISTORY_ITEM_IDS]) for _, row in feature_records.iterrows()                                    
-                ]                 
-        aug, aug_len = _pad_column(feature_records, "aug_history_item_ids")
+        batch = _pad_history(records)
+        batch[ITEM_ID] = torch.as_tensor(records[ITEM_ID].to_numpy(), dtype=torch.long) + ITEM_ID_OFFSET
+        aug, aug_len = _pad_column(records, "aug_history_item_ids")
         batch["aug_history_item_ids"] = aug
         batch["aug_history_lengths"] = aug_len
         return batch
