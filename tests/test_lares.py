@@ -4,7 +4,7 @@ import pytest
 import torch
 import pandas as pd
 
-from recbole3.dataset import ITEM_ID, SEEN_ITEM_IDS, USER_ID
+from recbole3.dataset import ITEM_ID, SEEN_ITEM_IDS
 from recbole3.evaluation import EvalConfig
 from recbole3.model import HISTORY_ITEM_IDS, get_model_spec
 from recbole3.model.lares import (
