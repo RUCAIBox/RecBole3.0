@@ -39,10 +39,6 @@ class LARESModelDataset(BaseSequentialModelDataset):
         return getattr(self, "_same_target_index", {})
 
     @property
-    def item_row_map(self) -> dict[int, list[int]]:
-        return getattr(self, "_item_row_map", {})
-
-    @property
     def full_train_frame(self) -> pd.DataFrame | None:
         return getattr(self, "_full_train_frame", None)
 
