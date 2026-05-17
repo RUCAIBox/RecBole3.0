@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from recbole3.dataset.avazu import (
+    AvazuCTRConfig,
+    AvazuCTRDataset,
+    AvazuCTRParser,
+)
 from recbole3.dataset.amazon2014 import (
     Amazon2014BaseConfig,
     Amazon2014BaseParser,
@@ -47,6 +52,10 @@ class DatasetSpec:
 
 
 DATASET_TABLE: dict[str, DatasetSpec] = {
+    "avazu_ctr": DatasetSpec(
+        dataset_cls=AvazuCTRDataset,
+        config_cls=AvazuCTRConfig,
+    ),
     "amazon2014_retrieval": DatasetSpec(
         dataset_cls=Amazon2014RetrievalDataset,
         config_cls=Amazon2014RetrievalConfig,
@@ -67,6 +76,9 @@ def get_dataset_spec(name: str) -> DatasetSpec:
 
 
 __all__ = [
+    "AvazuCTRConfig",
+    "AvazuCTRDataset",
+    "AvazuCTRParser",
     "Amazon2014BaseConfig",
     "Amazon2014BaseParser",
     "Amazon2014RetrievalConfig",

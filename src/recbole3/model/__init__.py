@@ -18,6 +18,12 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
+from recbole3.model.letter import (
+    LETTERConfig,
+    LETTERModel,
+    LETTERModelDataset,
+    LETTERTrainer,
+)
 from recbole3.model.lcrec.config import LCRecConfig
 from recbole3.model.llmrank import (
     LLMRankConfig,
@@ -25,10 +31,19 @@ from recbole3.model.llmrank import (
     LLMRankModelDataset,
 )
 from recbole3.model.llmrank.trainer import LLMRankTrainer, LLMRankTrainerConfig
+
 from recbole3.model.rearec import (
     ReaRecConfig,
     ReaRecModel,
     ReaRecModelDataset,
+)
+from recbole3.model.rankmixer import (
+    RANKMIXER_FEATURES,
+    RankMixerConfig,
+    RankMixerEvalCollator,
+    RankMixerModel,
+    RankMixerPipeline,
+    RankMixerTrainCollator,
 )
 from recbole3.model.rqvae import (
     RQVAEConfig,
@@ -90,6 +105,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),
+    "letter": ModelSpec(
+        model_cls=LETTERModel,
+        config_cls=LETTERConfig,
+        model_data_cls=LETTERModelDataset,
+        trainer_cls=LETTERTrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
     "lcrec": ModelSpec(
         model_cls=LazyImport("transformers", "PreTrainedModel"),
         config_cls=LCRecConfig,
@@ -102,6 +125,13 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_cls=LLMRankTrainer,
         trainer_config_cls=LLMRankTrainerConfig,
         pipeline_cls=LazyImport("recbole3.model.llmrank.pipeline", "LLMRankPipeline"),
+    ),
+    "rankmixer": ModelSpec(
+        model_cls=RankMixerModel,
+        config_cls=RankMixerConfig,
+        trainer_cls=Trainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=RankMixerPipeline,
     ),
     "tiger": ModelSpec(
         model_cls=TIGERModel,
@@ -138,10 +168,15 @@ __all__ = [
     "HSTUConfig",
     "HSTUModel",
     "HSTUModelDataset",
+    "LETTERConfig",
+    "LETTERModel",
+    "LETTERModelDataset",
+    "LETTERTrainer",
     "LLMRankConfig",
     "LLMRankModel",
     "LLMRankModelDataset",
     "MODEL_TABLE",
+    "RANKMIXER_FEATURES",
     "RQVAEConfig",
     "RQVAEModel",
     "RQVAEModelDataset",
@@ -149,6 +184,11 @@ __all__ = [
     "ModelConfig",
     "ModelDatasets",
     "ModelSpec",
+    "RankMixerConfig",
+    "RankMixerEvalCollator",
+    "RankMixerModel",
+    "RankMixerPipeline",
+    "RankMixerTrainCollator",
     "SequentialModelConfig",
     "TIGERConfig",
     "TIGERModel",

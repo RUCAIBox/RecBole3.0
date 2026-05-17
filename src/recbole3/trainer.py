@@ -491,8 +491,9 @@ class Trainer:
         }
 
     def _save_model_checkpoint(self, model: BaseModel, accelerator: Any, path: Path) -> None:
-        state_dict = accelerator.unwrap_model(model).state_dict()
-        torch.save(state_dict, path)
+        if accelerator.is_main_process:
+            state_dict = accelerator.unwrap_model(model).state_dict()
+            torch.save(state_dict, path)
 
     def _resolve_optimizer_class(self, name: str) -> type[Optimizer]:
         optimizer_cls = getattr(torch.optim, name, None)

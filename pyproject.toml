@@ -35,6 +35,10 @@ hstu = [
 rqvae = [
   "sentence-transformers",
 ]
+letter = [
+  "sentence-transformers",
+  "k-means-constrained",
+]
 tiger = [
   "transformers>=4.40,<5.0",
 ]
