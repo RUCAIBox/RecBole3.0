@@ -1,0 +1,92 @@
+# @package _global_
+
+model:
+  name: etegrec
+  semantic_emb_file: ""
+  rqvae_path: ""
+  history_max_length: 50
+  semantic_hidden_size: 256
+  code_num: 256
+  code_length: 4
+  num_beams: 20
+  eval_topk: [5, 10]
+  num_layers: 6
+  num_decoder_layers: 6
+  d_model: 128
+  d_ff: 512
+  num_heads: 4
+  d_kv: 64
+  dropout_rate: 0.1
+  activation_function: relu
+  feed_forward_proj: relu
+  max_positions: 210
+  num_emb_list: [256, 256, 256]
+  e_dim: 128
+  layers: [512, 256]
+  vq_type: vq
+  dist: l2
+  beta: 0.25
+  quant_loss_weight: 1.0
+  tau: 0.07
+  kmeans_init: false
+  kmeans_iters: 100
+  sk_epsilons: [0.0, 0.0, 0.0]
+  sk_iters: 50
+  moving_avg_decay: 0.99
+  h_dim: 2048
+  temperature: 0.9
+  dropout_prob: 0.0
+  bn: false
+  loss_type: mse
+
+trainer:
+  batch_size: 512
+  eval_batch_size: 32
+  eval_steps: 1
+  shuffle: true
+  max_epochs: 1
+  lr_rec: 0.005
+  lr_id: 0.0001
+  cycle: 2
+  lr_scheduler_type: null
+  warmup_steps: 0
+  rec_warmup_steps: null
+  id_warmup_steps: null
+  warm_epoch: 10
+  gradient_clip_norm: 1.0
+  alpha: 1.0
+  rec_code_loss: 1.0
+  rec_kl_loss: 0.0
+  rec_dec_cl_loss: 0.0
+  id_vq_loss: 1.0
+  id_code_loss: 0.0
+  id_kl_loss: 0.0
+  id_dec_cl_loss: 0.0
+  finetune_enabled: false
+  finetune_epochs: 100
+  finetune_lr: 0.0005
+  finetune_patience: 10
+  finetune_eval_steps: 1
+  finetune_lr_scheduler_type: cosine
+  finetune_warmup_steps: 0
+  monitor: ndcg@10
+  early_stopping:
+    enabled: true
+    patience: 15
+    min_delta: 0.0
+  checkpoint:
+    save_best: true
+    save_last: true
+  optimizer:
+    name: AdamW
+    kwargs:
+      lr: 0.005
+      weight_decay: 0.05
+  eval:
+    protocol: full
+    exclude_history: true
+    metrics:
+      - name: recall
+        ks: [5, 10]
+      - name: ndcg
+        ks: [5, 10]
