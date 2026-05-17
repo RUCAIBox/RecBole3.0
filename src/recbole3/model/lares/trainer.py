@@ -91,9 +91,9 @@ class LARESTrainer(Trainer):
             if (logger := getattr(self, "_logger", None)) is not None:
                 total_elapsed = time.perf_counter() - total_start
                 logger.log_summary(
-                    stopped_early=False,
-                    total_epochs=0,
-                    best_epoch=None,
+                    stopped_early=result["fit"]["stopped_early"],
+                    total_epochs=len(result["fit"]["train_history"]),
+                    best_epoch=result["fit"]["best_epoch"],
                     total_time=total_elapsed,
                 )
             return result
@@ -170,38 +170,180 @@ class LARESTrainer(Trainer):
         train_dataset = prepared_data.get_train_dataset()
         train_dataloader = self.build_dataloader(train_dataset, collator, shuffle=self.config.shuffle)
         optimizer = self.build_optimizer(model)
+        monitor = self._resolve_monitor(prepared_data)
+        checkpoint_paths = self._resolve_checkpoint_paths(output_dir)
+        steps_per_epoch = max(1, len(train_dataloader))
+        num_training_steps = max(1, steps_per_epoch * self.config.max_epochs)
+        scheduler = self.build_scheduler(
+            optimizer,
+            num_training_steps=num_training_steps,
+            steps_per_epoch=steps_per_epoch,
+        )
+        scheduler_interval = self.config.scheduler.interval if self.config.scheduler is not None else None
 
-        model, optimizer, train_dataloader = accelerator.prepare(model, optimizer, train_dataloader)
+        if scheduler is None:
+            model, optimizer, train_dataloader, ref_model = accelerator.prepare(model, optimizer, train_dataloader, ref_model)
+        else:
+            model, optimizer, train_dataloader, scheduler, ref_model = accelerator.prepare(
+                model,
+                optimizer,
+                train_dataloader,
+                scheduler,
+                ref_model,
+            )
+
+        train_history: list[dict[str, Any]] = []
+        valid_history: list[dict[str, Any]] = []
+        best_epoch: int | None = None
+        best_value: float | None = None
+        bad_epoch_count = 0
+        stopped_early = False
+        eval_steps = max(1, int(self.config.eval_steps))
 
         for epoch in range(1, int(self.config.max_epochs) + 1):
+            epoch_start = time.perf_counter()
             model.train()
-            total_loss = 0.0
-            total_reward = 0.0
-            n_samples = 0
+            losses: list[float] = []
+            rewards: list[float] = []
 
-            for batch in train_dataloader:
-                optimizer.zero_grad()
+            progress_bar = self._create_train_progress_bar(train_dataloader, epoch=epoch, max_epochs=int(self.config.max_epochs))
+            for batch in progress_bar:
+                with accelerator.accumulate(model):
+                    optimizer.zero_grad()
 
-                item_ids = batch[HISTORY_ITEM_IDS]
-                lengths = batch["history_lengths"]
-                pos_items = batch[ITEM_ID]
+                    item_ids = batch[HISTORY_ITEM_IDS].to(accelerator.device)
+                    lengths = batch["history_lengths"].to(accelerator.device)
+                    pos_items = batch[ITEM_ID].to(accelerator.device)
 
-                loss, reward = self._rl_compute_loss(
-                    model, ref_model, item_ids, lengths, pos_items,
-                    group_num=group_num, k=k, beta=beta, reward_metric=reward_metric,
+                    loss, reward = self._rl_compute_loss(
+                        model, ref_model, item_ids, lengths, pos_items,
+                        group_num=group_num, k=k, beta=beta, reward_metric=reward_metric,
+                    )
+
+                    accelerator.backward(loss)
+                    optimizer.step()
+
+                    losses.append(float(loss.detach().float().item()))
+                    rewards.append(reward)
+
+            if hasattr(progress_bar, "close"):
+                progress_bar.close()
+            
+            epoch_loss = self._mean_or_none(losses)
+            epoch_reward = self._mean_or_none(rewards)
+            elapsed = time.perf_counter() - epoch_start
+            lr = optimizer.param_groups[0].get("lr", None)
+            train_history.append(
+                {
+                    "epoch": epoch,
+                    "loss": epoch_loss,
+                    "losses": losses,
+                    "reward": epoch_reward,
+                    "rewards": rewards,
+                    "num_batches": len(losses),
+                    "elapsed_seconds": elapsed,
+                    "lr": lr,
+                }
+            )
+            print(
+                f"[train:RL] epoch={epoch}/{int(self.config.max_epochs)} "
+                f"avg_loss={(f'{epoch_loss:.6f}' if epoch_loss is not None else 'n/a')} "
+                f"avg_reward={(f'{epoch_reward:.4f}' if epoch_reward is not None else 'n/a')} "
+                f"num_batches={len(losses)}"
+            )
+
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_epoch(
+                    epoch=epoch,
+                    max_epochs=int(self.config.max_epochs),
+                    loss=epoch_loss,
+                    reward=epoch_reward,
+                    num_batches=len(losses),
+                    elapsed_seconds=elapsed,
+                    lr=lr,
                 )
 
-                accelerator.backward(loss)
-                optimizer.step()
+            should_run_validation = (epoch % eval_steps == 0) or (epoch == int(self.config.max_epochs))
+            valid_result: dict[str, Any] | None = None
+            if should_run_validation:
+                valid_result = self._run_evaluation(
+                    model,
+                    prepared_data,
+                    split="valid",
+                    accelerator=accelerator,
+                    model_is_prepared=True,
+                )
+                valid_result["epoch"] = epoch
+                valid_history.append(valid_result)
+                print(
+                    f"[eval:valid] epoch={epoch}/{int(self.config.max_epochs)} "
+                    f"metrics={self._format_metrics(valid_result['metrics'])}"
+                )
+                if (logger := getattr(self, "_logger", None)) is not None:
+                    logger.log_validation(epoch=epoch, metrics=valid_result["metrics"])
 
-                total_loss += float(loss.detach().item())
-                total_reward += reward
-                n_samples += int(item_ids.shape[0]) * group_num
+            current_value: float | None = None
+            improved = False
+            if monitor is not None and valid_result is not None:
+                current_value = self._extract_monitor_value(valid_result["metrics"], monitor.name)
+                improved = self._is_improvement(
+                    current_value,
+                    best_value,
+                    higher_is_better=monitor.higher_is_better,
+                    min_delta=float(self.config.early_stopping.min_delta),
+                )
+                if improved:
+                    best_value = current_value
+                    best_epoch = epoch
+                    bad_epoch_count = 0
+                    if checkpoint_paths["best"] is not None:
+                        self._save_model_checkpoint(model, accelerator, checkpoint_paths["best"])
+                elif self.config.early_stopping.enabled:
+                    bad_epoch_count += 1
+            if scheduler is not None and scheduler_interval == "epoch":
+                if self._scheduler_requires_monitor():
+                    if valid_result is not None:
+                        self._step_epoch_scheduler(scheduler, current_value=current_value)
+                else:
+                    self._step_epoch_scheduler(scheduler, current_value=current_value)
+            if checkpoint_paths["last"] is not None:
+                self._save_model_checkpoint(model, accelerator, checkpoint_paths["last"])
+            if (
+                valid_result is not None
+                and self.config.early_stopping.enabled
+                and not improved
+                and bad_epoch_count >= int(self.config.early_stopping.patience)
+            ):
+                stopped_early = True
+                if (logger := getattr(self, "_logger", None)) is not None:
+                    logger.log_early_stopping(
+                        stopped=True,
+                        epoch=epoch,
+                        patience=int(self.config.early_stopping.patience),
+                    )
+                break
+        
+        if not stopped_early:
+            if (logger := getattr(self, "_logger", None)) is not None:
+                logger.log_early_stopping(
+                    stopped=False,
+                    epoch=int(self.config.max_epochs),
+                    patience=int(self.config.early_stopping.patience),
+                )
 
-            avg_reward = total_reward / max(n_samples, 1)
-            print(f"[train:RL] epoch={epoch}/{int(self.config.max_epochs)} "
-                  f"avg_loss={total_loss / max(len(train_dataloader), 1):.6f} "
-                  f"avg_reward={avg_reward:.4f}")
+        if (logger := getattr(self, "_logger", None)) is not None:
+            best_metric = self._build_best_metric_payload(monitor, best_value)
+            if best_metric:
+                logger.log_best(
+                    epoch=best_epoch,
+                    monitor_name=best_metric["name"],
+                    best_value=best_metric["value"],
+                )
+
+        best_checkpoint = checkpoint_paths["best"]
+        if best_checkpoint:
+            state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
+            model.load_state_dict(state_dict)
 
         print("[trainer] starting test evaluation")
         scaling_results = self._eval_recurrence_scaling(model, prepared_data)
@@ -210,7 +352,19 @@ class LARESTrainer(Trainer):
         self._log_scaling_results(scaling_results)
 
         mean_T = model.config.mean_recurrence
+
+        fit_result = {
+            "train_history": train_history,
+            "valid_history": valid_history,
+            "data_stats": self._build_result_data_stats(prepared_data),
+            "stopped_early": stopped_early,
+            "best_epoch": best_epoch,
+            "best_metric": self._build_best_metric_payload(monitor, best_value),
+            "checkpoint_paths": {key: (str(path) if path is not None else None) for key, path in checkpoint_paths.items()},
+        }
+
         return {
+            "fit": fit_result,
             "test": scaling_results.get(f"{int(mean_T)}", {}),
             "test_scaling": scaling_results,
         }
