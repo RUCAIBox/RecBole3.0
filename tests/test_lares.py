@@ -19,7 +19,6 @@ from recbole3.model.lares.model import (
     ContrastiveLoss,
     MultiHeadAttention,
     TransformerEncoder,
-    TransformerLayer,
 )
 from recbole3.trainer import TrainerConfig
 from tests.test_helpers import StubDataset, StubDatasetConfig
