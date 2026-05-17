@@ -40,7 +40,7 @@ letter = [
   "k-means-constrained",
 ]
 tiger = [
-  "transformers>=4.40,<5.0",
+  "transformers>=4.40,<6.0",
 ]
 etegrec = [
   "transformers>=4.39,<6.0",
