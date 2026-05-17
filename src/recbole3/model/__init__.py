@@ -45,6 +45,13 @@ from recbole3.model.rankmixer import (
     RankMixerPipeline,
     RankMixerTrainCollator,
 )
+from recbole3.model.rpg import (
+    RPGConfig,
+    RPGModel,
+    RPGModelDataset,
+    RPGTrainer,
+    RPGTrainerConfig,
+)
 from recbole3.model.rqvae import (
     RQVAEConfig,
     RQVAEModel,
@@ -132,6 +139,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_cls=Trainer,
         trainer_config_cls=TrainerConfig,
         pipeline_cls=RankMixerPipeline,
+    ),
+    "rpg": ModelSpec(
+        model_cls=RPGModel,
+        config_cls=RPGConfig,
+        model_data_cls=RPGModelDataset,
+        trainer_cls=RPGTrainer,
+        trainer_config_cls=RPGTrainerConfig,
+        pipeline_cls=Pipeline,
     ),
     "tiger": ModelSpec(
         model_cls=TIGERModel,

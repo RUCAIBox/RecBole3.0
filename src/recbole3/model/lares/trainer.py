@@ -82,18 +82,45 @@ class LARESTrainer(Trainer):
         try:
             stage = str(getattr(model.config, "stage", "SL") or "SL").upper()
             if stage == "SL":
-                result = self._run_sl(model, prepared_data, output_dir)
+                fit_result = self.fit(model, prepared_data, output_dir=output_dir)
             elif stage == "RL":
-                result = self._run_rl(model, prepared_data, output_dir)
+                fit_result = self._fit_rl(model, prepared_data, output_dir)
             else:
                 raise ValueError(f"Unknown training stage: {stage}")
 
             if (logger := getattr(self, "_logger", None)) is not None:
+                best_metric = fit_result.get("best_metric")
+                if best_metric:
+                    logger.log_best(
+                        epoch=fit_result["best_epoch"],
+                        monitor_name=best_metric["name"],
+                        best_value=best_metric["value"],
+                    )
+
+            best_checkpoint = fit_result["checkpoint_paths"].get("best")
+            if best_checkpoint:
+                state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
+                model.load_state_dict(state_dict)
+
+            print("[trainer] starting test evaluation")
+            scaling_results = self._eval_recurrence_scaling(model, prepared_data)
+            print("[trainer] finished test evaluation")
+
+            self._log_scaling_results(scaling_results)
+
+            mean_T = model.config.mean_recurrence
+            result = {
+                "fit": fit_result,
+                "test": scaling_results.get(f"{int(mean_T)}", {}),
+                "test_scaling": scaling_results,
+            }
+
+            if (logger := getattr(self, "_logger", None)) is not None:
                 total_elapsed = time.perf_counter() - total_start
                 logger.log_summary(
-                    stopped_early=result["fit"]["stopped_early"],
-                    total_epochs=len(result["fit"]["train_history"]),
-                    best_epoch=result["fit"]["best_epoch"],
+                    stopped_early=fit_result["stopped_early"],
+                    total_epochs=len(fit_result["train_history"]),
+                    best_epoch=fit_result["best_epoch"],
                     total_time=total_elapsed,
                 )
             return result
@@ -101,46 +128,9 @@ class LARESTrainer(Trainer):
             if (logger := getattr(self, "_logger", None)) is not None:
                 logger.close()
 
-    # ── SL stage ───────────────────────────────────────────────────────
-
-    def _run_sl(
-        self,
-        model: Any,
-        prepared_data: Any,
-        output_dir: str | Path | None,
-    ) -> dict[str, Any]:
-        fit_result = self.fit(model, prepared_data, output_dir=output_dir)
-
-        if (logger := getattr(self, "_logger", None)) is not None:
-            best_metric = fit_result.get("best_metric")
-            if best_metric:
-                logger.log_best(
-                    epoch=fit_result["best_epoch"],
-                    monitor_name=best_metric["name"],
-                    best_value=best_metric["value"],
-                )
-
-        best_checkpoint = fit_result["checkpoint_paths"].get("best")
-        if best_checkpoint:
-            state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
-            model.load_state_dict(state_dict)
-
-        print("[trainer] starting test evaluation")
-        scaling_results = self._eval_recurrence_scaling(model, prepared_data)
-        print("[trainer] finished test evaluation")
-
-        self._log_scaling_results(scaling_results)
-
-        mean_T = model.config.mean_recurrence
-        return {
-            "fit": fit_result,
-            "test": scaling_results.get(f"{int(mean_T)}", {}),
-            "test_scaling": scaling_results,
-        }
-
     # ── RL stage ───────────────────────────────────────────────────────
 
-    def _run_rl(
+    def _fit_rl(
         self,
         model: Any,
         prepared_data: Any,
@@ -331,28 +321,6 @@ class LARESTrainer(Trainer):
                     patience=int(self.config.early_stopping.patience),
                 )
 
-        if (logger := getattr(self, "_logger", None)) is not None:
-            best_metric = self._build_best_metric_payload(monitor, best_value)
-            if best_metric:
-                logger.log_best(
-                    epoch=best_epoch,
-                    monitor_name=best_metric["name"],
-                    best_value=best_metric["value"],
-                )
-
-        best_checkpoint = checkpoint_paths["best"]
-        if best_checkpoint:
-            state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
-            model.load_state_dict(state_dict)
-
-        print("[trainer] starting test evaluation")
-        scaling_results = self._eval_recurrence_scaling(model, prepared_data)
-        print("[trainer] finished test evaluation")
-
-        self._log_scaling_results(scaling_results)
-
-        mean_T = model.config.mean_recurrence
-
         fit_result = {
             "train_history": train_history,
             "valid_history": valid_history,
@@ -363,11 +331,7 @@ class LARESTrainer(Trainer):
             "checkpoint_paths": {key: (str(path) if path is not None else None) for key, path in checkpoint_paths.items()},
         }
 
-        return {
-            "fit": fit_result,
-            "test": scaling_results.get(f"{int(mean_T)}", {}),
-            "test_scaling": scaling_results,
-        }
+        return fit_result
 
     # ── RL loss ────────────────────────────────────────────────────────
 
