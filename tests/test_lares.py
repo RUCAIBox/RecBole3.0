@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 import torch
-import pandas as pd
 
 from recbole3.dataset import ITEM_ID, SEEN_ITEM_IDS
 from recbole3.evaluation import EvalConfig
