@@ -25,6 +25,12 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
+from recbole3.model.lares import (
+    LARESConfig,
+    LARESModel,
+    LARESModelDataset,
+    LARESTrainer,
+)
 from recbole3.model.letter import (
     LETTERConfig,
     LETTERModel,
@@ -45,6 +51,13 @@ from recbole3.model.rankmixer import (
     RankMixerModel,
     RankMixerPipeline,
     RankMixerTrainCollator,
+)
+from recbole3.model.rpg import (
+    RPGConfig,
+    RPGModel,
+    RPGModelDataset,
+    RPGTrainer,
+    RPGTrainerConfig,
 )
 from recbole3.model.rqvae import (
     RQVAEConfig,
@@ -98,6 +111,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=ETEGRecTrainerConfig,
         pipeline_cls=Pipeline,
     ),
+    "lares": ModelSpec(
+        model_cls=LARESModel,
+        config_cls=LARESConfig,
+        model_data_cls=LARESModelDataset,
+        trainer_cls=LARESTrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
     "rqvae": ModelSpec(
         model_cls=RQVAEModel,
         config_cls=RQVAEConfig,
@@ -133,6 +154,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_cls=Trainer,
         trainer_config_cls=TrainerConfig,
         pipeline_cls=RankMixerPipeline,
+    ),
+    "rpg": ModelSpec(
+        model_cls=RPGModel,
+        config_cls=RPGConfig,
+        model_data_cls=RPGModelDataset,
+        trainer_cls=RPGTrainer,
+        trainer_config_cls=RPGTrainerConfig,
+        pipeline_cls=Pipeline,
     ),
     "tiger": ModelSpec(
         model_cls=TIGERModel,
