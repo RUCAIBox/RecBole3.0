@@ -18,6 +18,12 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
+from recbole3.model.lares import (
+    LARESConfig,
+    LARESModel,
+    LARESModelDataset,
+    LARESTrainer,
+)
 from recbole3.model.letter import (
     LETTERConfig,
     LETTERModel,
@@ -32,6 +38,21 @@ from recbole3.model.llmrank import (
 )
 from recbole3.model.llmrank.trainer import LLMRankTrainer, LLMRankTrainerConfig
 from recbole3.model.minionerec.config import MiniOneRecConfig
+from recbole3.model.rankmixer import (
+    RANKMIXER_FEATURES,
+    RankMixerConfig,
+    RankMixerEvalCollator,
+    RankMixerModel,
+    RankMixerPipeline,
+    RankMixerTrainCollator,
+)
+from recbole3.model.rpg import (
+    RPGConfig,
+    RPGModel,
+    RPGModelDataset,
+    RPGTrainer,
+    RPGTrainerConfig,
+)
 from recbole3.model.rqvae import (
     RQVAEConfig,
     RQVAEModel,
@@ -76,6 +97,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),
+    "lares": ModelSpec(
+        model_cls=LARESModel,
+        config_cls=LARESConfig,
+        model_data_cls=LARESModelDataset,
+        trainer_cls=LARESTrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
     "rqvae": ModelSpec(
         model_cls=RQVAEModel,
         config_cls=RQVAEConfig,
@@ -109,6 +138,20 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         model_cls=LazyImport("transformers", "PreTrainedModel"),
         config_cls=MiniOneRecConfig,
         pipeline_cls=LazyImport("recbole3.model.minionerec.pipeline", "MiniOneRecPipeline"),
+    "rankmixer": ModelSpec(
+        model_cls=RankMixerModel,
+        config_cls=RankMixerConfig,
+        trainer_cls=Trainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=RankMixerPipeline,
+    ),
+    "rpg": ModelSpec(
+        model_cls=RPGModel,
+        config_cls=RPGConfig,
+        model_data_cls=RPGModelDataset,
+        trainer_cls=RPGTrainer,
+        trainer_config_cls=RPGTrainerConfig,
+        pipeline_cls=Pipeline,
     ),
     "tiger": ModelSpec(
         model_cls=TIGERModel,
@@ -149,6 +192,7 @@ __all__ = [
     "LLMRankModel",
     "LLMRankModelDataset",
     "MODEL_TABLE",
+    "RANKMIXER_FEATURES",
     "RQVAEConfig",
     "RQVAEModel",
     "RQVAEModelDataset",
@@ -157,6 +201,11 @@ __all__ = [
     "ModelDatasets",
     "ModelSpec",
     "MiniOneRecConfig",
+    "RankMixerConfig",
+    "RankMixerEvalCollator",
+    "RankMixerModel",
+    "RankMixerPipeline",
+    "RankMixerTrainCollator",
     "SequentialModelConfig",
     "TIGERConfig",
     "TIGERModel",

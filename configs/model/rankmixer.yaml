@@ -1,0 +1,65 @@
+# @package _global_
+
+model:
+  name: rankmixer
+  num_features: 22
+  feature_columns:
+    - feature_0
+    - feature_1
+    - feature_2
+    - feature_3
+    - feature_4
+    - feature_5
+    - feature_6
+    - feature_7
+    - feature_8
+    - feature_9
+    - feature_10
+    - feature_11
+    - feature_12
+    - feature_13
+    - feature_14
+    - feature_15
+    - feature_16
+    - feature_17
+    - feature_18
+    - feature_19
+    - feature_20
+    - feature_21
+  label_column: label
+  user_id_column: user_id
+  item_id_column: item_id
+  timestamp_column: timestamp
+  embedding_dim: 16
+  dim_multiplier: 2
+  num_layers: 2
+  num_heads: null
+  use_add_norm: true
+  ffn_multiplier: 4
+  mix_hidden_dims: [256, 128, 64, 32]
+  dropout: 0.2
+  hash_size: 1000000
+
+trainer:
+  batch_size: 2048
+  shuffle: true
+  dataloader_num_workers: 0
+  max_epochs: 10
+  monitor: auc
+  early_stopping:
+    enabled: true
+    patience: 2
+    min_delta: 0
+
+  optimizer:
+    name: Adam
+    kwargs:
+      lr: 0.001
+  checkpoint:
+    save_last: true
+    save_best: true
+  eval:
+    protocol: labeled
+    metrics:
+      - name: auc
+      - name: logloss
