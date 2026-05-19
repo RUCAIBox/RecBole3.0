@@ -31,6 +31,7 @@ from recbole3.model.llmrank import (
     LLMRankModelDataset,
 )
 from recbole3.model.llmrank.trainer import LLMRankTrainer, LLMRankTrainerConfig
+from recbole3.model.minionerec.config import MiniOneRecConfig
 from recbole3.model.rqvae import (
     RQVAEConfig,
     RQVAEModel,
@@ -104,6 +105,11 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=LLMRankTrainerConfig,
         pipeline_cls=LazyImport("recbole3.model.llmrank.pipeline", "LLMRankPipeline"),
     ),
+    "minionerec": ModelSpec(
+        model_cls=LazyImport("transformers", "PreTrainedModel"),
+        config_cls=MiniOneRecConfig,
+        pipeline_cls=LazyImport("recbole3.model.minionerec.pipeline", "MiniOneRecPipeline"),
+    ),
     "tiger": ModelSpec(
         model_cls=TIGERModel,
         config_cls=TIGERConfig,
@@ -150,6 +156,7 @@ __all__ = [
     "ModelConfig",
     "ModelDatasets",
     "ModelSpec",
+    "MiniOneRecConfig",
     "SequentialModelConfig",
     "TIGERConfig",
     "TIGERModel",

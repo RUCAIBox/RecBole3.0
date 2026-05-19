@@ -68,6 +68,11 @@ class Trainer:
 
     def create_accelerator(self) -> Any:
         from accelerate import Accelerator
+        from accelerate.state import AcceleratorState
+
+        # GRPO 等流程在 accelerate launch 下已初始化 AcceleratorState；再 new Accelerator() 会报错。
+        if AcceleratorState._shared_state:
+            return _ExistingAcceleratorEvalContext()
 
         return Accelerator(
             mixed_precision=self.config.mixed_precision,
@@ -632,6 +637,26 @@ class Trainer:
         if not values:
             return None
         return float(sum(values) / len(values))
+
+
+class _ExistingAcceleratorEvalContext:
+    """Evaluation helper when AcceleratorState is already initialized (e.g. post-GRPO on rank 0)."""
+
+    @property
+    def device(self) -> torch.device:
+        from accelerate.state import AcceleratorState
+
+        return AcceleratorState().device
+
+    def prepare(self, *args: Any) -> Any:
+        if len(args) == 1:
+            return args[0]
+        model, dataloader = args
+        return model, dataloader
+
+    @staticmethod
+    def unwrap_model(model: Any) -> Any:
+        return model
 
 
 __all__ = [

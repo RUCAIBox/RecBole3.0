@@ -3,38 +3,50 @@
 model:
   name: rqvae
   hidden_sizes: [2048, 1024, 512, 256]
-  codebook_num: 3
-  codebook_size: 256
+  # For ~20k items, the default 3x256 often under-utilizes the space and yields high collision.
+  # Increase codebook capacity and train longer to improve SID uniqueness/quality.
+  codebook_num: 4
+  codebook_size: 512
   codebook_dim: 128
   dropout: 0.0
   beta: 0.25
-  sk_epsilon: -1
-  sk_iters: -1
+  # Provide explicit defaults so sinkhorn inference is deterministic.
+  sk_epsilon: 0.003
+  sk_iters: 50
   vq_type: ema
   ema_decay: 0.99
   fix_code_embs: false
   sem_emb_file: sentence_t5.npy
-  sem_emb_pca: 128
+  # PCA can hurt fine-grained separation; keep full dimension by default.
+  sem_emb_pca: 0
   text_field: metadata_text
   sent_emb_model: /media/public/models/huggingface/sentence-transformers/sentence-t5-base
   sent_emb_batch_size: 32
   sid_collision_handling: extend # extend or sinkhorn
+  # Output format:
+  # - int: item_id -> [int, int, ...] (TIGER-style)
+  # - minionerec_index: item_id -> ["<a_0>", "<b_1>", ...] (MiniOneRec item.index.json)
+  sid_output_format: int
   sid_output_file: item_sids.json
+  minionerec_token_prefixes: [a, b, c, d, e]
+  minionerec_token_offset: 0
 
 trainer:
   batch_size: 2048
   shuffle: true
-  max_epochs: 20
-  monitor: recon_loss  # RQ-VAE uses reconstruction loss for early stopping
+  max_epochs: 100
+  # For downstream SID usage, collision_rate is the most direct objective.
+  monitor: collision_rate
   early_stopping:
-    enabled: false
-    patience: 5
+    enabled: true
+    patience: 10
+    # collision_rate is in [0, 1]; require a small but meaningful improvement
     min_delta: 0.001
   checkpoint:
     save_best: true
     save_last: true
   optimizer:
-    name: Adagrad
+    name: AdamW
     kwargs:
       lr: 0.001
   eval:
