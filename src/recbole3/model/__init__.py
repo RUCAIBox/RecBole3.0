@@ -12,6 +12,7 @@ from recbole3.model.base import (
     ModelConfig,
     ModelDatasets,
 )
+from recbole3.model.bigrec.config import BIGRecConfig
 from recbole3.model.hstu import (
     HISTORY_TIMESTAMPS,
     HSTUConfig,
@@ -61,6 +62,11 @@ class ModelSpec:
 
 
 MODEL_TABLE: dict[str, ModelSpec] = {
+    "bigrec": ModelSpec(
+        model_cls=LazyImport("transformers", "PreTrainedModel"),
+        config_cls=BIGRecConfig,
+        pipeline_cls=LazyImport("recbole3.model.bigrec.pipeline", "BIGRecPipeline"),
+    ),
     "hstu": ModelSpec(
         model_cls=HSTUModel,
         config_cls=HSTUConfig,
@@ -111,6 +117,7 @@ def get_model_spec(name: str) -> ModelSpec:
 
 __all__ = [
     "BaseCollator",
+    "BIGRecConfig",
     "BaseModel",
     "BaseModelDataset",
     "BaseRankingModel",

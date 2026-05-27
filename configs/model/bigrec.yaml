@@ -1,0 +1,98 @@
+# @package _global_
+# BIGRec — Bi-Step Grounding Paradigm for Large Language Models in Recommendation
+# Reference: Bao et al., arXiv:2308.08434 (2023)
+
+model:
+  name: bigrec
+
+  # ── LLM Backbone ────────────────────────────────────────────────────────────
+  # Local path or HuggingFace Hub identifier of the pretrained LLaMA model.
+  llm_path: ""                         # REQUIRED: set to your local LLaMA path
+  torch_dtype: float16                 # "float16" or "bfloat16"
+  load_in_8bit: false                  # INT8 quantization via bitsandbytes
+  attn_implementation: eager           # "eager" or "flash_attention_2"
+
+  # ── LoRA Fine-tuning ────────────────────────────────────────────────────────
+  use_lora: true
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  lora_target_modules:
+    - q_proj
+    - v_proj
+
+  # ── Tokenization ────────────────────────────────────────────────────────────
+  max_input_length: 512                # Max tokens for the prompt (instruction + input)
+  max_new_tokens: 64                   # Max tokens generated during beam search
+
+  # ── SFT Training Flags ──────────────────────────────────────────────────────
+  train_on_inputs: true                # True = full-sequence loss (official default)
+
+  # ── SFT Training ────────────────────────────────────────────────────────────
+  train_batch_size: 4
+  gradient_accumulation_steps: 8
+  num_train_epochs: 3
+  learning_rate: 3.0e-4                # Official BIGRec default (train.py)
+  weight_decay: 0.0
+  warmup_steps: 20                     # Official: fixed 20 warm-up steps (not a ratio)
+  warmup_ratio: 0.0                    # Ignored when warmup_steps is set
+  lr_scheduler_type: cosine
+  fp16: true                           # Official BIGRec uses fp16=True
+  bf16: false
+  optim: adamw_torch                   # Official BIGRec default optimizer
+  gradient_checkpointing: true
+  logging_steps: 10
+  save_strategy: epoch
+  save_total_limit: 1
+  load_best_model_at_end: true
+  deepspeed: null                      # Path to a DeepSpeed JSON config, or null
+
+  # ── Early Stopping (LM Validation Loss, matching official BIGRec) ──────────
+  early_stopping_patience: 5           # Stop after N epochs with no LM loss improvement
+
+  # ── Beam-Search Generation (Eval Step 1) ────────────────────────────────────
+  num_beams: 4                         # Paper default: 4
+  eval_batch_size: 4
+
+  # ── Embedding Grounding (Eval Step 2) ───────────────────────────────────────
+  history_max_length: 10               # Most-recent history items in the prompt
+  item_text_field: title               # Primary item_table column for title text
+  fallback_item_text_field: metadata_text
+  domain: product                      # "movie", "product", or "item"
+  embedding_batch_size: 32
+  embedding_cache_dir: outputs/bigrec/embeddings
+  refresh_embedding_cache: false
+  embedding_use_base_model: true       # True = use base model for embeddings (official default)
+
+  # ── Grounding Weight Injection (Eq. 3) ───────────────────────────────────────
+  # After computing raw L2 distances, BIGRec optionally reweights them by
+  # popularity or CF signals to improve ranking.
+  #
+  #   D̂ᵢ = (Dᵢ − min D) / (max D − min D)      [per-row L2 normalisation]
+  #   D̃ᵢ = D̂ᵢ × (1 + Wᵢ)^(−γ)                 [popularity / CF adjustment]
+  #
+  # Supported modes: "none", "popularity", "cf", "popularity+cf"
+  grounding_mode: none                 # Weight injection mode (Eq. 3)
+  grounding_gamma: 1.0                 # γ exponent; used when grounding_gamma_search=false
+  cf_score_path: null                  # .pt file with CF scores shape [num_items]
+                                       # Required when grounding_mode contains "cf"
+  grounding_gamma_search: false        # True = auto grid-search best γ per metric@K on val
+  grounding_gamma_search_values: []    # Custom γ grid; empty = official 199-value grid
+
+  # ── Evaluation Metrics ───────────────────────────────────────────────────────
+  eval_metrics:
+    - recall
+    - ndcg
+  eval_topk:
+    - 5
+    - 10
+    - 20
+  eval_protocol: sampled               # "sampled" or "full"
+
+  # ── Pipeline Control ─────────────────────────────────────────────────────────
+  pipeline_stage: training             # "training" or "evaluation"
+  checkpoint_path: null                # Required when pipeline_stage='evaluation'
+
+dataset:
+  metadata_mode: fields
+  download_source: huggingface
