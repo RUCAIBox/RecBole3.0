@@ -8,6 +8,7 @@ model:
   # ── LLM Backbone ────────────────────────────────────────────────────────────
   # Local path or HuggingFace Hub identifier of the pretrained LLaMA model.
   llm_path: ""                         # REQUIRED: set to your local LLaMA path
+  device_id: 0                         # GPU index for single-process runs (ignored under torchrun)
   torch_dtype: float16                 # "float16" or "bfloat16"
   load_in_8bit: false                  # INT8 quantization via bitsandbytes
   attn_implementation: eager           # "eager" or "flash_attention_2"

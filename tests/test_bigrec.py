@@ -1214,12 +1214,24 @@ class TestTrainerUtility:
         monkeypatch.setenv("RANK", "1")
         assert BIGRecTrainer(BIGRecConfig())._is_main_process() is False
 
-    def test_get_device_map_returns_auto_when_no_local_rank(
+    def test_get_device_map_returns_device_id_dict_when_no_local_rank(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Single-process mode must use {"": device_id}, never "auto".
+
+        device_map="auto" shards the model across all visible GPUs which causes
+        CUDA peer-mapping errors during HF Trainer training loops.
+        """
+        monkeypatch.delenv("LOCAL_RANK", raising=False)
+        device_map = BIGRecTrainer(BIGRecConfig(device_id=0))._get_device_map()
+        assert device_map == {"": 0}
+
+    def test_get_device_map_respects_device_id_config(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("LOCAL_RANK", raising=False)
-        device_map = BIGRecTrainer(BIGRecConfig())._get_device_map()
-        assert device_map == "auto"
+        device_map = BIGRecTrainer(BIGRecConfig(device_id=2))._get_device_map()
+        assert device_map == {"": 2}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

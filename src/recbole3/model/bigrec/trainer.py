@@ -84,17 +84,22 @@ class BIGRecTrainer:
         if self._is_main_process():
             getattr(logger, level)(msg, *args)
 
-    def _get_device_map(self) -> str | dict[str, int]:
-        """Resolve ``device_map`` for ``from_pretrained`` based on DDP local rank.
+    def _get_device_map(self) -> dict[str, int]:
+        """Resolve ``device_map`` for ``from_pretrained``.
 
-        Returns:
-            ``{"": local_rank}`` when running in DDP, otherwise ``"auto"``.
+        Returns ``{"": local_rank}`` under DDP (torchrun sets ``LOCAL_RANK``),
+        or ``{"": config.device_id}`` for single-process runs.
+
+        ``device_map="auto"`` is intentionally avoided: it shards the model
+        across all visible GPUs, which triggers ``CUDA peer mapping resources
+        exhausted`` errors during training.  HF Trainer handles multi-GPU
+        training via DDP instead.
         """
         local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
         if local_rank != -1:
             torch.cuda.set_device(local_rank)
             return {"": local_rank}
-        return "auto"
+        return {"": self.config.device_id}
 
     # ── Tokenizer ─────────────────────────────────────────────────────────────
 
@@ -140,7 +145,7 @@ class BIGRecTrainer:
         dtype = getattr(torch, self.config.torch_dtype)
 
         load_kwargs: dict[str, Any] = {
-            "torch_dtype": dtype,
+            "dtype": dtype,
             "attn_implementation": self.config.attn_implementation,
             "low_cpu_mem_usage": True,
             "device_map": device_map,
@@ -209,7 +214,7 @@ class BIGRecTrainer:
 
             base_model = AutoModelForCausalLM.from_pretrained(
                 self.config.llm_path,
-                torch_dtype=dtype,
+                dtype=dtype,
                 attn_implementation=self.config.attn_implementation,
                 low_cpu_mem_usage=True,
                 device_map=device_map,
@@ -217,13 +222,13 @@ class BIGRecTrainer:
             model = PeftModel.from_pretrained(
                 base_model,
                 checkpoint_path,
-                torch_dtype=dtype,
+                dtype=dtype,
                 is_trainable=False,
             )
         else:
             model = AutoModelForCausalLM.from_pretrained(
                 checkpoint_path,
-                torch_dtype=dtype,
+                dtype=dtype,
                 attn_implementation=self.config.attn_implementation,
                 low_cpu_mem_usage=True,
                 device_map=device_map,
@@ -252,7 +257,7 @@ class BIGRecTrainer:
         dtype = getattr(torch, self.config.torch_dtype)
         model = AutoModelForCausalLM.from_pretrained(
             self.config.llm_path,
-            torch_dtype=dtype,
+            dtype=dtype,
             attn_implementation=self.config.attn_implementation,
             low_cpu_mem_usage=True,
             device_map=device_map,

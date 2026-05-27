@@ -34,6 +34,17 @@ class BIGRecConfig(SequentialModelConfig):
         default="",
         metadata={"help": "Local path (or HuggingFace hub identifier) to the pretrained LLaMA model."},
     )
+    device_id: int = field(
+        default=0,
+        metadata={
+            "help": (
+                "CUDA device index used in single-process (non-DDP) mode. "
+                "Ignored when torchrun sets LOCAL_RANK. "
+                "Set CUDA_VISIBLE_DEVICES before launching to pick a specific physical GPU, "
+                "then leave device_id=0 (the first visible device)."
+            )
+        },
+    )
     torch_dtype: str = field(
         default="float16",
         metadata={"help": "Model weight dtype loaded by from_pretrained(). 'float16' or 'bfloat16'."},
