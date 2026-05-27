@@ -97,6 +97,13 @@ from recbole3.model.rqvae import (
     RQVAEModelDataset,
     RQVAETrainer,
 )
+from recbole3.model.starec import (
+    STARecConfig,
+    STARecModel,
+    STARecModelDataset,
+    STARecTrainer,
+    STARecTrainerConfig,
+)
 from recbole3.model.tiger import (
     TIGERConfig,
     TIGERModel,
@@ -240,6 +247,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=RPGTrainerConfig,
         pipeline_cls=Pipeline,
     ),
+    "starec": ModelSpec(
+        model_cls=STARecModel,
+        config_cls=STARecConfig,
+        model_data_cls=STARecModelDataset,
+        trainer_cls=STARecTrainer,
+        trainer_config_cls=STARecTrainerConfig,
+        pipeline_cls=LazyImport("recbole3.model.starec.pipeline", "STARecPipeline"),
+    ),
     "tiger": ModelSpec(
         model_cls=TIGERModel,
         config_cls=TIGERConfig,
@@ -320,6 +335,11 @@ __all__ = [
     "RankMixerPipeline",
     "RankMixerTrainCollator",
     "SequentialModelConfig",
+    "STARecConfig",
+    "STARecModel",
+    "STARecModelDataset",
+    "STARecTrainer",
+    "STARecTrainerConfig",
     "TIGERConfig",
     "TIGERModel",
     "TIGERModelDataset",
