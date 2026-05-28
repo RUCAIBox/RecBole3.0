@@ -11,6 +11,8 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+from recbole3.dataset.utils import OVERALL
+
 
 AMAZON2014_AVAILABLE_CATEGORIES: tuple[str, ...] = (
     "Books",
@@ -96,6 +98,7 @@ def reviews_gz_to_frame(path: Path) -> pd.DataFrame:
         user_id = record.get("reviewerID")
         item_id = record.get("asin")
         timestamp = numeric_or_none(record.get("unixReviewTime"))
+        overall = numeric_or_none(record.get(OVERALL))
         if user_id is None or item_id is None:
             raise ValueError("Amazon 2014 review records require non-null reviewerID and asin.")
         if timestamp is None:
@@ -105,9 +108,10 @@ def reviews_gz_to_frame(path: Path) -> pd.DataFrame:
                 "reviewerID": str(user_id),
                 "asin": str(item_id),
                 "unixReviewTime": timestamp,
+                OVERALL: overall,
             }
         )
-    return pd.DataFrame(rows, columns=["reviewerID", "asin", "unixReviewTime"])
+    return pd.DataFrame(rows, columns=["reviewerID", "asin", "unixReviewTime", OVERALL])
 
 
 def metadata_gz_to_frame(path: Path) -> pd.DataFrame:

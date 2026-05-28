@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import json
 import random
+from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
 
-from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset, ITEM_ID, LABEL, SEEN_ITEM_IDS, USER_ID
+from recbole3.config import project_root
+from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset, ITEM_ID, SEEN_ITEM_IDS, USER_ID
 from recbole3.dataset.base import BaseTaskDataset
 from recbole3.model.starec.config import STARecConfig
+from recbole3.model.starec.feedback import (
+    is_positive_or_unlabeled_record,
+    positive_or_unlabeled,
+    positive_or_unlabeled_mask,
+)
 
 
 STARecHistoryFrames = tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, tuple[int, ...]]
@@ -23,18 +31,12 @@ def build_history_limited_frames(
     valid_frame = _frame_dataset_frame(task_data.get_eval_dataset("valid"), split="valid")
     test_frame = _frame_dataset_frame(task_data.get_eval_dataset("test"), split="test")
 
-    valid_frame = _positive_or_unlabeled(valid_frame).reset_index(drop=True)
-    test_frame = _positive_or_unlabeled(test_frame).reset_index(drop=True)
+    valid_frame = positive_or_unlabeled(valid_frame, model_config=model_config).reset_index(drop=True)
+    test_frame = positive_or_unlabeled(test_frame, model_config=model_config).reset_index(drop=True)
     require_train_warmup = _requires_train_warmup(model_config)
-    selected_user_count = int(model_config.selected_user_count)
-    if selected_user_count != -1 and selected_user_count <= 0:
-        raise ValueError("selected_user_count must be -1 or a positive integer.")
-
-    ordered_user_ids = _ordered_user_ids(test_frame)
-    candidate_user_ids = _candidate_user_ids(
-        ordered_user_ids,
-        selected_user_count=selected_user_count,
-        candidate_seed=int(model_config.candidate_seed),
+    ordered_user_ids, candidate_user_ids, requested_user_ids, selected_user_count = _candidate_history_user_ids(
+        test_frame,
+        model_config=model_config,
     )
     train_positions_by_user = _group_positions_by_user(train_frame)
     valid_positions_by_user = _group_positions_by_user(valid_frame)
@@ -51,6 +53,7 @@ def build_history_limited_frames(
             valid_frame=user_valid,
             test_frame=user_test,
             history_max_length=model_config.history_max_length,
+            model_config=model_config,
         )
         if _is_user_eligible(
             retained_train=retained_train,
@@ -59,22 +62,19 @@ def build_history_limited_frames(
             train_init_interactions=int(model_config.train_init_interactions),
             history_min_length=int(model_config.history_min_length),
             require_train_warmup=require_train_warmup,
+            model_config=model_config,
         ):
             retained_by_user[int(user_id)] = (retained_train, retained_valid, retained_test)
             if selected_user_count != -1 and len(retained_by_user) >= selected_user_count:
                 break
 
-    eligible_user_ids = tuple(user_id for user_id in ordered_user_ids if user_id in retained_by_user)
-    selected_user_ids = _select_eligible_user_ids(
-        eligible_user_ids=eligible_user_ids,
+    selected_user_ids = _finalize_selected_user_ids(
+        ordered_user_ids=ordered_user_ids,
+        eligible_user_ids=tuple(retained_by_user),
+        requested_user_ids=requested_user_ids,
         selected_user_count=selected_user_count,
         candidate_seed=int(model_config.candidate_seed),
     )
-    if not selected_user_ids:
-        raise ValueError(
-            "STARec could not find any eligible users after applying positive target, train warmup, "
-            "history_min_length, and history_max_length constraints."
-        )
 
     selected_train_frames: list[pd.DataFrame] = []
     selected_valid_frames: list[pd.DataFrame] = []
@@ -90,6 +90,54 @@ def build_history_limited_frames(
         _concat_like(selected_valid_frames, valid_frame),
         _concat_like(selected_test_frames, test_frame),
         selected_user_ids,
+    )
+
+
+def select_history_eligible_user_ids(
+    task_data: BaseTaskDataset,
+    *,
+    model_config: STARecConfig,
+) -> tuple[int, ...]:
+    """Return STARec-eligible user ids without materializing per-user frames."""
+
+    train_frame = _frame_dataset_frame(task_data.get_train_dataset(), split="train")
+    valid_frame = _frame_dataset_frame(task_data.get_eval_dataset("valid"), split="valid")
+    test_frame = _frame_dataset_frame(task_data.get_eval_dataset("test"), split="test")
+
+    valid_frame = positive_or_unlabeled(valid_frame, model_config=model_config).reset_index(drop=True)
+    test_frame = positive_or_unlabeled(test_frame, model_config=model_config).reset_index(drop=True)
+    require_train_warmup = _requires_train_warmup(model_config)
+    ordered_user_ids, candidate_user_ids, requested_user_ids, selected_user_count = _candidate_history_user_ids(
+        test_frame,
+        model_config=model_config,
+    )
+    train_positions_by_user = _group_positions_by_user(train_frame)
+    valid_positions_by_user = _group_positions_by_user(valid_frame)
+    test_positions_by_user = _group_positions_by_user(test_frame)
+    train_positive_mask = positive_or_unlabeled_mask(train_frame, model_config=model_config).to_numpy(dtype=bool)
+
+    eligible_by_candidate_order: list[int] = []
+    for user_id in candidate_user_ids:
+        if _is_user_eligible_by_positions(
+            train_positions=train_positions_by_user.get(int(user_id), ()),
+            valid_positions=valid_positions_by_user.get(int(user_id), ()),
+            test_positions=test_positions_by_user.get(int(user_id), ()),
+            train_positive_mask=train_positive_mask,
+            history_max_length=model_config.history_max_length,
+            train_init_interactions=int(model_config.train_init_interactions),
+            history_min_length=int(model_config.history_min_length),
+            require_train_warmup=require_train_warmup,
+        ):
+            eligible_by_candidate_order.append(int(user_id))
+            if selected_user_count != -1 and len(eligible_by_candidate_order) >= selected_user_count:
+                break
+
+    return _finalize_selected_user_ids(
+        ordered_user_ids=ordered_user_ids,
+        eligible_user_ids=tuple(eligible_by_candidate_order),
+        requested_user_ids=requested_user_ids,
+        selected_user_count=selected_user_count,
+        candidate_seed=int(model_config.candidate_seed),
     )
 
 
@@ -172,23 +220,6 @@ def finalize_starec_candidate_row(
     return tuple(int(item_id) for item_id in final_candidates)
 
 
-def _positive_or_unlabeled(frame: pd.DataFrame) -> pd.DataFrame:
-    if frame.empty or LABEL not in frame.columns:
-        return frame.copy()
-    labels = pd.to_numeric(frame[LABEL], errors="coerce")
-    mask = frame[LABEL].isna() | (labels > 0)
-    return frame.loc[mask].copy()
-
-
-def _positive_or_unlabeled_mask(frame: pd.DataFrame) -> pd.Series:
-    if frame.empty:
-        return pd.Series(dtype=bool)
-    if LABEL not in frame.columns:
-        return pd.Series(True, index=frame.index)
-    labels = pd.to_numeric(frame[LABEL], errors="coerce")
-    return frame[LABEL].isna() | (labels > 0)
-
-
 def _build_seen_item_ids(frame: pd.DataFrame) -> list[tuple[int, ...]]:
     item_ids = frame[ITEM_ID].to_numpy()
     seen_item_ids: list[tuple[int, ...]] = [()] * len(frame)
@@ -220,7 +251,7 @@ def _generate_train_random_candidates(
 
     candidate_rows: list[tuple[int, ...]] = []
     for row_index, record in enumerate(frame.to_dict(orient="records")):
-        if not _is_positive_or_unlabeled_record(record):
+        if not is_positive_or_unlabeled_record(record, model_config=model_config):
             candidate_rows.append(())
             continue
         user_id = int(record[USER_ID])
@@ -286,6 +317,78 @@ def _candidate_user_ids(
     return tuple(shuffled_user_ids)
 
 
+def _candidate_history_user_ids(
+    test_frame: pd.DataFrame,
+    *,
+    model_config: STARecConfig,
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...] | None, int]:
+    selected_user_count = int(model_config.selected_user_count)
+    if selected_user_count != -1 and selected_user_count <= 0:
+        raise ValueError("selected_user_count must be -1 or a positive integer.")
+
+    ordered_user_ids = _ordered_user_ids(test_frame)
+    requested_user_ids = _load_selected_user_ids(model_config.selected_user_ids_path)
+    if requested_user_ids is not None:
+        if selected_user_count != -1:
+            raise ValueError("selected_user_count must be -1 when selected_user_ids_path is set.")
+        test_user_set = set(ordered_user_ids)
+        missing_user_ids = [user_id for user_id in requested_user_ids if user_id not in test_user_set]
+        if missing_user_ids:
+            raise ValueError(
+                "selected_user_ids_path contains user ids that are not present in the positive test split: "
+                f"{missing_user_ids[:10]}"
+            )
+        ordered_user_ids = requested_user_ids
+
+    candidate_user_ids = _candidate_user_ids(
+        ordered_user_ids,
+        selected_user_count=selected_user_count,
+        candidate_seed=int(model_config.candidate_seed),
+    )
+    return ordered_user_ids, candidate_user_ids, requested_user_ids, selected_user_count
+
+
+def _load_selected_user_ids(value: str | None) -> tuple[int, ...] | None:
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        path = project_root() / path
+    if not path.exists():
+        raise FileNotFoundError(f"selected_user_ids_path does not exist: {path}")
+
+    user_ids: list[int] = []
+    seen_user_ids: set[int] = set()
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            user_id = _parse_user_id_line(line, path=path, line_number=line_number)
+            if user_id in seen_user_ids:
+                raise ValueError(f"Duplicate user_id={user_id} in selected_user_ids_path: {path}")
+            user_ids.append(user_id)
+            seen_user_ids.add(user_id)
+    if not user_ids:
+        raise ValueError(f"selected_user_ids_path did not contain any user ids: {path}")
+    return tuple(user_ids)
+
+
+def _parse_user_id_line(line: str, *, path: Path, line_number: int) -> int:
+    try:
+        raw = json.loads(line)
+    except json.JSONDecodeError:
+        raw = line
+    if isinstance(raw, dict):
+        if USER_ID not in raw:
+            raise ValueError(f"Line {line_number} in {path} must contain '{USER_ID}'.")
+        raw = raw[USER_ID]
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Line {line_number} in {path} does not contain a valid integer user id.") from exc
+
+
 def _group_positions_by_user(frame: pd.DataFrame) -> dict[int, list[int]]:
     if frame.empty:
         return {}
@@ -308,6 +411,7 @@ def _history_limited_user_frames(
     valid_frame: pd.DataFrame,
     test_frame: pd.DataFrame,
     history_max_length: int | None,
+    model_config: STARecConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     parts: list[pd.DataFrame] = []
     for split_index, (split, frame) in enumerate((("train", train_frame), ("valid", valid_frame), ("test", test_frame))):
@@ -324,7 +428,7 @@ def _history_limited_user_frames(
 
     timeline = pd.concat(parts, ignore_index=True, sort=False)
     timeline = timeline.sort_values(["_starec_split_order", "_starec_source_order"], kind="mergesort").reset_index(drop=True)
-    positive_positions = timeline.index[_positive_or_unlabeled_mask(timeline)].tolist()
+    positive_positions = timeline.index[positive_or_unlabeled_mask(timeline, model_config=model_config)].tolist()
     if not positive_positions:
         return train_frame.iloc[0:0].copy(), valid_frame.iloc[0:0].copy(), test_frame.iloc[0:0].copy()
     last_positive_position = int(positive_positions[-1])
@@ -391,24 +495,113 @@ def _is_user_eligible(
     train_init_interactions: int,
     history_min_length: int,
     require_train_warmup: bool,
+    model_config: STARecConfig,
 ) -> bool:
     retained_history_length = len(retained_train) + len(retained_valid) + len(retained_test)
     if retained_history_length < int(history_min_length):
         return False
-    if _positive_or_unlabeled(retained_valid).empty or _positive_or_unlabeled(retained_test).empty:
+    if (
+        positive_or_unlabeled(retained_valid, model_config=model_config).empty
+        or positive_or_unlabeled(retained_test, model_config=model_config).empty
+    ):
         return False
     if not require_train_warmup:
         return True
     if len(retained_train) < int(train_init_interactions) + 1:
         return False
     train_after_init = retained_train.iloc[int(train_init_interactions) :].copy()
-    return not _positive_or_unlabeled(train_after_init).empty
+    return not positive_or_unlabeled(train_after_init, model_config=model_config).empty
+
+
+def _is_user_eligible_by_positions(
+    *,
+    train_positions: Iterable[int],
+    valid_positions: Iterable[int],
+    test_positions: Iterable[int],
+    train_positive_mask: np.ndarray,
+    history_max_length: int | None,
+    train_init_interactions: int,
+    history_min_length: int,
+    require_train_warmup: bool,
+) -> bool:
+    train_position_list = [int(position) for position in train_positions]
+    valid_count = len(tuple(valid_positions))
+    test_count = len(tuple(test_positions))
+    if valid_count == 0 or test_count == 0:
+        return False
+
+    retained_train_count, retained_valid_count, retained_test_count = _retained_split_lengths(
+        train_count=len(train_position_list),
+        valid_count=valid_count,
+        test_count=test_count,
+        history_max_length=history_max_length,
+    )
+    retained_history_length = retained_train_count + retained_valid_count + retained_test_count
+    if retained_history_length < int(history_min_length):
+        return False
+    if retained_valid_count == 0 or retained_test_count == 0:
+        return False
+    if not require_train_warmup:
+        return True
+    if retained_train_count < int(train_init_interactions) + 1:
+        return False
+
+    retained_train_positions = train_position_list[-retained_train_count:]
+    train_after_init_positions = retained_train_positions[int(train_init_interactions) :]
+    return any(bool(train_positive_mask[position]) for position in train_after_init_positions)
+
+
+def _retained_split_lengths(
+    *,
+    train_count: int,
+    valid_count: int,
+    test_count: int,
+    history_max_length: int | None,
+) -> tuple[int, int, int]:
+    total = int(train_count) + int(valid_count) + int(test_count)
+    retained = total if history_max_length is None else min(total, int(history_max_length))
+    retained_test = min(int(test_count), retained)
+    retained -= retained_test
+    retained_valid = min(int(valid_count), retained)
+    retained -= retained_valid
+    retained_train = min(int(train_count), retained)
+    return retained_train, retained_valid, retained_test
 
 
 def _requires_train_warmup(model_config: STARecConfig) -> bool:
     if not bool(model_config.run_warmup):
         return False
     return not (bool(model_config.memory_load_path) and bool(model_config.skip_warmup_when_memory_loaded))
+
+
+def _finalize_selected_user_ids(
+    *,
+    ordered_user_ids: tuple[int, ...],
+    eligible_user_ids: tuple[int, ...],
+    requested_user_ids: tuple[int, ...] | None,
+    selected_user_count: int,
+    candidate_seed: int,
+) -> tuple[int, ...]:
+    eligible_user_set = set(int(user_id) for user_id in eligible_user_ids)
+    ordered_eligible_user_ids = tuple(user_id for user_id in ordered_user_ids if user_id in eligible_user_set)
+    selected_user_ids = _select_eligible_user_ids(
+        eligible_user_ids=ordered_eligible_user_ids,
+        selected_user_count=selected_user_count,
+        candidate_seed=int(candidate_seed),
+    )
+    if not selected_user_ids:
+        raise ValueError(
+            "STARec could not find any eligible users after applying positive target, train warmup, "
+            "history_min_length, and history_max_length constraints."
+        )
+    if requested_user_ids is not None and tuple(selected_user_ids) != tuple(requested_user_ids):
+        selected_user_set = set(selected_user_ids)
+        missing_after_filters = [user_id for user_id in requested_user_ids if user_id not in selected_user_set]
+        raise ValueError(
+            "selected_user_ids_path contains user ids that are not eligible after STARec history filters: "
+            f"{missing_after_filters[:10]}"
+        )
+    return selected_user_ids
 
 
 def _select_eligible_user_ids(
@@ -434,15 +627,6 @@ def _select_eligible_user_ids(
     return tuple(user_id for user_id in eligible_user_ids if user_id in sampled_user_set)
 
 
-def _is_positive_or_unlabeled_record(record: dict) -> bool:
-    if LABEL not in record:
-        return True
-    value = record.get(LABEL)
-    if value is None or pd.isna(value):
-        return True
-    return float(value) > 0
-
-
 def _concat_like(frames: list[pd.DataFrame], template: pd.DataFrame) -> pd.DataFrame:
     non_empty_frames = [frame for frame in frames if not frame.empty]
     if not non_empty_frames:
@@ -454,4 +638,5 @@ __all__ = [
     "build_train_candidate_frame",
     "build_history_limited_frames",
     "finalize_starec_candidate_row",
+    "select_history_eligible_user_ids",
 ]

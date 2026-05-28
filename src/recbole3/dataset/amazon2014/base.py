@@ -10,7 +10,7 @@ import pandas as pd
 from recbole3.dataset.cache import DatasetCache
 from recbole3.dataset.config import DatasetConfig
 from recbole3.dataset.parser import BaseDatasetParser, ParsedData
-from recbole3.dataset.utils import ITEM_ID, USER_ID
+from recbole3.dataset.utils import ITEM_ID, OVERALL, USER_ID
 
 from . import utils as amazon2014_utils
 
@@ -22,7 +22,7 @@ class Amazon2014BaseConfig(DatasetConfig):
     processed_dir: str = field(default="data/processed", metadata={"help": "Processed Amazon 2014 cache root."})
     refresh_cache: bool = field(default=False, metadata={"help": "Whether to rebuild parser-managed cache files."})
     category: str = field(default="Beauty", metadata={"help": "Amazon 2014 category name."})
-    metadata_mode: Literal["none", "sentence"] = field(
+    metadata_mode: Literal["none", "sentence", "fields"] = field(
         default="sentence",
         metadata={"help": "How to materialize item metadata in the item table."},
     )
@@ -41,7 +41,9 @@ class Amazon2014BaseParser(BaseDatasetParser):
     def parse(self) -> ParsedData:
         self._validate_source_config()
         if not self.config.refresh_cache and self._parsed_cache_exists():
-            return self._load_parsed_data()
+            parsed = self._load_parsed_data()
+            if self._parsed_cache_is_current(parsed):
+                return parsed
 
         self._ensure_raw_snapshot(force=self.config.refresh_cache)
         parsed = self._build_parsed_data()
@@ -54,7 +56,9 @@ class Amazon2014BaseParser(BaseDatasetParser):
 
     def _ensure_raw_snapshot(self, *, force: bool) -> None:
         raw_cache = self._raw_cache()
-        raw_cache.get_or_create_frame("reviews.jsonl", self._download_reviews_frame, force=force)
+        reviews = raw_cache.get_or_create_frame("reviews.jsonl", self._download_reviews_frame, force=force)
+        if not force and OVERALL not in reviews.columns:
+            raw_cache.get_or_create_frame("reviews.jsonl", self._download_reviews_frame, force=True)
         if self._metadata_enabled():
             raw_cache.get_or_create_frame("meta.jsonl", self._download_metadata_frame, force=force)
 
@@ -78,6 +82,11 @@ class Amazon2014BaseParser(BaseDatasetParser):
         item_table = pd.DataFrame({ITEM_ID: item_index.astype(object)})
         if not self._metadata_enabled():
             return item_table
+        if self.config.metadata_mode == "fields":
+            return self._attach_metadata_fields(item_table, item_index)
+        return self._attach_metadata_text(item_table, item_index)
+
+    def _attach_metadata_text(self, item_table: pd.DataFrame, item_index: pd.Index) -> pd.DataFrame:
         metadata = self._load_raw_metadata_frame()
         if metadata.empty:
             item_table["metadata_text"] = ""
@@ -92,6 +101,30 @@ class Amazon2014BaseParser(BaseDatasetParser):
             right_on="asin",
         ).drop(columns=["asin"])
         merged["metadata_text"] = merged["metadata_text"].fillna("")
+        return merged
+
+    def _attach_metadata_fields(self, item_table: pd.DataFrame, item_index: pd.Index) -> pd.DataFrame:
+        metadata = self._load_raw_metadata_frame()
+        field_names = list(amazon2014_utils.AMAZON2014_META_FIELDS)
+        if metadata.empty:
+            result = item_table.copy()
+            for field_name in field_names:
+                result[field_name] = ""
+            result["metadata_text"] = ""
+            return result
+        metadata = metadata.loc[metadata["asin"].isin(set(item_index))].copy()
+        metadata = metadata.drop_duplicates(subset=["asin"], keep="first")
+        for field_name in field_names:
+            metadata[field_name] = metadata[field_name].apply(amazon2014_utils.clean_text)
+        metadata["metadata_text"] = metadata.apply(amazon2014_utils.build_metadata_text, axis=1)
+        merged = item_table.merge(
+            metadata.loc[:, ["asin", *field_names, "metadata_text"]],
+            how="left",
+            left_on=ITEM_ID,
+            right_on="asin",
+        ).drop(columns=["asin"])
+        for field_name in (*field_names, "metadata_text"):
+            merged[field_name] = merged[field_name].fillna("")
         return merged
 
     def _download_reviews_frame(self) -> pd.DataFrame:
@@ -134,7 +167,7 @@ class Amazon2014BaseParser(BaseDatasetParser):
             ) from exc
 
     def _metadata_enabled(self) -> bool:
-        return self.config.metadata_mode == "sentence"
+        return self.config.metadata_mode in {"sentence", "fields"}
 
     def _validate_source_config(self) -> None:
         if self.config.category not in amazon2014_utils.AMAZON2014_AVAILABLE_CATEGORIES:
@@ -142,7 +175,7 @@ class Amazon2014BaseParser(BaseDatasetParser):
                 f"Category '{self.config.category}' is not available. "
                 f"Available categories: {', '.join(amazon2014_utils.AMAZON2014_AVAILABLE_CATEGORIES)}"
             )
-        if self.config.metadata_mode not in {"none", "sentence"}:
+        if self.config.metadata_mode not in {"none", "sentence", "fields"}:
             raise ValueError(f"Unsupported metadata_mode '{self.config.metadata_mode}'.")
         if self.config.download_source not in {"snap"}:
             raise ValueError(f"Unsupported download_source '{self.config.download_source}'.")
@@ -155,6 +188,16 @@ class Amazon2014BaseParser(BaseDatasetParser):
 
     def _parsed_cache_exists(self) -> bool:
         return self._parsed_cache().parsed_exists()
+
+    def _parsed_cache_is_current(self, parsed: ParsedData) -> bool:
+        if OVERALL not in parsed.interactions.columns:
+            return False
+        if self.config.metadata_mode != "fields":
+            return True
+        if parsed.item_table is None:
+            return False
+        required_fields = {*amazon2014_utils.AMAZON2014_META_FIELDS, "metadata_text"}
+        return required_fields.issubset(parsed.item_table.columns)
 
     @property
     def data_dir(self) -> Path:
