@@ -12,11 +12,12 @@ import numpy as np
 import pandas as pd
 
 from recbole3.config import project_root
-from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset, ITEM_ID, LABEL, TIMESTAMP, USER_ID
+from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset, ITEM_ID, TIMESTAMP, USER_ID
 from recbole3.evaluation.config import EvalConfig
 from recbole3.evaluation.metric import MetricSpec, RetrievalEvalData
 from recbole3.model.sequential import HISTORY_ITEM_IDS
 from recbole3.model.starec.candidates import finalize_starec_candidate_row
+from recbole3.model.starec.feedback import is_positive_or_unlabeled_record
 from recbole3.model.starec.memory import STARecUserMemory
 from recbole3.model.starec.parser import complete_ranked_item_ids
 from recbole3.trainer import Trainer
@@ -32,6 +33,7 @@ class _STARecStepResult:
     invalid_ranking: bool
     reflection_failure: bool
     sample_log_record: dict[str, Any]
+    teacher_trace_records: list[dict[str, Any]]
 
 
 @dataclass(slots=True)
@@ -173,6 +175,7 @@ class STARecTrainer(Trainer):
         if frame is None:
             frame = self._sequence_frame(prepared_data, split=split)
         sample_log_path = self._resolve_output_path(model.config.sample_log_path, output_dir=output_dir)
+        teacher_trace_path = self._teacher_trace_path(model, split=split, output_dir=output_dir)
 
         indexed_records = list(enumerate(frame.to_dict(orient="records")))
         step_results = self._run_user_sequences(
@@ -195,6 +198,8 @@ class STARecTrainer(Trainer):
         reflection_failures = sum(1 for step in step_results if step.reflection_failure)
         for step in step_results:
             self._write_sample_log(sample_log_path, step.sample_log_record)
+            for trace_record in step.teacher_trace_records:
+                self._write_jsonl(teacher_trace_path, trace_record)
 
         if compute_metrics:
             eval_data = RetrievalEvalData(
@@ -241,7 +246,7 @@ class STARecTrainer(Trainer):
             train_frame,
             init_count=int(model.config.train_init_interactions),
         )
-        self._initialize_train_memories(model, memories, init_frame)
+        self._initialize_train_memories(model, memories, init_frame, output_dir=output_dir)
         return self._run_sequence(
             model,
             prepared_data,
@@ -343,7 +348,7 @@ class STARecTrainer(Trainer):
                     user_id=user_id,
                     history_item_ids=record.get(HISTORY_ITEM_IDS, ()),
                 )
-            if not _is_positive_or_unlabeled_record(record):
+            if not is_positive_or_unlabeled_record(record, model_config=model.config):
                 if not allow_memory_only_rows:
                     raise ValueError(f"STARec split '{split}' received a negative target row for user_id={user_id}.")
                 if record_interactions:
@@ -400,7 +405,8 @@ class STARecTrainer(Trainer):
             )
 
         memory_before = memory.snapshot()
-        raw_ranking_output, parsed = model.rank_candidates(
+        ranking_trace_id = _trace_id(split=split, turn_type="ranking", user_id=user_id, sequence_index=sequence_index)
+        raw_ranking_output, parsed, ranking_prompt_trace = model.rank_candidates_with_trace(
             memory=memory,
             candidate_item_ids=final_candidates,
         )
@@ -416,17 +422,65 @@ class STARecTrainer(Trainer):
         raw_reflection_output = None
         reflection_valid = None
         reflection_error = None
+        reflection_trace_record = None
         if should_reflect and parsed.valid:
-            raw_reflection_output, reflection_valid, reflection_error = model.reflect(
+            raw_reflection_output, reflection_valid, reflection_error, reflection_prompt_trace = model.reflect_with_trace(
                 memory=memory,
                 target_item_id=target_item_id,
                 system_prediction=system_prediction,
                 actual_feedback=actual_feedback,
             )
+            reflection_trace_record = {
+                "trace_id": _trace_id(
+                    split=split,
+                    turn_type="reflection",
+                    user_id=user_id,
+                    sequence_index=sequence_index,
+                ),
+                "turn_type": "reflection",
+                "split": split,
+                "sequence_index": sequence_index,
+                "user_id": user_id,
+                "target_item_id": target_item_id,
+                "previous_ranking_trace_id": ranking_trace_id,
+                "system_prediction": system_prediction,
+                "actual_feedback": actual_feedback,
+                "previous_user_description": memory_before["current_user_description"],
+                "raw_output": raw_reflection_output,
+                "reasoning_content": reflection_prompt_trace.reasoning_content,
+                "messages": reflection_prompt_trace.messages,
+                "parse_valid": bool(reflection_valid),
+                "reflection_error": reflection_error,
+                "updated_user_description": memory.current_user_description if reflection_valid else None,
+            }
 
         if record_interaction:
             _append_memory_interaction(model, memory, record)
         memory_after = memory.snapshot()
+        ranking_trace_record = {
+            "trace_id": ranking_trace_id,
+            "turn_type": "ranking",
+            "split": split,
+            "sequence_index": sequence_index,
+            "user_id": user_id,
+            "target_item_id": target_item_id,
+            "candidate_item_ids": [int(item_id) for item_id in final_candidates],
+            "memory_before_ranking": memory_before,
+            "raw_output": raw_ranking_output,
+            "reasoning_content": ranking_prompt_trace.reasoning_content,
+            "messages": ranking_prompt_trace.messages,
+            "parsed_ranking": [int(item_id) for item_id in parsed.ranked_item_ids],
+            "parse_valid": bool(parsed.valid),
+            "missing_item_ids": [int(item_id) for item_id in parsed.missing_item_ids],
+            "duplicate_item_ids": [int(item_id) for item_id in parsed.duplicate_item_ids],
+            "unknown_lines": list(parsed.unknown_lines),
+            "target_rank": rank_position,
+            "system_prediction": system_prediction,
+            "actual_feedback": actual_feedback,
+        }
+        teacher_trace_records = [ranking_trace_record]
+        if reflection_trace_record is not None:
+            teacher_trace_records.append(reflection_trace_record)
 
         return _STARecStepResult(
             sequence_index=sequence_index,
@@ -435,6 +489,7 @@ class STARecTrainer(Trainer):
             ranked_item_ids=[int(item_id) for item_id in ranked_item_ids],
             invalid_ranking=not bool(parsed.valid),
             reflection_failure=bool(should_reflect and parsed.valid and not reflection_valid),
+            teacher_trace_records=teacher_trace_records,
             sample_log_record={
                 "split": split,
                 "sequence_index": sequence_index,
@@ -497,11 +552,18 @@ class STARecTrainer(Trainer):
             warmup_parts.append(user_records.iloc[init_count:].copy())
         return _concat_like(init_parts, frame), _concat_like(warmup_parts, frame)
 
-    @staticmethod
-    def _initialize_train_memories(model, memories: dict[int, STARecUserMemory], init_frame: pd.DataFrame) -> None:
+    def _initialize_train_memories(
+        self,
+        model,
+        memories: dict[int, STARecUserMemory],
+        init_frame: pd.DataFrame,
+        *,
+        output_dir: str | Path | None,
+    ) -> None:
         grouped_records = list(init_frame.groupby(USER_ID, sort=False))
         if not grouped_records:
             return
+        teacher_trace_path = self._teacher_trace_path(model, split="train", output_dir=output_dir)
         with _STARecProgressBar(
             desc="[starec:train:init]",
             total_rows=len(init_frame),
@@ -510,11 +572,13 @@ class STARecTrainer(Trainer):
             for user_id, user_records in grouped_records:
                 normalized_user_id = int(user_id)
                 if normalized_user_id not in memories:
-                    memories[normalized_user_id] = _build_initial_memory_from_records(
+                    memory, trace_record = _build_initial_memory_from_records(
                         model,
                         user_id=normalized_user_id,
                         records=user_records.to_dict(orient="records"),
                     )
+                    memories[normalized_user_id] = memory
+                    self._write_jsonl(teacher_trace_path, trace_record)
                 progress.update_rows(len(user_records))
                 progress.update_user_done()
 
@@ -597,11 +661,20 @@ class STARecTrainer(Trainer):
 
     @staticmethod
     def _write_sample_log(path: Path | None, record: dict[str, Any]) -> None:
+        STARecTrainer._write_jsonl(path, record)
+
+    @staticmethod
+    def _write_jsonl(path: Path | None, record: dict[str, Any]) -> None:
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def _teacher_trace_path(self, model, *, split: str, output_dir: str | Path | None) -> Path | None:
+        if split != "train":
+            return None
+        return self._resolve_output_path(model.config.teacher_trace_path, output_dir=output_dir)
 
 
 def _system_prediction(rank_position: int | None, threshold: int) -> str:
@@ -619,28 +692,21 @@ def _target_rank(ranked_item_ids: list[int], target_item_id: int) -> int | None:
         return None
 
 
-def _feedback_label(value: Any) -> str:
-    if value is None or pd.isna(value) or float(value) > 0:
-        return "liked"
-    return "disliked"
-
-
-def _is_positive_or_unlabeled_record(record: dict[str, Any]) -> bool:
-    if LABEL not in record:
-        return True
-    value = record.get(LABEL)
-    if value is None or pd.isna(value):
-        return True
-    return float(value) > 0
-
-
-def _build_initial_memory_from_records(model, *, user_id: int, records: list[dict[str, Any]]) -> STARecUserMemory:
+def _build_initial_memory_from_records(
+    model,
+    *,
+    user_id: int,
+    records: list[dict[str, Any]],
+) -> tuple[STARecUserMemory, dict[str, Any]]:
     profile_text = model.user_profile_text(user_id)
     history_lines = [
-        f"{model.format_item_line(int(record[ITEM_ID]))}; Feedback: {_feedback_label(record.get(LABEL))}"
+        f"{model.format_item_line(int(record[ITEM_ID]))}; Feedback: {model.record_feedback_label(record)}"
         for record in records
     ]
-    description = model.initialize_user_description(profile_text=profile_text, history_lines=history_lines)
+    description, prompt_trace = model.initialize_user_description_with_trace(
+        profile_text=profile_text,
+        history_lines=history_lines,
+    )
     memory = STARecUserMemory(
         user_id=int(user_id),
         profile_text=profile_text,
@@ -648,7 +714,21 @@ def _build_initial_memory_from_records(model, *, user_id: int, records: list[dic
     )
     for record in records:
         _append_memory_interaction(model, memory, record)
-    return memory
+    trace_record = {
+        "trace_id": _trace_id(split="train", turn_type="init_memory", user_id=user_id, sequence_index=-1),
+        "turn_type": "init_memory",
+        "split": "train",
+        "sequence_index": -1,
+        "user_id": int(user_id),
+        "history_item_ids": [int(record[ITEM_ID]) for record in records],
+        "history_lines": history_lines,
+        "profile_text": profile_text,
+        "messages": prompt_trace.messages,
+        "raw_output": prompt_trace.raw_output,
+        "reasoning_content": prompt_trace.reasoning_content,
+        "current_user_description": description,
+    }
+    return memory, trace_record
 
 
 def _append_memory_interaction(model, memory: STARecUserMemory, record: dict[str, Any]) -> None:
@@ -656,16 +736,14 @@ def _append_memory_interaction(model, memory: STARecUserMemory, record: dict[str
     memory.append_interaction(
         item_id=item_id,
         item_text=model.item_text(item_id),
-        feedback=_feedback_label(record.get(LABEL)),
+        feedback=model.record_feedback_label(record),
         timestamp=model.record_timestamp(record),
-        label=_optional_float(record.get(LABEL)),
+        label=model.record_feedback_value(record),
     )
 
 
-def _optional_float(value: Any) -> float | None:
-    if value is None or pd.isna(value):
-        return None
-    return float(value)
+def _trace_id(*, split: str, turn_type: str, user_id: int, sequence_index: int) -> str:
+    return f"{split}:{int(user_id)}:{int(sequence_index)}:{turn_type}"
 
 
 def _concat_like(frames: list[pd.DataFrame], template: pd.DataFrame) -> pd.DataFrame:

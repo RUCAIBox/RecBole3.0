@@ -20,7 +20,7 @@ class STARecConfig(SequentialModelConfig):
         metadata={"help": "Maximum number of mixed-feedback history rows retained per selected user."},
     )
     history_min_length: int = field(
-        default=20,
+        default=30,
         metadata={"help": "Minimum retained train/valid/test mixed-feedback history rows required per selected user."},
     )
     candidate_source: str = field(
@@ -53,8 +53,12 @@ class STARecConfig(SequentialModelConfig):
         metadata={"help": "Whether to read external candidate files from disk before generating candidates."},
     )
     selected_user_count: int = field(
-        default=200,
+        default=1000,
         metadata={"help": "Number of users evaluated by STARec. Use -1 to keep all evaluable users."},
+    )
+    selected_user_ids_path: str | None = field(
+        default=None,
+        metadata={"help": "Optional JSONL user-id artifact that restricts STARec to an explicit user set."},
     )
     has_gt: bool = field(
         default=True,
@@ -69,6 +73,12 @@ class STARecConfig(SequentialModelConfig):
     fallback_item_text_field: str | None = field(
         default="metadata_text",
         metadata={"help": "Fallback item-table column for item text."},
+    )
+    item_text_template: str | None = field(
+        default=None,
+        metadata={
+            "help": "Optional format string rendered from item-table fields, e.g. '{title}. Artist/brand: {brand}'."
+        },
     )
     item_domain_singular: str | None = field(
         default=None,
@@ -110,6 +120,14 @@ class STARecConfig(SequentialModelConfig):
         default=5,
         metadata={"help": "Target ranks at or below this value are treated as Predicted Liked."},
     )
+    feedback_score_field: str | None = field(
+        default=None,
+        metadata={"help": "Optional interaction field used as raw feedback score before falling back to label."},
+    )
+    feedback_positive_threshold: float = field(
+        default=0.0,
+        metadata={"help": "Feedback scores greater than this threshold are treated as liked."},
+    )
     backend: STARecBackend = field(
         default="deterministic",
         metadata={"help": "LLM backend. deterministic is for smoke tests; openai uses the OpenAI Python SDK."},
@@ -120,7 +138,7 @@ class STARecConfig(SequentialModelConfig):
         metadata={"help": "OpenAI-compatible SDK base URL, not a chat-completions endpoint."},
     )
     api_key_env: str = field(default="OPENAI_API_KEY", metadata={"help": "Environment variable with the API key."})
-    temperature: float = field(default=0.2, metadata={"help": "Generation temperature."})
+    temperature: float = field(default=1.0, metadata={"help": "Generation temperature."})
     top_p: float = field(default=1.0, metadata={"help": "Nucleus sampling value."})
     max_output_tokens: int = field(default=1200, metadata={"help": "Maximum output tokens requested from the backend."})
     api_batch: int = field(
@@ -136,7 +154,7 @@ class STARecConfig(SequentialModelConfig):
     request_timeout_sec: float = field(default=60.0, metadata={"help": "Network timeout for API requests."})
     parse_retries: int = field(default=1, metadata={"help": "Ranking parse retry count for LLM backends."})
     train_init_interactions: int = field(
-        default=10,
+        default=20,
         metadata={"help": "Number of initial train interactions used only to initialize each user memory."},
     )
     run_warmup: bool = field(default=True, metadata={"help": "Whether to run train-split memory warmup."})
@@ -152,6 +170,15 @@ class STARecConfig(SequentialModelConfig):
     sample_log_path: str | None = field(
         default="starec_samples.jsonl",
         metadata={"help": "Optional JSONL per-sample audit log path, relative to runtime.output_dir when not absolute."},
+    )
+    teacher_trace_path: str | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Optional JSONL teacher rollout trace path. When set, STARec writes train-only init/ranking/"
+                "reflection prompt-response traces for SFT/RL data export."
+            )
+        },
     )
 
     def __post_init__(self) -> None:

@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
 import torch
 
-from recbole3.dataset import ITEM_ID, LABEL, TIMESTAMP, USER_ID
+from recbole3.dataset import ITEM_ID, TIMESTAMP, USER_ID
 from recbole3.model.base import BaseCollator, BaseRetrievalModel
 from recbole3.model.sequential import HISTORY_ITEM_IDS
 from recbole3.model.starec.config import STARecConfig
+from recbole3.model.starec.feedback import actual_feedback, feedback_label, feedback_numeric_value
 from recbole3.model.starec.memory import STARecReflectionRecord, STARecUserMemory
 from recbole3.model.starec.parser import (
     STARecRankingParseResult,
@@ -26,6 +29,19 @@ from recbole3.model.starec.prompts import (
     build_reflection_messages,
     resolve_item_domain,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class STARecPromptTrace:
+    messages: list[Message]
+    raw_output: str | None
+    reasoning_content: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _STARecCompletion:
+    content: str
+    reasoning_content: str | None = None
 
 
 class STARecPassthroughCollator(BaseCollator):
@@ -112,19 +128,44 @@ class STARecModel(BaseRetrievalModel):
         return memory
 
     def initialize_user_description(self, *, profile_text: str, history_lines: Sequence[str]) -> str:
+        description, _ = self.initialize_user_description_with_trace(
+            profile_text=profile_text,
+            history_lines=history_lines,
+        )
+        return description
+
+    def initialize_user_description_with_trace(
+        self,
+        *,
+        profile_text: str,
+        history_lines: Sequence[str],
+    ) -> tuple[str, STARecPromptTrace]:
+        messages = build_memory_init_messages(
+            profile_text=profile_text,
+            history_lines=history_lines,
+            item_domain_singular=self._item_domain_singular,
+            item_domain_plural=self._item_domain_plural,
+        )
         if self.config.backend == "deterministic":
             if history_lines:
-                return f"Deterministic profile based on {len(history_lines)} history item(s)."
-            return "Deterministic generic user profile with no prior history."
-        response = self._complete_openai(
-            build_memory_init_messages(
-                profile_text=profile_text,
-                history_lines=history_lines,
-                item_domain_singular=self._item_domain_singular,
-                item_domain_plural=self._item_domain_plural,
-            )
+                completion = _STARecCompletion(
+                    content=f"Current User Description: Deterministic profile based on {len(history_lines)} history item(s)."
+                )
+            else:
+                completion = _STARecCompletion(
+                    content="Current User Description: Deterministic generic user profile with no prior history."
+                )
+        else:
+            completion = self._complete_openai_with_reasoning(messages)
+        response = completion.content
+        return (
+            parse_current_description(response),
+            STARecPromptTrace(
+                messages=messages,
+                raw_output=response,
+                reasoning_content=completion.reasoning_content,
+            ),
         )
-        return parse_current_description(response)
 
     def rank_candidates(
         self,
@@ -132,17 +173,43 @@ class STARecModel(BaseRetrievalModel):
         memory: STARecUserMemory,
         candidate_item_ids: Sequence[int],
     ) -> tuple[str, STARecRankingParseResult]:
+        raw_response, parsed, _ = self.rank_candidates_with_trace(
+            memory=memory,
+            candidate_item_ids=candidate_item_ids,
+        )
+        return raw_response, parsed
+
+    def rank_candidates_with_trace(
+        self,
+        *,
+        memory: STARecUserMemory,
+        candidate_item_ids: Sequence[int],
+    ) -> tuple[str, STARecRankingParseResult, STARecPromptTrace]:
         candidate_ids = [int(item_id) for item_id in candidate_item_ids]
+        messages = self._ranking_messages(memory=memory, candidate_item_ids=candidate_ids)
         raw_response = ""
         parsed: STARecRankingParseResult | None = None
+        completion: _STARecCompletion | None = None
         for _ in range(max(1, int(self.config.parse_retries) + 1)):
-            raw_response = self._rank_candidates_once(memory=memory, candidate_item_ids=candidate_ids)
+            completion = self._complete_or_deterministic_ranking_with_reasoning(
+                messages=messages,
+                candidate_item_ids=candidate_ids,
+            )
+            raw_response = completion.content
             parsed = parse_ranking_output(raw_response, candidate_ids)
             if parsed.valid:
                 break
         if parsed is None:
             parsed = parse_ranking_output(raw_response, candidate_ids)
-        return raw_response, parsed
+        return (
+            raw_response,
+            parsed,
+            STARecPromptTrace(
+                messages=messages,
+                raw_output=raw_response,
+                reasoning_content=completion.reasoning_content if completion is not None else None,
+            ),
+        )
 
     def reflect(
         self,
@@ -152,22 +219,55 @@ class STARecModel(BaseRetrievalModel):
         system_prediction: str,
         actual_feedback: str,
     ) -> tuple[str | None, bool, str | None]:
+        raw_response, valid, error, _ = self.reflect_with_trace(
+            memory=memory,
+            target_item_id=target_item_id,
+            system_prediction=system_prediction,
+            actual_feedback=actual_feedback,
+        )
+        return raw_response, valid, error
+
+    def reflect_with_trace(
+        self,
+        *,
+        memory: STARecUserMemory,
+        target_item_id: int,
+        system_prediction: str,
+        actual_feedback: str,
+    ) -> tuple[str | None, bool, str | None, STARecPromptTrace]:
         previous_description = memory.current_user_description
         target_line = self.format_item_line(target_item_id)
+        messages = self._reflection_messages(
+            memory=memory,
+            target_line=target_line,
+            system_prediction=system_prediction,
+            actual_feedback=actual_feedback,
+        )
         raw_response: str | None = None
         updated_description: str | None = None
+        completion: _STARecCompletion | None = None
         for _ in range(max(1, int(self.config.parse_retries) + 1)):
-            raw_response = self._reflect_once(
+            completion = self._complete_or_deterministic_reflection_with_reasoning(
+                messages=messages,
                 memory=memory,
                 target_line=target_line,
-                system_prediction=system_prediction,
                 actual_feedback=actual_feedback,
             )
+            raw_response = completion.content
             updated_description = parse_updated_description(raw_response)
             if updated_description:
                 break
         if not updated_description:
-            return raw_response, False, "Could not parse Updated User Description"
+            return (
+                raw_response,
+                False,
+                "Could not parse Updated User Description",
+                STARecPromptTrace(
+                    messages=messages,
+                    raw_output=raw_response,
+                    reasoning_content=completion.reasoning_content if completion is not None else None,
+                ),
+            )
 
         memory.current_user_description = updated_description
         memory.reflection_history.append(
@@ -181,7 +281,16 @@ class STARecModel(BaseRetrievalModel):
                 raw_reflection_output=raw_response,
             )
         )
-        return raw_response, True, None
+        return (
+            raw_response,
+            True,
+            None,
+            STARecPromptTrace(
+                messages=messages,
+                raw_output=raw_response,
+                reasoning_content=completion.reasoning_content if completion is not None else None,
+            ),
+        )
 
     def format_item_line(self, item_id: int) -> str:
         return f"- [ItemID: {int(item_id)}] {self.item_text(int(item_id))}"
@@ -203,26 +312,48 @@ class STARecModel(BaseRetrievalModel):
         return int(value)
 
     def record_feedback(self, record: dict[str, Any]) -> str:
-        value = record.get(LABEL)
-        if value is None or pd.isna(value) or float(value) > 0:
-            return "Actually Liked"
-        return "Actually Disliked"
+        return actual_feedback(record, model_config=self.config)
+
+    def record_feedback_label(self, record: dict[str, Any]) -> str:
+        return feedback_label(record, model_config=self.config)
+
+    def record_feedback_value(self, record: dict[str, Any]) -> float | None:
+        return feedback_numeric_value(record, model_config=self.config)
 
     def _rank_candidates_once(self, *, memory: STARecUserMemory, candidate_item_ids: Sequence[int]) -> str:
-        if self.config.backend == "deterministic":
-            return "\n".join(
-                f"{rank}. [ItemID: {item_id}] {self.item_text(item_id)}"
-                for rank, item_id in enumerate(candidate_item_ids, start=1)
-            )
+        messages = self._ranking_messages(memory=memory, candidate_item_ids=candidate_item_ids)
+        return self._complete_or_deterministic_ranking(messages=messages, candidate_item_ids=candidate_item_ids)
+
+    def _ranking_messages(self, *, memory: STARecUserMemory, candidate_item_ids: Sequence[int]) -> list[Message]:
         candidate_lines = [self.format_item_line(item_id) for item_id in candidate_item_ids]
-        messages = build_ranking_messages(
+        return build_ranking_messages(
             memory=memory,
             candidate_lines=candidate_lines,
             history_limit=None,
             item_domain_singular=self._item_domain_singular,
             item_domain_plural=self._item_domain_plural,
         )
-        return self._complete_openai(messages)
+
+    def _complete_or_deterministic_ranking(self, *, messages: list[Message], candidate_item_ids: Sequence[int]) -> str:
+        return self._complete_or_deterministic_ranking_with_reasoning(
+            messages=messages,
+            candidate_item_ids=candidate_item_ids,
+        ).content
+
+    def _complete_or_deterministic_ranking_with_reasoning(
+        self,
+        *,
+        messages: list[Message],
+        candidate_item_ids: Sequence[int],
+    ) -> _STARecCompletion:
+        if self.config.backend == "deterministic":
+            return _STARecCompletion(
+                content="\n".join(
+                    f"{rank}. [ItemID: {item_id}] {self.item_text(int(item_id))}"
+                    for rank, item_id in enumerate(candidate_item_ids, start=1)
+                )
+            )
+        return self._complete_openai_with_reasoning(messages)
 
     def _reflect_once(
         self,
@@ -232,24 +363,73 @@ class STARecModel(BaseRetrievalModel):
         system_prediction: str,
         actual_feedback: str,
     ) -> str:
-        if self.config.backend == "deterministic":
-            return (
-                "Updated User Description: "
-                f"{memory.current_user_description} Recent evidence: {actual_feedback.lower()} {target_line}."
-            )
-        return self._complete_openai(
-            build_reflection_messages(
-                memory=memory,
-                target_line=target_line,
-                system_prediction=system_prediction,
-                actual_feedback=actual_feedback,
-                history_limit=None,
-                item_domain_singular=self._item_domain_singular,
-                item_domain_plural=self._item_domain_plural,
-            )
+        messages = self._reflection_messages(
+            memory=memory,
+            target_line=target_line,
+            system_prediction=system_prediction,
+            actual_feedback=actual_feedback,
+        )
+        return self._complete_or_deterministic_reflection(
+            messages=messages,
+            memory=memory,
+            target_line=target_line,
+            actual_feedback=actual_feedback,
         )
 
+    def _reflection_messages(
+        self,
+        *,
+        memory: STARecUserMemory,
+        target_line: str,
+        system_prediction: str,
+        actual_feedback: str,
+    ) -> list[Message]:
+        return build_reflection_messages(
+            memory=memory,
+            target_line=target_line,
+            system_prediction=system_prediction,
+            actual_feedback=actual_feedback,
+            history_limit=None,
+            item_domain_singular=self._item_domain_singular,
+            item_domain_plural=self._item_domain_plural,
+        )
+
+    def _complete_or_deterministic_reflection(
+        self,
+        *,
+        messages: list[Message],
+        memory: STARecUserMemory,
+        target_line: str,
+        actual_feedback: str,
+    ) -> str:
+        return self._complete_or_deterministic_reflection_with_reasoning(
+            messages=messages,
+            memory=memory,
+            target_line=target_line,
+            actual_feedback=actual_feedback,
+        ).content
+
+    def _complete_or_deterministic_reflection_with_reasoning(
+        self,
+        *,
+        messages: list[Message],
+        memory: STARecUserMemory,
+        target_line: str,
+        actual_feedback: str,
+    ) -> _STARecCompletion:
+        if self.config.backend == "deterministic":
+            return _STARecCompletion(
+                content=(
+                    "Updated User Description: "
+                    f"{memory.current_user_description} Recent evidence: {actual_feedback.lower()} {target_line}."
+                )
+            )
+        return self._complete_openai_with_reasoning(messages)
+
     def _complete_openai(self, messages: list[Message]) -> str:
+        return self._complete_openai_with_reasoning(messages).content
+
+    def _complete_openai_with_reasoning(self, messages: list[Message]) -> _STARecCompletion:
         api_key = os.environ.get(self.config.api_key_env)
         if not api_key:
             raise RuntimeError(f"STARec openai backend requires environment variable {self.config.api_key_env}.")
@@ -269,10 +449,14 @@ class STARecModel(BaseRetrievalModel):
                     top_p=float(self.config.top_p),
                     max_tokens=int(self.config.max_output_tokens),
                 )
-                content = response.choices[0].message.content
+                message = response.choices[0].message
+                content = _message_field(message, "content")
                 if content is None:
                     raise RuntimeError("OpenAI SDK response did not include message content.")
-                return str(content)
+                return _STARecCompletion(
+                    content=str(content),
+                    reasoning_content=_optional_text(_message_field(message, "reasoning_content")),
+                )
             except Exception as exc:
                 last_error = exc
                 if attempt >= max(1, int(self.config.request_retries)):
@@ -291,6 +475,9 @@ class STARecModel(BaseRetrievalModel):
         return lookup
 
     def _resolve_item_text(self, item_record: dict[str, Any], *, item_id: int) -> str:
+        template_text = self._render_item_text_template(item_record)
+        if template_text:
+            return template_text
         for field_name in (self.config.item_text_field, self.config.fallback_item_text_field, "title", "metadata_text", ITEM_ID):
             if not field_name or field_name not in item_record:
                 continue
@@ -301,6 +488,42 @@ class STARecModel(BaseRetrievalModel):
             if text:
                 return text
         return f"item {item_id}"
+
+    def _render_item_text_template(self, item_record: dict[str, Any]) -> str:
+        template = str(self.config.item_text_template or "").strip()
+        if not template:
+            return ""
+        segments: list[str] = []
+        for segment in re.split(r"(?<=\.)\s+", template):
+            field_names = re.findall(r"{([^{}]+)}", segment)
+            if not field_names:
+                rendered_segment = segment.strip()
+            else:
+                values = {field_name: self._item_field_text(item_record.get(field_name)) for field_name in field_names}
+                if any(not value for value in values.values()):
+                    continue
+                rendered_segment = segment
+                for field_name, value in values.items():
+                    rendered_segment = rendered_segment.replace("{" + field_name + "}", value)
+            rendered_segment = re.sub(r"\s+", " ", rendered_segment).strip()
+            if rendered_segment:
+                segments.append(rendered_segment)
+        return " ".join(segments).strip()
+
+    @staticmethod
+    def _item_field_text(value: Any) -> str:
+        if value is None:
+            return ""
+        try:
+            missing = pd.isna(value)
+        except (TypeError, ValueError):
+            missing = False
+        try:
+            if bool(missing):
+                return ""
+        except ValueError:
+            pass
+        return re.sub(r"\s+", " ", str(value)).strip()
 
     def _build_user_profile_lookup(self, prepared_data) -> dict[int, str]:
         user_table = prepared_data.get_user_table()
@@ -336,7 +559,28 @@ def _build_openai_client(*, api_key: str, base_url: str, timeout: float):
     )
 
 
+def _message_field(message: Any, name: str) -> Any:
+    if isinstance(message, dict):
+        return message.get(name)
+    value = getattr(message, name, None)
+    if value is not None:
+        return value
+    for extra_name in ("model_extra", "additional_kwargs"):
+        extra = getattr(message, extra_name, None)
+        if isinstance(extra, dict) and name in extra:
+            return extra[name]
+    return None
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 __all__ = [
     "STARecModel",
     "STARecPassthroughCollator",
+    "STARecPromptTrace",
 ]

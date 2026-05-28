@@ -14,6 +14,7 @@ from recbole3.model.starec.parser import (
     parse_current_description,
     parse_ranking_output,
     parse_updated_description,
+    strip_think_blocks,
 )
 from recbole3.model.starec.trainer import STARecTrainer, STARecTrainerConfig
 
@@ -35,4 +36,5 @@ __all__ = [
     "parse_current_description",
     "parse_ranking_output",
     "parse_updated_description",
+    "strip_think_blocks",
 ]

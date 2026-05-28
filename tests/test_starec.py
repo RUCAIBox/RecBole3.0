@@ -13,15 +13,25 @@ import pytest
 import recbole3.model.starec.candidates as starec_candidates
 from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset, ITEM_ID, LABEL, SEEN_ITEM_IDS, USER_ID
 from recbole3.model import STARecConfig, get_model_spec
-from recbole3.model.starec.candidates import build_history_limited_frames, build_train_candidate_frame
+from recbole3.model.starec.candidates import (
+    build_history_limited_frames,
+    build_train_candidate_frame,
+    select_history_eligible_user_ids,
+)
 from recbole3.model.starec.memory import STARecUserMemory
 from recbole3.model.starec.model import STARecModel
-from recbole3.model.starec.parser import complete_ranked_item_ids, parse_ranking_output
+from recbole3.model.starec.parser import complete_ranked_item_ids, parse_ranking_output, strip_think_blocks
 from recbole3.model.starec.prompts import (
     build_memory_init_messages,
     build_ranking_messages,
     build_reflection_messages,
     resolve_item_domain,
+)
+from recbole3.model.starec.reward import compute_score, starec_ranking_reward
+from recbole3.model.starec.training_data import (
+    export_sft_from_teacher_trace,
+    export_verl_ranking_from_teacher_trace,
+    write_user_split_artifacts,
 )
 from recbole3.model.starec.trainer import _STARecProgressBar
 from recbole3.run import compose_config, run_experiment
@@ -56,8 +66,10 @@ def test_starec_config_defaults_to_serial_dispatch() -> None:
 
     assert config.api_batch == 1
     assert not config.async_dispatch
-    assert config.train_init_interactions == 10
-    assert config.history_min_length == 20
+    assert config.train_init_interactions == 20
+    assert config.history_min_length == 30
+    assert config.selected_user_ids_path is None
+    assert config.teacher_trace_path is None
 
     with pytest.raises(ValueError, match="api_batch"):
         STARecConfig(api_batch=0)
@@ -69,6 +81,33 @@ def test_starec_config_defaults_to_serial_dispatch() -> None:
         STARecConfig(item_domain_singular="movie")
 
 
+def test_starec_user_split_artifacts_are_fixed_count_and_disjoint(local_tmp_path: Path) -> None:
+    result = write_user_split_artifacts(
+        range(10),
+        teacher_user_count=3,
+        heldout_eval_user_count=2,
+        seed=7,
+        output_dir=local_tmp_path,
+    )
+
+    teacher_rows = [
+        json.loads(line)
+        for line in (local_tmp_path / "teacher_users.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    heldout_rows = [
+        json.loads(line)
+        for line in (local_tmp_path / "heldout_eval_users.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    teacher_users = {row["user_id"] for row in teacher_rows}
+    heldout_users = {row["user_id"] for row in heldout_rows}
+
+    assert result["teacher_user_count"] == 3
+    assert result["heldout_eval_user_count"] == 2
+    assert len(teacher_users) == 3
+    assert len(heldout_users) == 2
+    assert teacher_users.isdisjoint(heldout_users)
+
+
 def test_starec_parser_requires_all_candidates_once() -> None:
     parsed = parse_ranking_output(
         "1. [ItemID: 2] Alpha\n2. [ItemID: 4] Bravo",
@@ -78,6 +117,24 @@ def test_starec_parser_requires_all_candidates_once() -> None:
     assert not parsed.valid
     assert parsed.missing_item_ids == [6]
     assert complete_ranked_item_ids(parsed, [2, 4, 6]) == [2, 4, 6]
+
+
+def test_starec_parser_ignores_think_blocks() -> None:
+    output = "\n".join(
+        [
+            "<think>",
+            "1. [ItemID: 6] Reasoning-only candidate mention",
+            "</think>",
+            "1. [ItemID: 2] Alpha",
+            "2. [ItemID: 4] Bravo",
+        ]
+    )
+
+    parsed = parse_ranking_output(output, [2, 4])
+
+    assert "<think>" not in strip_think_blocks(output)
+    assert parsed.valid
+    assert parsed.ranked_item_ids == [2, 4]
 
 
 def test_starec_item_domain_heuristic_and_override() -> None:
@@ -159,7 +216,10 @@ def test_starec_openai_backend_uses_sdk_base_url(monkeypatch: pytest.MonkeyPatch
             return types.SimpleNamespace(
                 choices=[
                     types.SimpleNamespace(
-                        message=types.SimpleNamespace(content="Current User Description: SDK response")
+                        message=types.SimpleNamespace(
+                            content="Current User Description: SDK response",
+                            reasoning_content="teacher reasoning trace",
+                        )
                     )
                 ]
             )
@@ -182,8 +242,11 @@ def test_starec_openai_backend_uses_sdk_base_url(monkeypatch: pytest.MonkeyPatch
     )
 
     response = model._complete_openai([{"role": "user", "content": "ping"}])
+    completion = model._complete_openai_with_reasoning([{"role": "user", "content": "ping"}])
 
     assert response == "Current User Description: SDK response"
+    assert completion.content == "Current User Description: SDK response"
+    assert completion.reasoning_content == "teacher reasoning trace"
     assert calls["client_kwargs"] == {
         "api_key": "test-key",
         "base_url": "https://api.deepseek.com",
@@ -191,6 +254,35 @@ def test_starec_openai_backend_uses_sdk_base_url(monkeypatch: pytest.MonkeyPatch
     }
     assert calls["create_kwargs"]["model"] == "deepseek-v4-flash"
     assert calls["create_kwargs"]["messages"] == [{"role": "user", "content": "ping"}]
+
+
+def test_starec_item_text_template_and_feedback_score_field() -> None:
+    model = STARecModel(
+        STARecConfig(
+            item_text_template="{title}. Artist/brand: {brand}",
+            feedback_score_field="overall",
+            feedback_positive_threshold=3,
+        )
+    )
+    prepared_data = types.SimpleNamespace(
+        config=types.SimpleNamespace(name="amazon2014_retrieval", category="CDs_and_Vinyl"),
+        get_item_table=lambda: pd.DataFrame(
+            [
+                {ITEM_ID: 0, "title": "Blue Train", "brand": "John Coltrane", "metadata_text": "full metadata"},
+                {ITEM_ID: 1, "title": "Kind of Blue", "brand": "", "metadata_text": "fallback metadata"},
+            ]
+        ),
+        get_user_table=lambda: pd.DataFrame([{USER_ID: 0}]),
+        get_num_items=lambda: 2,
+    )
+
+    model.prepare_metadata(prepared_data)
+
+    assert model.item_text(0) == "Blue Train. Artist/brand: John Coltrane"
+    assert model.item_text(1) == "Kind of Blue."
+    assert model.record_feedback({"overall": 2.0, LABEL: None}) == "Actually Disliked"
+    assert model.record_feedback({"overall": 4.0, LABEL: None}) == "Actually Liked"
+    assert model.record_feedback({LABEL: 0.0}) == "Actually Disliked"
 
 
 def test_starec_progress_bar_tracks_rows_and_users(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -271,6 +363,112 @@ def test_starec_history_selection_keeps_negative_history_but_excludes_negative_t
     assert all(len(candidate_ids) == 3 for candidate_ids in positive_rows[CANDIDATE_ITEM_IDS].tolist())
 
 
+def test_starec_feedback_score_field_filters_targets() -> None:
+    task_data = _FrameTaskData(
+        train_frame=pd.DataFrame(
+            [
+                {USER_ID: 0, ITEM_ID: 0, LABEL: None, "overall": 5.0},
+                {USER_ID: 0, ITEM_ID: 1, LABEL: None, "overall": 2.0},
+                {USER_ID: 0, ITEM_ID: 2, LABEL: None, "overall": 4.0},
+                {USER_ID: 0, ITEM_ID: 3, LABEL: None, "overall": 1.0},
+                {USER_ID: 0, ITEM_ID: 4, LABEL: None, "overall": 5.0},
+            ]
+        ),
+        valid_frame=pd.DataFrame([{USER_ID: 0, ITEM_ID: 5, LABEL: None, "overall": 4.0}]),
+        test_frame=pd.DataFrame([{USER_ID: 0, ITEM_ID: 6, LABEL: None, "overall": 5.0}]),
+        num_items=12,
+    )
+    config = STARecConfig(
+        selected_user_count=1,
+        train_init_interactions=2,
+        history_min_length=5,
+        backbone_topk=3,
+        recall_budget=3,
+        feedback_score_field="overall",
+        feedback_positive_threshold=3,
+    )
+
+    train_frame, _, _, selected_user_ids = build_history_limited_frames(task_data, model_config=config)
+    assert selected_user_ids == (0,)
+    assert train_frame["overall"].tolist() == [5.0, 2.0, 4.0, 1.0, 5.0]
+
+    task_data._train_dataset = FrameDataset(train_frame)
+    train_candidate_frame = build_train_candidate_frame(task_data, model_config=config)
+
+    negative_rows = train_candidate_frame.loc[train_candidate_frame["overall"] <= 3]
+    positive_rows = train_candidate_frame.loc[train_candidate_frame["overall"] > 3]
+    assert negative_rows[CANDIDATE_ITEM_IDS].tolist() == [(), ()]
+    assert all(len(candidate_ids) == 3 for candidate_ids in positive_rows[CANDIDATE_ITEM_IDS].tolist())
+
+
+def test_starec_lightweight_eligible_user_selection_avoids_frame_materialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_data = _FrameTaskData(
+        train_frame=pd.DataFrame(
+            [
+                {USER_ID: 0, ITEM_ID: 0, LABEL: 1.0},
+                {USER_ID: 0, ITEM_ID: 1, LABEL: 0.0},
+                {USER_ID: 0, ITEM_ID: 2, LABEL: 1.0},
+                {USER_ID: 0, ITEM_ID: 3, LABEL: 0.0},
+                {USER_ID: 0, ITEM_ID: 4, LABEL: 1.0},
+                {USER_ID: 1, ITEM_ID: 5, LABEL: 1.0},
+                {USER_ID: 1, ITEM_ID: 6, LABEL: 1.0},
+            ]
+        ),
+        valid_frame=pd.DataFrame([{USER_ID: 0, ITEM_ID: 7, LABEL: 1.0}, {USER_ID: 1, ITEM_ID: 8, LABEL: 1.0}]),
+        test_frame=pd.DataFrame([{USER_ID: 0, ITEM_ID: 9, LABEL: 1.0}, {USER_ID: 1, ITEM_ID: 10, LABEL: 1.0}]),
+        num_items=12,
+    )
+
+    def _fail_user_frame(*args, **kwargs):
+        raise AssertionError("select_history_eligible_user_ids should not materialize per-user frames")
+
+    monkeypatch.setattr(starec_candidates, "_user_frame", _fail_user_frame)
+
+    selected_user_ids = select_history_eligible_user_ids(
+        task_data,
+        model_config=STARecConfig(
+            selected_user_count=-1,
+            train_init_interactions=2,
+            history_min_length=5,
+            history_max_length=6,
+        ),
+    )
+
+    assert selected_user_ids == (0,)
+
+
+def test_starec_history_selection_can_use_explicit_user_artifact(local_tmp_path: Path) -> None:
+    task_data = _FrameTaskData(
+        train_frame=pd.DataFrame(
+            [
+                {USER_ID: user_id, ITEM_ID: user_id * 5 + offset, LABEL: 1.0}
+                for user_id in range(3)
+                for offset in range(3)
+            ]
+        ),
+        valid_frame=pd.DataFrame([{USER_ID: user_id, ITEM_ID: user_id * 5 + 3, LABEL: 1.0} for user_id in range(3)]),
+        test_frame=pd.DataFrame([{USER_ID: user_id, ITEM_ID: user_id * 5 + 4, LABEL: 1.0} for user_id in range(3)]),
+        num_items=15,
+    )
+    user_path = local_tmp_path / "teacher_users.jsonl"
+    user_path.write_text('{"user_id": 2}\n{"user_id": 0}\n', encoding="utf-8")
+
+    _, _, _, selected_user_ids = build_history_limited_frames(
+        task_data,
+        model_config=STARecConfig(
+            selected_user_count=-1,
+            selected_user_ids_path=str(user_path),
+            train_init_interactions=1,
+            history_min_length=5,
+            history_max_length=5,
+        ),
+    )
+
+    assert selected_user_ids == (2, 0)
+
+
 def test_starec_history_selection_fails_when_requested_users_are_ineligible() -> None:
     task_data = _FrameTaskData(
         train_frame=pd.DataFrame(
@@ -340,6 +538,146 @@ def test_starec_history_selection_stops_after_requested_eligible_users(monkeypat
     assert history_calls == 2
 
 
+def test_starec_teacher_trace_exports_sft_and_verl_data(local_tmp_path: Path) -> None:
+    trace_path = local_tmp_path / "teacher_trace.jsonl"
+    trace_records = [
+        _trace_record("init_memory", "init", user_id=0, sequence_index=-1, description="likes jazz"),
+        _ranking_trace_record("rank-0", user_id=0, sequence_index=0, target_rank=1),
+        _trace_record(
+            "reflection",
+            "reflect-0",
+            user_id=0,
+            sequence_index=0,
+            description="likes jazz and remastered albums",
+            previous_description="likes jazz",
+        ),
+        _ranking_trace_record("rank-1", user_id=0, sequence_index=1, target_rank=5),
+        _trace_record(
+            "reflection",
+            "reflect-1",
+            user_id=0,
+            sequence_index=1,
+            description="likes jazz and remastered albums",
+            previous_description="likes jazz and remastered albums",
+        ),
+        _ranking_trace_record("rank-2", user_id=0, sequence_index=2, target_rank=7),
+    ]
+    trace_path.write_text("\n".join(json.dumps(record) for record in trace_records) + "\n", encoding="utf-8")
+
+    sft_path = local_tmp_path / "starec_sft.jsonl"
+    rejected_path = local_tmp_path / "starec_sft_rejected.jsonl"
+    dataset_info_path = local_tmp_path / "dataset_info.json"
+    sft_result = export_sft_from_teacher_trace(
+        trace_path,
+        sft_path,
+        rejected_path=rejected_path,
+        dataset_info_path=dataset_info_path,
+        rank_threshold=5,
+    )
+
+    sft_rows = [json.loads(line) for line in sft_path.read_text(encoding="utf-8").splitlines()]
+    rejected_rows = [json.loads(line) for line in rejected_path.read_text(encoding="utf-8").splitlines()]
+    dataset_info = json.loads(dataset_info_path.read_text(encoding="utf-8"))
+
+    assert sft_result["accepted"] == 4
+    assert {row["turn_type"] for row in sft_rows} == {"init_memory", "ranking", "reflection"}
+    assert all(row["messages"][-1]["role"] == "assistant" for row in sft_rows)
+    assert any(row["reason"] == "reflection_noop" for row in rejected_rows)
+    assert any(row["reason"] == "target_rank>5" for row in rejected_rows)
+    assert dataset_info["starec_sft"]["formatting"] == "sharegpt"
+    assert dataset_info["starec_sft"]["columns"] == {"messages": "messages"}
+
+    rl_path = local_tmp_path / "starec_rl.jsonl"
+    rl_result = export_verl_ranking_from_teacher_trace(trace_path, rl_path)
+    rl_rows = [json.loads(line) for line in rl_path.read_text(encoding="utf-8").splitlines()]
+
+    assert rl_result["accepted"] == 3
+    assert rl_result["rank_threshold"] is None
+    assert all(row["data_source"] == "starec_ranking" for row in rl_rows)
+    assert json.loads(rl_rows[0]["reward_model"]["ground_truth"])["target_item_id"] == 1
+
+    thresholded_rl_path = local_tmp_path / "starec_rl_thresholded.jsonl"
+    thresholded_rl_result = export_verl_ranking_from_teacher_trace(
+        trace_path,
+        thresholded_rl_path,
+        rank_threshold=5,
+    )
+    assert thresholded_rl_result["accepted"] == 2
+    assert thresholded_rl_result["rank_threshold"] == 5
+
+
+def test_starec_sft_think_tags_requires_reasoning_content(local_tmp_path: Path) -> None:
+    trace_path = local_tmp_path / "teacher_trace_reasoning.jsonl"
+    trace_records = [
+        _trace_record(
+            "init_memory",
+            "init",
+            user_id=0,
+            sequence_index=-1,
+            description="likes jazz",
+            reasoning_content="Build a concise profile from the user's history.",
+        ),
+        _ranking_trace_record(
+            "rank-0",
+            user_id=0,
+            sequence_index=0,
+            target_rank=1,
+            reasoning_content="The target best matches the current memory.",
+        ),
+        _trace_record(
+            "reflection",
+            "reflect-0",
+            user_id=0,
+            sequence_index=0,
+            description="likes jazz and remastered albums",
+            previous_description="likes jazz",
+            reasoning_content="The feedback adds a stable remaster preference.",
+        ),
+        _ranking_trace_record("rank-1", user_id=0, sequence_index=1, target_rank=1),
+    ]
+    trace_path.write_text("\n".join(json.dumps(record) for record in trace_records) + "\n", encoding="utf-8")
+
+    output_path = local_tmp_path / "starec_sft_reasoning.jsonl"
+    rejected_path = local_tmp_path / "starec_sft_reasoning_rejected.jsonl"
+    result = export_sft_from_teacher_trace(
+        trace_path,
+        output_path,
+        rejected_path=rejected_path,
+        rank_threshold=5,
+        sft_reasoning_mode="think-tags",
+    )
+
+    rows = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+    rejected_rows = [json.loads(line) for line in rejected_path.read_text(encoding="utf-8").splitlines()]
+
+    assert result["accepted"] == 3
+    assert result["sft_reasoning_mode"] == "think-tags"
+    assert all(row["messages"][-1]["content"].startswith("<think>\n") for row in rows)
+    assert all("\n</think>\n\n" in row["messages"][-1]["content"] for row in rows)
+    assert any(row["reason"] == "reasoning_content_missing" for row in rejected_rows)
+
+
+def test_starec_verl_reward_uses_ranking_bins() -> None:
+    output = "\n".join(
+        [
+            "1. [ItemID: 2] Other",
+            "2. [ItemID: 3] Other",
+            "3. [ItemID: 1] Target",
+        ]
+    )
+    ground_truth = json.dumps({"target_item_id": 1, "candidate_item_ids": [2, 3, 1], "topk": 20})
+
+    assert starec_ranking_reward("1. [ItemID: 1] Target", target_item_id=1) == 1.0
+    assert starec_ranking_reward(output, target_item_id=1, candidate_item_ids=[2, 3, 1]) == 0.5
+    assert compute_score("starec_ranking", output, ground_truth) == 0.5
+    with_think = "<think>\n1. [ItemID: 1] Reasoning mention\n</think>\n1. [ItemID: 2] Other\n2. [ItemID: 1] Target"
+    assert starec_ranking_reward(with_think, target_item_id=1, candidate_item_ids=[2, 1]) == 0.5
+    assert starec_ranking_reward(with_think, target_item_id=1) == 0.5
+    assert starec_ranking_reward("1. [ItemID: 9] Other", target_item_id=1) == -1.0
+    with pytest.raises(ValueError, match="target_item_id"):
+        compute_score("starec_ranking", output, "{}")
+
+
 def test_starec_pipeline_end_to_end_with_deterministic_backend(local_tmp_path: Path) -> None:
     ensure_stub_tables()
     config_dir = local_tmp_path / "configs"
@@ -404,6 +742,7 @@ def test_starec_pipeline_end_to_end_with_deterministic_backend(local_tmp_path: P
                 "  history_min_length: 4",
                 "  memory_save_path: starec_memories.jsonl",
                 "  sample_log_path: starec_samples.jsonl",
+                "  teacher_trace_path: teacher_trace.jsonl",
                 "trainer:",
                 "  batch_size: 1",
                 "  shuffle: false",
@@ -429,8 +768,10 @@ def test_starec_pipeline_end_to_end_with_deterministic_backend(local_tmp_path: P
     assert "ndcg@3" in result["test"]["metrics"]
     memory_path = output_dir / "starec_memories.jsonl"
     sample_log_path = output_dir / "starec_samples.jsonl"
+    teacher_trace_path = output_dir / "teacher_trace.jsonl"
     assert memory_path.exists()
     assert sample_log_path.exists()
+    assert teacher_trace_path.exists()
 
     memories = [json.loads(line) for line in memory_path.read_text(encoding="utf-8").splitlines()]
     assert len(memories) == 2
@@ -456,6 +797,13 @@ def test_starec_pipeline_end_to_end_with_deterministic_backend(local_tmp_path: P
     assert all(row["reflection_triggered"] for row in valid_rows)
     assert all(not row["reflection_triggered"] for row in test_rows)
     assert all("Recent evidence" in row["memory_before_ranking"]["current_user_description"] for row in test_rows)
+
+    trace_rows = [json.loads(line) for line in teacher_trace_path.read_text(encoding="utf-8").splitlines()]
+    assert {row["split"] for row in trace_rows} == {"train"}
+    assert {row["turn_type"] for row in trace_rows} == {"init_memory", "ranking", "reflection"}
+    assert all(row["messages"] for row in trace_rows)
+    assert all("reasoning_content" in row for row in trace_rows)
+    assert all(row["reasoning_content"] is None for row in trace_rows)
 
 
 def test_starec_can_load_prewarmed_memories(local_tmp_path: Path) -> None:
@@ -566,6 +914,73 @@ def test_starec_can_load_prewarmed_memories(local_tmp_path: Path) -> None:
 
 def _messages_text(messages: list[dict[str, str]]) -> str:
     return "\n".join(message["content"] for message in messages)
+
+
+def _trace_record(
+    turn_type: str,
+    trace_id: str,
+    *,
+    user_id: int,
+    sequence_index: int,
+    description: str,
+    previous_description: str | None = None,
+    reasoning_content: str | None = None,
+) -> dict:
+    record = {
+        "trace_id": trace_id,
+        "turn_type": turn_type,
+        "split": "train",
+        "sequence_index": sequence_index,
+        "user_id": user_id,
+        "messages": [{"role": "user", "content": f"{turn_type} prompt"}],
+        "raw_output": (
+            f"Current User Description: {description}"
+            if turn_type == "init_memory"
+            else f"Updated User Description: {description}"
+        ),
+    }
+    if reasoning_content is not None:
+        record["reasoning_content"] = reasoning_content
+    if turn_type == "init_memory":
+        record["current_user_description"] = description
+    else:
+        record["updated_user_description"] = description
+        record["previous_user_description"] = previous_description or ""
+    return record
+
+
+def _ranking_trace_record(
+    trace_id: str,
+    *,
+    user_id: int,
+    sequence_index: int,
+    target_rank: int,
+    reasoning_content: str | None = None,
+) -> dict:
+    candidate_item_ids = [1, 2, 3, 4, 5, 6, 7]
+    ranked_item_ids = list(candidate_item_ids)
+    ranked_item_ids.remove(1)
+    ranked_item_ids.insert(target_rank - 1, 1)
+    raw_output = "\n".join(
+        f"{rank}. [ItemID: {item_id}] Item {item_id}" for rank, item_id in enumerate(ranked_item_ids, start=1)
+    )
+    record = {
+        "trace_id": trace_id,
+        "turn_type": "ranking",
+        "split": "train",
+        "sequence_index": sequence_index,
+        "user_id": user_id,
+        "target_item_id": 1,
+        "candidate_item_ids": candidate_item_ids,
+        "messages": [{"role": "user", "content": "ranking prompt"}],
+        "raw_output": raw_output,
+        "parsed_ranking": ranked_item_ids,
+        "parse_valid": True,
+        "target_rank": target_rank,
+    }
+    if reasoning_content is not None:
+        record["reasoning_content"] = reasoning_content
+    return record
 
 
 class _FrameTaskData:

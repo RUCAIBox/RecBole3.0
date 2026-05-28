@@ -58,12 +58,12 @@ def _write_amazon2014_source(root: Path) -> None:
     _write_json_gz(
         raw_dir / "reviews_Beauty_5.json.gz",
         [
-            {"reviewerID": "u1", "asin": "A", "unixReviewTime": 1},
-            {"reviewerID": "u1", "asin": "B", "unixReviewTime": 2},
-            {"reviewerID": "u1", "asin": "C", "unixReviewTime": 3},
-            {"reviewerID": "u2", "asin": "B", "unixReviewTime": 1},
-            {"reviewerID": "u2", "asin": "D", "unixReviewTime": 2},
-            {"reviewerID": "u2", "asin": "E", "unixReviewTime": 3},
+            {"reviewerID": "u1", "asin": "A", "unixReviewTime": 1, "overall": 5.0},
+            {"reviewerID": "u1", "asin": "B", "unixReviewTime": 2, "overall": 2.0},
+            {"reviewerID": "u1", "asin": "C", "unixReviewTime": 3, "overall": 4.0},
+            {"reviewerID": "u2", "asin": "B", "unixReviewTime": 1, "overall": 3.0},
+            {"reviewerID": "u2", "asin": "D", "unixReviewTime": 2, "overall": 5.0},
+            {"reviewerID": "u2", "asin": "E", "unixReviewTime": 3, "overall": 1.0},
         ],
         python_literal=True,
     )
@@ -140,6 +140,28 @@ def test_amazon2014_parser_reuses_parsed_cache(monkeypatch, tmp_path: Path) -> N
     pd.testing.assert_frame_equal(second_interactions, first_interactions, check_dtype=False)
 
 
+def test_amazon2014_parser_rebuilds_stale_parsed_cache_without_overall(tmp_path: Path) -> None:
+    _write_amazon2014_source(tmp_path)
+    stale_cache = tmp_path / "processed" / "amazon2014_retrieval" / "Beauty" / "sentence"
+    stale_cache.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {USER_ID: "old_user", ITEM_ID: "old_item", TIMESTAMP: 1, LABEL: None},
+        ]
+    ).to_json(stale_cache / "interactions.jsonl", orient="records", lines=True)
+    pd.DataFrame([{USER_ID: "old_user"}]).to_json(stale_cache / "users.jsonl", orient="records", lines=True)
+    pd.DataFrame([{ITEM_ID: "old_item", "metadata_text": "old metadata"}]).to_json(
+        stale_cache / "items.jsonl",
+        orient="records",
+        lines=True,
+    )
+
+    parsed = Amazon2014RetrievalParser(_build_config(tmp_path)).parse()
+
+    assert parsed.interactions["overall"].tolist() == [5, 2, 4, 3, 5, 1]
+    assert parsed.user_table[USER_ID].tolist() == ["u1", "u2"]
+
+
 def test_amazon2014_parser_returns_raw_ids_and_metadata_text(tmp_path: Path) -> None:
     _write_amazon2014_source(tmp_path)
     parsed = Amazon2014RetrievalParser(_build_config(tmp_path)).parse()
@@ -152,6 +174,7 @@ def test_amazon2014_parser_returns_raw_ids_and_metadata_text(tmp_path: Path) -> 
         {USER_ID: "u2", ITEM_ID: "D", TIMESTAMP: 2, LABEL: None},
         {USER_ID: "u2", ITEM_ID: "E", TIMESTAMP: 3, LABEL: None},
     ]
+    assert parsed.interactions["overall"].tolist() == [5, 2, 4, 3, 5, 1]
     assert parsed.user_table[USER_ID].tolist() == ["u1", "u2"]
     assert parsed.item_table[ITEM_ID].tolist() == ["A", "B", "C", "D", "E"]
     first_metadata_text = parsed.item_table.loc[parsed.item_table[ITEM_ID] == "A", "metadata_text"].item()
@@ -162,6 +185,24 @@ def test_amazon2014_parser_returns_raw_ids_and_metadata_text(tmp_path: Path) -> 
     assert "Beauty, Skin" in first_metadata_text
     assert "Line1 Line2" in first_metadata_text
     assert missing_metadata_text == ""
+
+
+def test_amazon2014_parser_fields_mode_preserves_structured_metadata(tmp_path: Path) -> None:
+    _write_amazon2014_source(tmp_path)
+    parsed = Amazon2014RetrievalParser(_build_config(tmp_path, metadata_mode="fields")).parse()
+
+    first_item = parsed.item_table.loc[parsed.item_table[ITEM_ID] == "A"].iloc[0].to_dict()
+    missing_item = parsed.item_table.loc[parsed.item_table[ITEM_ID] == "E"].iloc[0].to_dict()
+
+    assert first_item["title"] == "Alpha"
+    assert first_item["brand"] == "BrandA"
+    assert first_item["feature"] == "Fast, Light"
+    assert first_item["categories"] == "Beauty, Skin"
+    assert first_item["description"] == "Line1 Line2"
+    assert "Alpha" in first_item["metadata_text"]
+    assert missing_item["title"] == ""
+    assert missing_item["brand"] == ""
+    assert missing_item["metadata_text"] == ""
 
 
 def test_amazon2014_prepare_builds_retrieval_records_in_chronological_order(tmp_path: Path) -> None:

@@ -6,6 +6,7 @@ from typing import Sequence
 
 
 NUMBERED_LINE_RE = re.compile(r"^\s*\d+\s*[\).\:-]\s*(.+?)\s*$")
+THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 CURRENT_DESCRIPTION_RE = re.compile(r"Current User Description:\s*(.+)", re.IGNORECASE | re.DOTALL)
 UPDATED_DESCRIPTION_RE = re.compile(r"Updated User Description:\s*(.+)", re.IGNORECASE | re.DOTALL)
 
@@ -29,7 +30,7 @@ def parse_ranking_output(
     candidate_set = set(candidates)
     ranked_item_ids: list[int] = []
     unknown_lines: list[str] = []
-    for line in str(output).splitlines():
+    for line in strip_think_blocks(output).splitlines():
         match = NUMBERED_LINE_RE.match(line)
         if not match:
             continue
@@ -74,13 +75,18 @@ def complete_ranked_item_ids(parsed: STARecRankingParseResult, candidate_item_id
     return result
 
 
+def strip_think_blocks(output: str) -> str:
+    return THINK_BLOCK_RE.sub("", str(output))
+
+
 def parse_current_description(output: str) -> str:
-    match = CURRENT_DESCRIPTION_RE.search(str(output))
-    return _clean_description(match.group(1) if match else str(output))
+    cleaned_output = strip_think_blocks(output)
+    match = CURRENT_DESCRIPTION_RE.search(cleaned_output)
+    return _clean_description(match.group(1) if match else cleaned_output)
 
 
 def parse_updated_description(output: str) -> str | None:
-    match = UPDATED_DESCRIPTION_RE.search(str(output))
+    match = UPDATED_DESCRIPTION_RE.search(strip_think_blocks(output))
     if not match:
         return None
     return _clean_description(match.group(1))
@@ -107,4 +113,5 @@ __all__ = [
     "parse_current_description",
     "parse_ranking_output",
     "parse_updated_description",
+    "strip_think_blocks",
 ]
