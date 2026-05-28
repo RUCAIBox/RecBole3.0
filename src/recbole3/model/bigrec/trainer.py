@@ -88,7 +88,13 @@ class BIGRecTrainer:
         """Resolve ``device_map`` for ``from_pretrained``.
 
         Returns ``{"": local_rank}`` under DDP (torchrun sets ``LOCAL_RANK``),
-        or ``{"": config.device_id}`` for single-process runs.
+        or ``{"": 0}`` for single-process runs.
+
+        In single-process mode, :meth:`fit` and :meth:`evaluate` set
+        ``CUDA_VISIBLE_DEVICES=device_id`` *before* the CUDA context is
+        initialised, so the target physical GPU always appears as logical
+        GPU 0.  Returning ``{"": 0}`` therefore always resolves to the
+        correct physical device.
 
         ``device_map="auto"`` is intentionally avoided: it shards the model
         across all visible GPUs, which triggers ``CUDA peer mapping resources
@@ -99,7 +105,9 @@ class BIGRecTrainer:
         if local_rank != -1:
             torch.cuda.set_device(local_rank)
             return {"": local_rank}
-        return {"": self.config.device_id}
+        # CUDA_VISIBLE_DEVICES is set to device_id before CUDA context init,
+        # so the target physical GPU is always visible as logical GPU 0.
+        return {"": 0}
 
     # ── Tokenizer ─────────────────────────────────────────────────────────────
 
@@ -565,6 +573,18 @@ class BIGRecTrainer:
         """
         os.makedirs(output_dir, exist_ok=True)
 
+        # Restrict visible GPUs *before* the CUDA context is initialised.
+        # HF Trainer calls torch.cuda.device_count() when constructing
+        # TrainingArguments and wraps the model with nn.DataParallel when
+        # count > 1.  DataParallel scatters inputs to every visible GPU,
+        # triggering "CUDA error: peer mapping resources exhausted" on
+        # multi-GPU nodes.  Setting CUDA_VISIBLE_DEVICES to a single device
+        # makes device_count() return 1 and suppresses DataParallel entirely.
+        # (In DDP mode LOCAL_RANK is set by torchrun; skip this path.)
+        if int(os.environ.get("LOCAL_RANK", "-1")) == -1:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(self.config.device_id)
+            self._log("Single-GPU mode: CUDA_VISIBLE_DEVICES=%s", self.config.device_id)
+
         # 1. Tokenizer (right-padding during SFT).
         tokenizer = self._load_tokenizer(padding_side="right")
         if self._is_main_process():
@@ -985,6 +1005,11 @@ class BIGRecTrainer:
         Returns:
             Dict mapping ``"recall@K"`` / ``"ndcg@K"`` to scalar floats.
         """
+        # Same single-GPU restriction as in fit() — needed when evaluate() is
+        # invoked standalone (pipeline_stage='evaluation') without a prior fit().
+        if int(os.environ.get("LOCAL_RANK", "-1")) == -1:
+            os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(self.config.device_id))
+
         # 1. Load the fine-tuned generation model.
         gen_model = self._load_trained_model(checkpoint_path)
         tokenizer = self._load_tokenizer(padding_side="left")

@@ -1226,12 +1226,17 @@ class TestTrainerUtility:
         device_map = BIGRecTrainer(BIGRecConfig(device_id=0))._get_device_map()
         assert device_map == {"": 0}
 
-    def test_get_device_map_respects_device_id_config(
+    def test_get_device_map_always_returns_logical_zero_in_single_process(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """_get_device_map always returns {"": 0} in single-process mode.
+
+        fit()/evaluate() set CUDA_VISIBLE_DEVICES=device_id before CUDA init,
+        so the target physical GPU always appears as logical GPU 0.
+        """
         monkeypatch.delenv("LOCAL_RANK", raising=False)
         device_map = BIGRecTrainer(BIGRecConfig(device_id=2))._get_device_map()
-        assert device_map == {"": 2}
+        assert device_map == {"": 0}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
