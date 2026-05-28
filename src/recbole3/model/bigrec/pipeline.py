@@ -74,15 +74,28 @@ class BIGRecPipeline(Pipeline):
         # Prepare the base task dataset (interactions, item table, eval splits).
         # Use the protocol from BIGRecConfig so sampled / full candidates are
         # built correctly.
+        # NOTE: this step can take several minutes on large datasets (k-core
+        # filtering, interaction splitting, item-table construction).
+        logger.info("BIGRec [1/2]: preparing dataset '%s' …", dataset_name)
         eval_config = EvalConfig(protocol=bigrec_config.eval_protocol)  # type: ignore[arg-type]
         task_data = dataset_spec.dataset_cls(
             instantiate_dataclass(dataset_spec.config_cls, dataset_cfg)
         ).prepare(eval_config=eval_config)
+        logger.info(
+            "BIGRec [1/2]: dataset ready — %d train / %d valid / %d test rows.",
+            len(task_data.get_train_dataset().frame),
+            len(task_data.get_eval_dataset("valid").frame),
+            len(task_data.get_eval_dataset("test").frame),
+        )
 
         # Wrap with BIGRecModelDataset to inject history_item_ids into all splits.
+        # NOTE: this step walks every training row to build prefix histories and
+        # can take a few minutes for large datasets.
+        logger.info("BIGRec [2/2]: building autoregressive history sequences …")
         bigrec_data = BIGRecModelDataset.from_task_dataset(
             task_data, model_config=bigrec_config
         )
+        logger.info("BIGRec [2/2]: history sequences ready.")
 
         # ── Trainer ────────────────────────────────────────────────────────────
         trainer = BIGRecTrainer(bigrec_config)

@@ -1905,6 +1905,43 @@ class TestOfficialDefaultHyperparams:
         cfg = BIGRecConfig(early_stopping_patience=3)
         assert cfg.early_stopping_patience == 3
 
+    def test_max_steps_default_is_500(self) -> None:
+        """Default max_steps=500 caps training on large datasets."""
+        assert BIGRecConfig().max_steps == 500
+
+    def test_max_steps_disabled_with_minus_one(self) -> None:
+        cfg = BIGRecConfig(max_steps=-1)
+        assert cfg.max_steps == -1
+
+    def test_max_steps_overridable(self) -> None:
+        cfg = BIGRecConfig(max_steps=1000)
+        assert cfg.max_steps == 1000
+
+    def test_fit_passes_max_steps_to_training_arguments(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """fit() must forward config.max_steps to HF TrainingArguments."""
+        data, _ = _prepare_bigrec_data()
+        cfg = BIGRecConfig(
+            history_max_length=2, max_input_length=32, max_new_tokens=8,
+            max_steps=42,
+        )
+        trainer = BIGRecTrainer(cfg)
+        _stub_fit_externals(trainer, monkeypatch)
+
+        captured_args: dict[str, Any] = {}
+
+        def _capture(**kwargs: Any) -> MagicMock:
+            captured_args.update(kwargs)
+            return MagicMock()
+
+        with patch("recbole3.model.bigrec.trainer.HFTrainer", side_effect=_capture):
+            trainer.fit(data, output_dir=str(tmp_path))
+
+        training_args = captured_args.get("args")
+        assert training_args is not None
+        assert training_args.max_steps == 42
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 21. fit() uses EarlyStoppingCallback with correct patience, and passes

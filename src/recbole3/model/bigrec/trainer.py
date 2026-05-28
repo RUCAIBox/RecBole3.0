@@ -598,6 +598,26 @@ class BIGRecTrainer:
         #    loss (official BIGRec approach; recommendation metrics are computed
         #    post-training by evaluate()).
         train_frame: pd.DataFrame = task_data.get_train_dataset().frame  # type: ignore[attr-defined]
+
+        # When max_steps > 0, cap the training frame to avoid tokenising rows
+        # that will never be reached during training.  This cuts startup time
+        # from O(total_samples) to O(max_steps × effective_batch_size).
+        if self.config.max_steps > 0:
+            max_samples: int = (
+                self.config.max_steps
+                * self.config.train_batch_size
+                * self.config.gradient_accumulation_steps
+            )
+            if len(train_frame) > max_samples:
+                train_frame = train_frame.head(max_samples).reset_index(drop=True)
+                self._log(
+                    "max_steps=%d: capped training frame to %d samples "
+                    "(full dataset: %d rows).",
+                    self.config.max_steps,
+                    max_samples,
+                    len(task_data.get_train_dataset().frame),  # type: ignore[attr-defined]
+                )
+
         sft_train = BIGRecSFTDataset(
             records=train_frame,
             tokenizer=tokenizer,
@@ -634,12 +654,16 @@ class BIGRecTrainer:
             if self.config.warmup_steps is not None
             else {"warmup_ratio": self.config.warmup_ratio}
         )
+        # When max_steps > 0 it overrides num_train_epochs in HF Trainer.
+        # eval_strategy must stay "epoch" so EarlyStoppingCallback can run;
+        # HF Trainer handles the max_steps / epoch boundary automatically.
         hf_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=self.config.train_batch_size,
             per_device_eval_batch_size=self.config.eval_batch_size,
             gradient_accumulation_steps=self.config.gradient_accumulation_steps,
             num_train_epochs=self.config.num_train_epochs,
+            max_steps=self.config.max_steps,
             learning_rate=self.config.learning_rate,
             weight_decay=self.config.weight_decay,
             **warmup_kwargs,

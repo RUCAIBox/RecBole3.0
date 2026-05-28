@@ -353,6 +353,20 @@ class BIGRecConfig(SequentialModelConfig):
         },
     )
 
+    # ── Training Cap ─────────────────────────────────────────────────────────
+    max_steps: int = field(
+        default=500,
+        metadata={
+            "help": (
+                "Hard cap on the total number of optimiser steps. "
+                "When set to a positive integer, training stops after that many "
+                "steps regardless of num_train_epochs. "
+                "Useful for quick sanity-checks on large datasets. "
+                "-1 disables the cap and uses num_train_epochs instead."
+            )
+        },
+    )
+
     # ── Pipeline Control ──────────────────────────────────────────────────────
     pipeline_stage: str = field(
         default="training",

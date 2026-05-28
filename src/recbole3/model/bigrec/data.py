@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
 from recbole3.dataset.utils import ITEM_ID
 from recbole3.model.sequential import BaseSequentialModelDataset, HISTORY_ITEM_IDS
@@ -307,7 +308,12 @@ class BIGRecSFTDataset(Dataset):
         max_len = self._config.max_input_length + self._config.max_new_tokens
 
         # Iterate once over the DataFrame — avoid repeated pandas overhead.
-        for row in records.itertuples(index=False):
+        for row in tqdm(
+            records.itertuples(index=False),
+            total=len(records),
+            desc="Tokenising SFT samples",
+            unit="sample",
+        ):
             history_ids: tuple[int, ...] = getattr(row, HISTORY_ITEM_IDS, ())
             if history_ids is None:
                 history_ids = ()
