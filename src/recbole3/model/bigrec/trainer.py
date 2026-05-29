@@ -1084,6 +1084,24 @@ class BIGRecTrainer:
 
         self._log("Eval phase 1: beam-search generation on %s split …", split)
         eval_frame: pd.DataFrame = task_data.get_eval_dataset(split).frame  # type: ignore[attr-defined]
+
+        # When max_steps > 0 (quick-test mode) cap the evaluation frame so that
+        # beam-search time stays proportional to training time.  Without this,
+        # evaluating all 57 k users with LLM beam-search takes ~17 hours even
+        # though training only ran for 500 steps (~33 min).
+        # Cap = max_steps × eval_batch_size → same number of eval batches as
+        # training steps, keeping total pipeline time balanced.
+        if self.config.max_steps > 0:
+            max_eval_users: int = self.config.max_steps * self.config.eval_batch_size
+            if len(eval_frame) > max_eval_users:
+                eval_frame = eval_frame.head(max_eval_users).reset_index(drop=True)
+                self._log(
+                    "max_steps=%d: capped %s evaluation to %d users "
+                    "(full %s split: %d rows).",
+                    self.config.max_steps, split, max_eval_users,
+                    split, len(task_data.get_eval_dataset(split).frame),  # type: ignore[attr-defined]
+                )
+
         eval_texts, target_ids, cand_lists = self._generate_all_titles(
             gen_model, tokenizer, eval_frame, item_text_lookup, device
         )
@@ -1096,6 +1114,10 @@ class BIGRecTrainer:
         if self.config.grounding_gamma_search:
             self._log("Eval phase 1b: beam-search on valid split (gamma-search) …")
             valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
+            if self.config.max_steps > 0:
+                max_valid_users: int = self.config.max_steps * self.config.eval_batch_size
+                if len(valid_frame) > max_valid_users:
+                    valid_frame = valid_frame.head(max_valid_users).reset_index(drop=True)
             valid_texts, valid_targets, valid_cands = self._generate_all_titles(
                 gen_model, tokenizer, valid_frame, item_text_lookup, device
             )
