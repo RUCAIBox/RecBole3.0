@@ -7,11 +7,11 @@ model:
 
   # ── LLM Backbone ────────────────────────────────────────────────────────────
   # Local path or HuggingFace Hub identifier of the pretrained LLaMA model.
-  llm_path: "/mnt/data/model/Llama3-8B-Instruct"                         # REQUIRED: set to your local LLaMA path
+  llm_path: "/mnt/data/model/Llama-3.1-8B-Instruct"                         # REQUIRED: set to your local LLaMA path
   device_id: 0                         # GPU index for single-process runs (ignored under torchrun)
   torch_dtype: float16                 # "float16" or "bfloat16"
   load_in_8bit: false                  # INT8 quantization via bitsandbytes
-  attn_implementation: eager           # "eager" or "flash_attention_2"
+  attn_implementation: flash_attention_2           # "eager" or "flash_attention_2"
 
   # ── LoRA Fine-tuning ────────────────────────────────────────────────────────
   use_lora: true
@@ -88,7 +88,7 @@ model:
     - 5
     - 10
     - 20
-  eval_protocol: sampled               # "sampled" or "full"
+  eval_protocol: full               # "sampled" or "full"
 
   # ── Training Cap ─────────────────────────────────────────────────────────────
   max_steps: 500                       # Hard step limit; -1 = use num_train_epochs
