@@ -724,6 +724,19 @@ class BIGRecTrainer:
         hf_trainer.save_model(output_dir)
         self._log("Checkpoint saved to %s", output_dir)
 
+        # Explicitly release the training model from GPU VRAM before returning.
+        # Python's reference-counting GC does not free CUDA memory immediately
+        # when local variables go out of scope; torch.cuda.empty_cache() is
+        # required.  Without this, the training model (~18 GB) remains resident
+        # when the pipeline subsequently calls evaluate(), which loads the
+        # generation model (~17 GB) plus the base embedding model (~16 GB),
+        # pushing total VRAM usage to ~51 GB and causing OOM on a 40 GB A100.
+        del hf_trainer
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        self._log("Training model freed from GPU memory.")
+
         return {"checkpoint_path": output_dir}
 
     # ── Gamma-search helpers ──────────────────────────────────────────────────
