@@ -6,6 +6,8 @@ import logging
 import os
 from typing import Any
 
+logging.basicConfig(level=logging.INFO)
+
 from omegaconf import DictConfig
 
 from recbole3.config import RuntimeConfig, instantiate_dataclass
@@ -113,6 +115,7 @@ class BIGRecPipeline(Pipeline):
                 bigrec_data, checkpoint_path=checkpoint_path, split="test"
             )
             results["checkpoint_path"] = checkpoint_path
+            self._print_results(results)
             return results
 
         elif stage == "evaluation":
@@ -125,17 +128,32 @@ class BIGRecPipeline(Pipeline):
                 "BIGRec pipeline: evaluation-only stage (checkpoint=%s) …",
                 bigrec_config.checkpoint_path,
             )
-            return trainer.evaluate(
+            results = trainer.evaluate(
                 bigrec_data,
                 checkpoint_path=bigrec_config.checkpoint_path,
                 split="test",
             )
+            self._print_results(results)
+            return results
 
         else:
             raise ValueError(
                 f"Unknown pipeline_stage '{bigrec_config.pipeline_stage}'. "
                 "Supported: 'training', 'evaluation'."
             )
+
+    @staticmethod
+    def _print_results(results: dict[str, Any]) -> None:
+        """Print evaluation metrics to stdout in a readable table."""
+        metric_keys = sorted(k for k in results if k != "checkpoint_path")
+        if not metric_keys:
+            return
+        print("\n" + "=" * 50)
+        print("  BIGRec Evaluation Results")
+        print("=" * 50)
+        for key in metric_keys:
+            print(f"  {key:<20} {results[key]:.4f}")
+        print("=" * 50 + "\n")
 
 
 __all__ = ["BIGRecPipeline"]
