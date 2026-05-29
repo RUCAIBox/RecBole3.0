@@ -1067,100 +1067,219 @@ class BIGRecTrainer:
         if int(os.environ.get("LOCAL_RANK", "-1")) == -1:
             os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(self.config.device_id))
 
-        # 1. Load the fine-tuned generation model.
+        item_text_lookup = build_item_text_lookup(task_data, self.config)
+
+        # ── Phase 1: Beam-search generation (gen_model only in VRAM) ─────────
+        #
+        # The official BIGRec runs generation and embedding extraction as two
+        # separate scripts, so both LLaMA instances are never in VRAM at the
+        # same time.  We mirror this by generating all titles first, then
+        # freeing the generation model before loading the embedding model.
+        # This avoids having ~34 GB of model weights in VRAM simultaneously,
+        # which would leave too little headroom for the lm_head activation
+        # tensor (~4 GB at embedding_batch_size=32 for LLaMA-3 vocab=128,256).
         gen_model = self._load_trained_model(checkpoint_path)
         tokenizer = self._load_tokenizer(padding_side="left")
         device: torch.device = next(gen_model.parameters()).device
 
-        # 2. Optionally load a separate base model for embedding extraction.
-        #    Official BIGRec uses the BASE model (no LoRA) so that item embeddings
-        #    and oracle embeddings share the same vector space.
+        self._log("Eval phase 1: beam-search generation on %s split …", split)
+        eval_frame: pd.DataFrame = task_data.get_eval_dataset(split).frame  # type: ignore[attr-defined]
+        eval_texts, target_ids, cand_lists = self._generate_all_titles(
+            gen_model, tokenizer, eval_frame, item_text_lookup, device
+        )
+
+        # For gamma-search, also generate on the validation split before
+        # releasing the generation model.
+        valid_texts: list[str] | None = None
+        valid_targets: list[int] | None = None
+        valid_cands: list[list[int] | None] | None = None
+        if self.config.grounding_gamma_search:
+            self._log("Eval phase 1b: beam-search on valid split (gamma-search) …")
+            valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
+            valid_texts, valid_targets, valid_cands = self._generate_all_titles(
+                gen_model, tokenizer, valid_frame, item_text_lookup, device
+            )
+
+        # Free the generation model; load the embedding model on the now-empty VRAM.
+        del gen_model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        self._log("Generation model freed from VRAM.")
+
+        # ── Phase 2: Embedding extraction (emb_model only in VRAM) ───────────
         if self.config.embedding_use_base_model:
             emb_model: Any = self._load_base_model_for_embedding(self._get_device_map())
         else:
-            emb_model = None  # _evaluate_split falls back to gen_model
+            emb_model = self._load_trained_model(checkpoint_path)
+        device = next(emb_model.parameters()).device
 
-        item_text_lookup = build_item_text_lookup(task_data, self.config)
-
-        # Derive a deterministic cache file name from dataset name and split.
         dataset_name = getattr(getattr(task_data, "config", None), "name", "dataset")
         cache_filename = f"{dataset_name}_{split}_item_embs.pt"
         cache_path = os.path.join(self.config.embedding_cache_dir, cache_filename)
 
-        # 3. Pre-compute item embeddings using emb_model (or gen_model).
-        _model_for_emb = emb_model if emb_model is not None else gen_model
+        self._log("Eval phase 2: pre-computing item embeddings …")
         item_embeddings: torch.Tensor = self._precompute_item_embeddings(
-            _model_for_emb, tokenizer, item_text_lookup, cache_path, device
-        )  # [num_items, H] on CPU
-
+            emb_model, tokenizer, item_text_lookup, cache_path, device
+        )  # [num_items, H] CPU
         item_emb_device = item_embeddings.to(device)  # [num_items, H]
 
-        # Build grounding weights for Eq. 3 (None when grounding_mode='none').
         num_items: int = item_embeddings.shape[0]
         grounding_weights: torch.Tensor | None = self._build_grounding_weights(
             task_data, num_items
         )  # [num_items] CPU, or None
 
-        # ── Gamma-search path (official BIGRec per-K optimal gamma) ──────────
+        # ── Phase 3: Ranking ──────────────────────────────────────────────────
         if self.config.grounding_gamma_search and grounding_weights is not None:
-            weights_device = grounding_weights.to(device)  # [num_items]
+            weights_device = grounding_weights.to(device)
             gamma_values: tuple[float, ...] = (
                 tuple(self.config.grounding_gamma_search_values)
                 if self.config.grounding_gamma_search_values
                 else self._default_gamma_search_values()
             )
 
-            # Step A: Find best gamma per metric@K on the validation split.
-            self._log("Gamma search: running beam-search on validation split …")
-            valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
-            valid_texts, valid_targets, valid_cands = self._generate_all_titles(
-                gen_model, tokenizer, valid_frame, item_text_lookup, device
-            )
+            self._log("Eval phase 3a: gamma-search on valid split …")
             valid_oracle_embs = self._extract_embeddings(
-                _model_for_emb, tokenizer, valid_texts,
+                emb_model, tokenizer, valid_texts,  # type: ignore[arg-type]
                 batch_size=self.config.embedding_batch_size, device=device,
             )  # [N_valid, H] CPU
-            valid_oracle_device = valid_oracle_embs.to(device)
             valid_dist: torch.Tensor = torch.cdist(
-                valid_oracle_device, item_emb_device, p=2.0
+                valid_oracle_embs.to(device), item_emb_device, p=2.0
             )  # [N_valid, num_items]
-
             best_gammas = self._run_gamma_search(
-                valid_dist, weights_device, valid_targets, valid_cands, device, gamma_values
+                valid_dist, weights_device,
+                valid_targets, valid_cands,  # type: ignore[arg-type]
+                device, gamma_values,
             )
 
-            # Step B: Evaluate target split with per-K best gammas.
-            self._log("Gamma search: running beam-search on %s split …", split)
-            test_frame: pd.DataFrame = task_data.get_eval_dataset(split).frame  # type: ignore[attr-defined]
-            test_texts, test_targets, test_cands = self._generate_all_titles(
-                gen_model, tokenizer, test_frame, item_text_lookup, device
-            )
-            test_oracle_embs = self._extract_embeddings(
-                _model_for_emb, tokenizer, test_texts,
+            self._log("Eval phase 3b: evaluating %s with per-K best gammas …", split)
+            eval_oracle_embs = self._extract_embeddings(
+                emb_model, tokenizer, eval_texts,
                 batch_size=self.config.embedding_batch_size, device=device,
-            )  # [N_test, H] CPU
-            test_oracle_device = test_oracle_embs.to(device)
-            test_dist: torch.Tensor = torch.cdist(
-                test_oracle_device, item_emb_device, p=2.0
-            )  # [N_test, num_items]
-
+            )  # [N_eval, H] CPU
+            eval_dist: torch.Tensor = torch.cdist(
+                eval_oracle_embs.to(device), item_emb_device, p=2.0
+            )  # [N_eval, num_items]
             return self._evaluate_from_dist_per_k_gammas(
-                test_dist, weights_device, test_targets, test_cands, best_gammas, device
+                eval_dist, weights_device, target_ids, cand_lists, best_gammas, device
             )
 
-        # ── Standard evaluation path (no gamma search) ────────────────────────
-        eval_frame: pd.DataFrame = task_data.get_eval_dataset(split).frame  # type: ignore[attr-defined]
-
-        return self._evaluate_split(
-            model=gen_model,
+        # Standard path: batch-wise oracle embedding + L2 ranking.
+        return self._rank_from_texts(
+            emb_model=emb_model,
             tokenizer=tokenizer,
             item_emb_device=item_emb_device,
-            item_text_lookup=item_text_lookup,
-            eval_frame=eval_frame,
-            device=device,
+            generated_texts=eval_texts,
+            target_ids=target_ids,
+            cand_lists=cand_lists,
             grounding_weights=grounding_weights,
-            emb_model=emb_model,
+            device=device,
         )
+
+    def _rank_from_texts(
+        self,
+        emb_model: Any,
+        tokenizer: AutoTokenizer,
+        item_emb_device: torch.Tensor,
+        generated_texts: list[str],
+        target_ids: list[int],
+        cand_lists: list[list[int] | None],
+        grounding_weights: torch.Tensor | None,
+        device: torch.device,
+    ) -> dict[str, float]:
+        """Batch-wise oracle embedding extraction + L2 ranking + metrics.
+
+        Called by :meth:`evaluate` (standard path) after beam-search generation
+        has completed and the generation model has been freed from VRAM.  Only
+        *emb_model* is in VRAM during this call, so the full ``embedding_batch_size``
+        can be used without risk of OOM.
+
+        Args:
+            emb_model: Embedding model (base CausalLM or fine-tuned model).
+            tokenizer: Left-padding tokenizer.
+            item_emb_device: Pre-computed item embeddings ``[num_items, H]`` on *device*.
+            generated_texts: Decoded titles from beam-search, one per eval row.
+            target_ids: Ground-truth item_ids, one per eval row.
+            cand_lists: Per-row candidate item_id lists (``None`` → full ranking).
+            grounding_weights: Optional per-item grounding weights ``[num_items]`` CPU.
+            device: Inference device.
+
+        Returns:
+            Dict of metric scores (``"recall@K"``, ``"ndcg@K"``, …).
+        """
+        weights_device: torch.Tensor | None = (
+            grounding_weights.to(device) if grounding_weights is not None else None
+        )
+        maxk: int = max(self.config.eval_topk)
+        is_sampled: bool = self.config.eval_protocol == "sampled"
+        batch_size: int = self.config.embedding_batch_size
+        n: int = len(generated_texts)
+
+        all_pred_item_ids: list[np.ndarray] = []
+        all_target_item_ids: list[np.ndarray] = []
+        all_target_masks: list[np.ndarray] = []
+
+        pbar = tqdm(
+            range(0, n, batch_size),
+            desc="BIGRec oracle embed+rank",
+            disable=not self._is_main_process(),
+        )
+
+        for start in pbar:
+            batch_texts = generated_texts[start : start + batch_size]
+            batch_target_ids = target_ids[start : start + batch_size]
+            batch_cand_lists = cand_lists[start : start + batch_size]
+            actual_bs: int = len(batch_texts)
+
+            oracle_embs: torch.Tensor = self._extract_embeddings(
+                emb_model, tokenizer, batch_texts,
+                batch_size=actual_bs, device=device,
+            )  # [actual_bs, H] CPU
+            oracle_emb_device = oracle_embs.to(device)  # [actual_bs, H]
+
+            distances: torch.Tensor = torch.cdist(
+                oracle_emb_device, item_emb_device, p=2.0
+            )  # [actual_bs, num_items]
+
+            if weights_device is not None:
+                effective_dist: torch.Tensor = self._apply_grounding_weights(
+                    distances, weights_device, self.config.grounding_gamma
+                )
+            else:
+                effective_dist = distances
+
+            for i in range(actual_bs):
+                target_id = batch_target_ids[i]
+                if is_sampled:
+                    cand_val = batch_cand_lists[i]
+                    if cand_val is None:
+                        cand_ids_list: list[int] = list(range(item_emb_device.shape[0]))
+                    else:
+                        cand_ids_list = list(cand_val)
+                    cand_tensor = torch.tensor(cand_ids_list, dtype=torch.long, device=device)
+                    cand_dists = effective_dist[i, cand_tensor]
+                    sorted_cand_idx = torch.argsort(cand_dists)[:maxk]
+                    top_k_ids = cand_tensor[sorted_cand_idx].cpu().numpy()
+                    if len(top_k_ids) < maxk:
+                        pad = np.full(maxk - len(top_k_ids), -1, dtype=np.int64)
+                        top_k_ids = np.concatenate([top_k_ids, pad])
+                else:
+                    sorted_idx = torch.argsort(effective_dist[i])[:maxk]
+                    top_k_ids = sorted_idx.cpu().numpy()
+
+                all_pred_item_ids.append(top_k_ids.reshape(1, maxk))
+                all_target_item_ids.append(np.array([[target_id]], dtype=np.int64))
+                all_target_masks.append(np.array([[True]], dtype=bool))
+
+        pred_arr = np.concatenate(all_pred_item_ids, axis=0)       # [N, maxk]
+        target_arr = np.concatenate(all_target_item_ids, axis=0)   # [N, 1]
+        mask_arr = np.concatenate(all_target_masks, axis=0)        # [N, 1]
+
+        eval_data = RetrievalEvalData(
+            pred_item_ids=pred_arr,
+            target_item_ids=target_arr,
+            target_mask=mask_arr,
+        )
+        return self._compute_metrics(eval_data)
 
     def _evaluate_split(
         self,
