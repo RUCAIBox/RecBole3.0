@@ -625,6 +625,26 @@ class BIGRecTrainer:
             config=self.config,
         )
         valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
+
+        # Mirror the training cap on the validation set so that eval time stays
+        # proportional to training time.  Without this, max_steps=500 trains on
+        # 16 k samples but evaluates on ~57 k (14 360 eval forward-passes on
+        # LLaMA-8B), which takes far longer than the training pass itself.
+        # Cap: max_steps × eval_batch_size gives the same number of forward
+        # passes during eval as optimizer steps during training (eval has no
+        # gradient accumulation).
+        if self.config.max_steps > 0:
+            max_eval_samples: int = self.config.max_steps * self.config.eval_batch_size
+            if len(valid_frame) > max_eval_samples:
+                valid_frame = valid_frame.head(max_eval_samples).reset_index(drop=True)
+                self._log(
+                    "max_steps=%d: capped validation frame to %d samples "
+                    "(full validation: %d rows).",
+                    self.config.max_steps,
+                    max_eval_samples,
+                    len(task_data.get_eval_dataset("valid").frame),  # type: ignore[attr-defined]
+                )
+
         sft_val = BIGRecSFTDataset(
             records=valid_frame,
             tokenizer=tokenizer,

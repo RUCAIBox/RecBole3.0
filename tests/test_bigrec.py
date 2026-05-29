@@ -2007,3 +2007,64 @@ class TestFitEarlyStoppingAlignment:
         assert early_cb is not None, "EarlyStoppingCallback must be in HFTrainer callbacks"
         # HF EarlyStoppingCallback stores patience as early_stopping_patience attribute.
         assert early_cb.early_stopping_patience == 7
+
+
+class TestFitValidationCapping:
+    """Verify that fit() caps the validation set proportionally when max_steps > 0."""
+
+    def _capture_eval_dataset(
+        self,
+        tmp_path: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        cfg: BIGRecConfig,
+    ) -> Any:
+        data, _ = _prepare_bigrec_data()
+        trainer = BIGRecTrainer(cfg)
+        _stub_fit_externals(trainer, monkeypatch)
+
+        captured: dict[str, Any] = {}
+
+        def _capture(**kwargs: Any) -> MagicMock:
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("recbole3.model.bigrec.trainer.HFTrainer", side_effect=_capture):
+            trainer.fit(data, output_dir=str(tmp_path))
+
+        return captured.get("eval_dataset")
+
+    def test_eval_dataset_capped_when_max_steps_positive(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When max_steps > 0, eval_dataset must be capped to max_steps × eval_batch_size."""
+        # StubDataset: 2 users × 4 items → 2 valid samples (1 per user, leave-one-out).
+        # max_steps=1, eval_batch_size=2 → cap = 1 × 2 = 2 (≤ 2, so no actual truncation
+        # in stub data, but the cap path is exercised).
+        cfg = BIGRecConfig(
+            history_max_length=2,
+            max_input_length=32,
+            max_new_tokens=8,
+            max_steps=1,
+            eval_batch_size=1,  # cap = 1 × 1 = 1 → truncates the 2-row valid split
+        )
+        eval_ds = self._capture_eval_dataset(tmp_path, monkeypatch, cfg)
+        assert eval_ds is not None
+        # Cap = max_steps(1) × eval_batch_size(1) = 1 → only 1 validation sample.
+        assert len(eval_ds) == 1
+
+    def test_eval_dataset_not_capped_when_max_steps_minus_one(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When max_steps=-1, the full validation set is used (no cap)."""
+        data, _ = _prepare_bigrec_data()
+        full_valid_len = len(data.get_eval_dataset("valid").frame)
+
+        cfg = BIGRecConfig(
+            history_max_length=2,
+            max_input_length=32,
+            max_new_tokens=8,
+            max_steps=-1,
+        )
+        eval_ds = self._capture_eval_dataset(tmp_path, monkeypatch, cfg)
+        assert eval_ds is not None
+        assert len(eval_ds) == full_valid_len
