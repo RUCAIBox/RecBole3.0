@@ -84,29 +84,29 @@ class BIGRecTrainer:
         if self._is_main_process():
             getattr(logger, level)(msg, *args)
 
-    def _get_device_map(self) -> dict[str, int]:
+    def _get_device_map(self) -> str | dict[str, int]:
         """Resolve ``device_map`` for ``from_pretrained``.
 
-        Returns ``{"": local_rank}`` under DDP (torchrun sets ``LOCAL_RANK``),
-        or ``{"": 0}`` for single-process runs.
+        * DDP (torchrun / LOCAL_RANK set): returns ``{"": local_rank}``.
+        * Pipeline-parallel mode (``config.pipeline_parallel=True``): returns
+          ``"auto"`` so the model is sharded across the GPUs exposed by
+          ``CUDA_VISIBLE_DEVICES`` (set to at most ``pipeline_parallel_gpus``
+          consecutive GPUs before CUDA initialises).
+        * Single-GPU mode (default): returns ``{"": 0}``.
 
-        In single-process mode, :meth:`fit` and :meth:`evaluate` set
-        ``CUDA_VISIBLE_DEVICES=device_id`` *before* the CUDA context is
-        initialised, so the target physical GPU always appears as logical
-        GPU 0.  Returning ``{"": 0}`` therefore always resolves to the
-        correct physical device.
-
-        ``device_map="auto"`` is intentionally avoided: it shards the model
-        across all visible GPUs, which triggers ``CUDA peer mapping resources
-        exhausted`` errors during training.  HF Trainer handles multi-GPU
-        training via DDP instead.
+        The P2P peer-mapping exhaustion error caused by ``device_map="auto"``
+        on an 8-GPU server is avoided by restricting ``CUDA_VISIBLE_DEVICES``
+        to exactly ``pipeline_parallel_gpus`` GPUs (default 2), which limits
+        GPU-pair P2P mappings to C(2,2)=1 instead of C(8,2)=28.
         """
         local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
         if local_rank != -1:
             torch.cuda.set_device(local_rank)
             return {"": local_rank}
-        # CUDA_VISIBLE_DEVICES is set to device_id before CUDA context init,
-        # so the target physical GPU is always visible as logical GPU 0.
+        if self.config.pipeline_parallel:
+            return "auto"
+        # Single-GPU: CUDA_VISIBLE_DEVICES is already restricted to device_id,
+        # so the target physical GPU always appears as logical GPU 0.
         return {"": 0}
 
     # ── Tokenizer ─────────────────────────────────────────────────────────────
@@ -159,9 +159,18 @@ class BIGRecTrainer:
             "device_map": device_map,
         }
         # INT8 quantization via bitsandbytes (requires: pip install bitsandbytes).
-        # Official BIGRec trains with load_in_8bit=True by default.
         if self.config.load_in_8bit:
             load_kwargs["load_in_8bit"] = True
+
+        # When using pipeline parallelism (device_map="auto"), pass max_memory so
+        # that the model is distributed evenly across the visible GPUs.
+        # This prevents a single GPU from being overloaded and keeps the shard
+        # sizes predictable.  ~90 % of each GPU's total memory is reserved.
+        if device_map == "auto" and torch.cuda.is_available():
+            n_visible = torch.cuda.device_count()
+            per_gpu_bytes = int(torch.cuda.get_device_properties(0).total_memory * 0.9)
+            per_gpu_str = f"{per_gpu_bytes // (1024 ** 3)}GiB"
+            load_kwargs["max_memory"] = {i: per_gpu_str for i in range(n_visible)}
 
         model = AutoModelForCausalLM.from_pretrained(self.config.llm_path, **load_kwargs)
         # Disable KV cache during training to allow gradient checkpointing.
@@ -573,17 +582,28 @@ class BIGRecTrainer:
         """
         os.makedirs(output_dir, exist_ok=True)
 
-        # Restrict visible GPUs *before* the CUDA context is initialised.
-        # HF Trainer calls torch.cuda.device_count() when constructing
-        # TrainingArguments and wraps the model with nn.DataParallel when
-        # count > 1.  DataParallel scatters inputs to every visible GPU,
-        # triggering "CUDA error: peer mapping resources exhausted" on
-        # multi-GPU nodes.  Setting CUDA_VISIBLE_DEVICES to a single device
-        # makes device_count() return 1 and suppresses DataParallel entirely.
+        # Set CUDA_VISIBLE_DEVICES BEFORE the CUDA context is initialised.
+        # HF Trainer wraps the model with nn.DataParallel when device_count()>1
+        # and LOCAL_RANK==-1, causing P2P peer-mapping errors on multi-GPU nodes.
         # (In DDP mode LOCAL_RANK is set by torchrun; skip this path.)
         if int(os.environ.get("LOCAL_RANK", "-1")) == -1:
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(self.config.device_id)
-            self._log("Single-GPU mode: CUDA_VISIBLE_DEVICES=%s", self.config.device_id)
+            if self.config.pipeline_parallel:
+                # Expose pipeline_parallel_gpus consecutive GPUs starting from device_id.
+                # Limiting to 2 GPUs keeps GPU-pair P2P mappings at C(2,2)=1, which
+                # avoids "peer mapping resources exhausted" seen with 8 visible GPUs.
+                gpu_ids = ",".join(
+                    str(self.config.device_id + i)
+                    for i in range(self.config.pipeline_parallel_gpus)
+                )
+                os.environ["CUDA_VISIBLE_DEVICES"] = gpu_ids
+                self._log(
+                    "Pipeline-parallel mode: CUDA_VISIBLE_DEVICES=%s "
+                    "(%d GPUs, device_map=auto)",
+                    gpu_ids, self.config.pipeline_parallel_gpus,
+                )
+            else:
+                os.environ["CUDA_VISIBLE_DEVICES"] = str(self.config.device_id)
+                self._log("Single-GPU mode: CUDA_VISIBLE_DEVICES=%s", self.config.device_id)
 
         # 1. Tokenizer (right-padding during SFT).
         tokenizer = self._load_tokenizer(padding_side="right")
@@ -598,6 +618,26 @@ class BIGRecTrainer:
         #    loss (official BIGRec approach; recommendation metrics are computed
         #    post-training by evaluate()).
         train_frame: pd.DataFrame = task_data.get_train_dataset().frame  # type: ignore[attr-defined]
+
+        # ── Official BIGRec "--sample" subsampling ────────────────────────────
+        # When sample_num > 0, randomly shuffle the training frame and take the
+        # first sample_num rows.  This mirrors official BIGRec train.py line 192:
+        #   train_data.shuffle(seed=seed).select(range(sample))
+        # Unlike max_steps (which stops training early), sample_num shrinks the
+        # dataset and then trains it to completion (num_train_epochs epochs).
+        if self.config.sample_num > 0 and len(train_frame) > self.config.sample_num:
+            train_frame = (
+                train_frame
+                .sample(n=self.config.sample_num, random_state=42)
+                .reset_index(drop=True)
+            )
+            self._log(
+                "sample_num=%d: randomly subsampled %d training rows "
+                "(full dataset: %d rows).",
+                self.config.sample_num,
+                self.config.sample_num,
+                len(task_data.get_train_dataset().frame),  # type: ignore[attr-defined]
+            )
 
         # When max_steps > 0, cap the training frame to avoid tokenising rows
         # that will never be reached during training.  This cuts startup time
@@ -851,6 +891,138 @@ class BIGRecTrainer:
 
         return clean_texts, target_ids, cand_lists
 
+    def _generate_all_titles_vllm(
+        self,
+        checkpoint_path: str,
+        eval_frame: pd.DataFrame,
+        item_text_lookup: list[str],
+    ) -> tuple[list[str], list[int], list[list[int] | None]]:
+        """vLLM-accelerated generation for evaluation (10-30x faster than HF).
+
+        Processes all prompts in a single ``llm.generate()`` call via vLLM's
+        continuous batching.  The vLLM engine loads the base model + LoRA adapter
+        directly, so no HF model needs to be loaded beforehand.  After generation
+        the engine is torn down and GPU memory is freed so Phase 2 can load the
+        HF embedding model.
+
+        Requires ``pip install 'vllm>=0.4.0'`` and ``config.use_vllm=True``.
+
+        Args:
+            checkpoint_path: Directory containing the saved LoRA adapter.
+            eval_frame: Evaluation DataFrame with ``history_item_ids`` and
+                        ``item_id`` columns.
+            item_text_lookup: ``item_id → title`` mapping for prompt building.
+
+        Returns:
+            Same tuple as :meth:`_generate_all_titles`.
+        """
+        try:
+            from vllm import LLM, SamplingParams
+        except ImportError as exc:
+            raise ImportError(
+                "vLLM is not installed. Install it with:\n"
+                "  pip install 'vllm>=0.4.0'\n"
+                "or set model.use_vllm=false to fall back to HuggingFace generation."
+            ) from exc
+
+        # Build prompts using the same helper as the HF path.
+        prompts: list[str] = build_eval_prompts(eval_frame, item_text_lookup, self.config)
+
+        # Collect targets and candidates.
+        target_ids: list[int] = []
+        cand_lists: list[list[int] | None] = []
+        for row in eval_frame.itertuples(index=False):
+            target_ids.append(int(getattr(row, ITEM_ID)))
+            cand_val = getattr(row, CANDIDATE_ITEM_IDS, None)
+            if cand_val is None or (
+                not hasattr(cand_val, "__len__")
+                and isinstance(cand_val, float)
+                and np.isnan(cand_val)
+            ):
+                cand_lists.append(None)
+            else:
+                cand_lists.append(list(cand_val))
+
+        # Get EOS token id for the stop condition.
+        tokenizer = self._load_tokenizer(padding_side="left")
+        eos_id: int = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 2
+
+        # SamplingParams: try beam-search (vLLM ≤ 0.4 API), fall back to greedy.
+        def _make_sampling_params(use_beam: bool) -> "SamplingParams":
+            if use_beam:
+                try:
+                    return SamplingParams(
+                        n=1,
+                        best_of=self.config.num_beams,
+                        use_beam_search=True,
+                        temperature=0.0,
+                        max_tokens=self.config.max_new_tokens,
+                        stop_token_ids=[eos_id],
+                    )
+                except TypeError:
+                    # use_beam_search removed in vLLM ≥ 0.5; use greedy instead.
+                    self._log(
+                        "vLLM: use_beam_search not supported; falling back to greedy.",
+                        level="warning",
+                    )
+            return SamplingParams(
+                temperature=0.0,
+                max_tokens=self.config.max_new_tokens,
+                stop_token_ids=[eos_id],
+            )
+
+        sampling_params = _make_sampling_params(self.config.num_beams > 1)
+
+        # Launch vLLM engine with optional LoRA support.
+        max_model_len = max(
+            self.config.max_input_length + self.config.max_new_tokens, 1024
+        )
+        llm_kwargs: dict[str, Any] = dict(
+            model=self.config.llm_path,
+            dtype=self.config.torch_dtype,
+            gpu_memory_utilization=self.config.vllm_gpu_memory_utilization,
+            max_model_len=max_model_len,
+        )
+        if self.config.use_lora:
+            llm_kwargs["enable_lora"] = True
+            llm_kwargs["max_lora_rank"] = self.config.lora_r
+
+        self._log(
+            "vLLM: launching engine (use_lora=%s, gpu_mem=%.0f%%) …",
+            self.config.use_lora,
+            self.config.vllm_gpu_memory_utilization * 100,
+        )
+        llm = LLM(**llm_kwargs)
+
+        lora_request = None
+        if self.config.use_lora:
+            from vllm.lora.request import LoRARequest
+            lora_request = LoRARequest("bigrec_adapter", 1, checkpoint_path)
+
+        self._log("vLLM: generating %d prompts …", len(prompts))
+        outputs = llm.generate(prompts, sampling_params, lora_request=lora_request)
+
+        clean_texts: list[str] = []
+        for i, out in enumerate(outputs):
+            text = out.outputs[0].text.strip().strip('"').strip()
+            clean_texts.append(text or f"[empty_{i}]")
+
+        # Sample log — identical format to the HF path.
+        if self._is_main_process():
+            for i in range(min(3, len(clean_texts))):
+                logger.info(
+                    "[vLLM sample %d]  generated: %r  |  target: %r",
+                    i, clean_texts[i], item_text_lookup[target_ids[i]],
+                )
+
+        # Free vLLM engine before Phase 2 loads the embedding model.
+        del llm
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        self._log("vLLM engine shut down, GPU memory freed.")
+
+        return clean_texts, target_ids, cand_lists
+
     def _run_gamma_search(
         self,
         dist: torch.Tensor,
@@ -1062,35 +1234,53 @@ class BIGRecTrainer:
         Returns:
             Dict mapping ``"recall@K"`` / ``"ndcg@K"`` to scalar floats.
         """
-        # Same single-GPU restriction as in fit() — needed when evaluate() is
+        # Same GPU visibility setup as fit() — needed when evaluate() is
         # invoked standalone (pipeline_stage='evaluation') without a prior fit().
         if int(os.environ.get("LOCAL_RANK", "-1")) == -1:
-            os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(self.config.device_id))
+            if self.config.pipeline_parallel:
+                gpu_ids = ",".join(
+                    str(self.config.device_id + i)
+                    for i in range(self.config.pipeline_parallel_gpus)
+                )
+                os.environ.setdefault("CUDA_VISIBLE_DEVICES", gpu_ids)
+            else:
+                os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(self.config.device_id))
 
         item_text_lookup = build_item_text_lookup(task_data, self.config)
 
-        # ── Phase 1: Beam-search generation (gen_model only in VRAM) ─────────
+        # ── Phase 1: Generation ───────────────────────────────────────────────
         #
-        # The official BIGRec runs generation and embedding extraction as two
-        # separate scripts, so both LLaMA instances are never in VRAM at the
-        # same time.  We mirror this by generating all titles first, then
-        # freeing the generation model before loading the embedding model.
-        # This avoids having ~34 GB of model weights in VRAM simultaneously,
-        # which would leave too little headroom for the lm_head activation
-        # tensor (~4 GB at embedding_batch_size=32 for LLaMA-3 vocab=128,256).
-        gen_model = self._load_trained_model(checkpoint_path)
-        tokenizer = self._load_tokenizer(padding_side="left")
-        device: torch.device = next(gen_model.parameters()).device
-
-        self._log("Eval phase 1: beam-search generation on %s split …", split)
+        # Two backends are supported:
+        #
+        # • HF (default, use_vllm=False): loads gen_model with HuggingFace,
+        #   runs beam-search batch-by-batch, then frees VRAM before Phase 2.
+        # • vLLM (use_vllm=True): processes ALL prompts in one call via vLLM's
+        #   continuous batching, achieving ~10-30x higher throughput (~30-60 min
+        #   for 57 k users vs ~17 hours with HF beam-search on A100-40 GB).
+        #   vLLM loads the base model + LoRA adapter internally, so no HF model
+        #   is loaded here; the engine is torn down before Phase 2.
+        self._log("Eval phase 1: generation on %s split …", split)
         eval_frame: pd.DataFrame = task_data.get_eval_dataset(split).frame  # type: ignore[attr-defined]
 
-        # When max_steps > 0 (quick-test mode) cap the evaluation frame so that
-        # beam-search time stays proportional to training time.  Without this,
-        # evaluating all 57 k users with LLM beam-search takes ~17 hours even
-        # though training only ran for 500 steps (~33 min).
-        # Cap = max_steps × eval_batch_size → same number of eval batches as
-        # training steps, keeping total pipeline time balanced.
+        # ── eval_user_num: fixed user cap (mirrors official BIGRec 5 k test set) ──
+        # Official BIGRec process.ipynb:
+        #   data.sample(n=5000, random_state=42).reset_index(drop=True)
+        # We apply the same random subsample before any max_steps cap so that
+        # full-training runs (max_steps=-1) still evaluate on a fixed, reproducible
+        # user set comparable to the paper's reported numbers.
+        if 0 < self.config.eval_user_num < len(eval_frame):
+            eval_frame = (
+                eval_frame
+                .sample(n=self.config.eval_user_num, random_state=42)
+                .reset_index(drop=True)
+            )
+            self._log(
+                "eval_user_num=%d: sampled %d users from %s split (full split: %d rows).",
+                self.config.eval_user_num, self.config.eval_user_num,
+                split, len(task_data.get_eval_dataset(split).frame),  # type: ignore[attr-defined]
+            )
+
+        # Quick-test cap: keep eval proportional to training duration.
         if self.config.max_steps > 0:
             max_eval_users: int = self.config.max_steps * self.config.eval_batch_size
             if len(eval_frame) > max_eval_users:
@@ -1102,31 +1292,53 @@ class BIGRecTrainer:
                     split, len(task_data.get_eval_dataset(split).frame),  # type: ignore[attr-defined]
                 )
 
-        eval_texts, target_ids, cand_lists = self._generate_all_titles(
-            gen_model, tokenizer, eval_frame, item_text_lookup, device
-        )
-
-        # For gamma-search, also generate on the validation split before
-        # releasing the generation model.
         valid_texts: list[str] | None = None
         valid_targets: list[int] | None = None
         valid_cands: list[list[int] | None] | None = None
-        if self.config.grounding_gamma_search:
-            self._log("Eval phase 1b: beam-search on valid split (gamma-search) …")
-            valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
-            if self.config.max_steps > 0:
-                max_valid_users: int = self.config.max_steps * self.config.eval_batch_size
-                if len(valid_frame) > max_valid_users:
-                    valid_frame = valid_frame.head(max_valid_users).reset_index(drop=True)
-            valid_texts, valid_targets, valid_cands = self._generate_all_titles(
-                gen_model, tokenizer, valid_frame, item_text_lookup, device
-            )
 
-        # Free the generation model; load the embedding model on the now-empty VRAM.
-        del gen_model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        self._log("Generation model freed from VRAM.")
+        if self.config.use_vllm:
+            # ── vLLM path ────────────────────────────────────────────────────
+            eval_texts, target_ids, cand_lists = self._generate_all_titles_vllm(
+                checkpoint_path, eval_frame, item_text_lookup
+            )
+            if self.config.grounding_gamma_search:
+                self._log("Eval phase 1b (vLLM): valid split for gamma-search …")
+                valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
+                if self.config.max_steps > 0:
+                    max_valid_users: int = self.config.max_steps * self.config.eval_batch_size
+                    if len(valid_frame) > max_valid_users:
+                        valid_frame = valid_frame.head(max_valid_users).reset_index(drop=True)
+                valid_texts, valid_targets, valid_cands = self._generate_all_titles_vllm(
+                    checkpoint_path, valid_frame, item_text_lookup
+                )
+            # Phase 2 still needs a tokenizer; load it now (vLLM used its own).
+            tokenizer = self._load_tokenizer(padding_side="left")
+            device: torch.device = torch.device(
+                f"cuda:{self.config.device_id}" if torch.cuda.is_available() else "cpu"
+            )
+        else:
+            # ── HF path (original) ───────────────────────────────────────────
+            gen_model = self._load_trained_model(checkpoint_path)
+            tokenizer = self._load_tokenizer(padding_side="left")
+            device = next(gen_model.parameters()).device
+
+            eval_texts, target_ids, cand_lists = self._generate_all_titles(
+                gen_model, tokenizer, eval_frame, item_text_lookup, device
+            )
+            if self.config.grounding_gamma_search:
+                self._log("Eval phase 1b: valid split for gamma-search …")
+                valid_frame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
+                if self.config.max_steps > 0:
+                    max_valid_users = self.config.max_steps * self.config.eval_batch_size
+                    if len(valid_frame) > max_valid_users:
+                        valid_frame = valid_frame.head(max_valid_users).reset_index(drop=True)
+                valid_texts, valid_targets, valid_cands = self._generate_all_titles(
+                    gen_model, tokenizer, valid_frame, item_text_lookup, device
+                )
+            del gen_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            self._log("Generation model freed from VRAM.")
 
         # ── Phase 2: Embedding extraction (emb_model only in VRAM) ───────────
         if self.config.embedding_use_base_model:

@@ -45,6 +45,32 @@ class BIGRecConfig(SequentialModelConfig):
             )
         },
     )
+    pipeline_parallel: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Enable single-process pipeline parallelism via device_map='auto'. "
+                "The model is sharded across pipeline_parallel_gpus GPUs so that "
+                "models too large for a single card can be trained with plain "
+                "'python -m recbole3.run' (no torchrun / accelerate needed). "
+                "CUDA_VISIBLE_DEVICES is restricted to the first pipeline_parallel_gpus "
+                "physical GPUs (counting from device_id) before CUDA initialises, "
+                "which limits GPU-pair P2P mappings to 1 and avoids the "
+                "'peer mapping resources exhausted' error seen with 8 GPUs."
+            )
+        },
+    )
+    pipeline_parallel_gpus: int = field(
+        default=2,
+        metadata={
+            "help": (
+                "Number of GPUs to shard the model across when pipeline_parallel=True. "
+                "Starting from device_id; e.g. device_id=0, pipeline_parallel_gpus=2 "
+                "uses physical GPUs 0 and 1.  Keep ≤ 2 to avoid P2P exhaustion on "
+                "busy servers; use more only if the server has few concurrent users."
+            )
+        },
+    )
     torch_dtype: str = field(
         default="float16",
         metadata={"help": "Model weight dtype loaded by from_pretrained(). 'float16' or 'bfloat16'."},
@@ -352,6 +378,36 @@ class BIGRecConfig(SequentialModelConfig):
             )
         },
     )
+    eval_user_num: int = field(
+        default=5000,
+        metadata={
+            "help": (
+                "Number of test (or valid) users to evaluate. "
+                "Mirrors the official BIGRec data pipeline which fixes the test set at "
+                "5,000 randomly sampled users (process.ipynb: "
+                "data.sample(n=5000, random_state=42)). "
+                "Users are drawn with random_state=42 for reproducibility. "
+                "-1 evaluates all users in the split (no cap)."
+            )
+        },
+    )
+
+    # ── Training Data Subsampling (official BIGRec "--sample" parameter) ────
+    sample_num: int = field(
+        default=-1,
+        metadata={
+            "help": (
+                "Total number of training examples to use, drawn by random shuffle "
+                "then selection (mirrors the '--sample' flag in official BIGRec train.py). "
+                "-1 (default) uses the full training set. "
+                "Training still runs for num_train_epochs over the selected subset. "
+                "Example: sample_num=1024 reproduces the official ablation study in "
+                "BIGRec Section 4.4 ('Effect of Sample Number'). "
+                "Unlike max_steps (which stops training early), sample_num shrinks the "
+                "dataset but trains it to completion."
+            )
+        },
+    )
 
     # ── Training Cap ─────────────────────────────────────────────────────────
     max_steps: int = field(
@@ -363,6 +419,32 @@ class BIGRecConfig(SequentialModelConfig):
                 "steps regardless of num_train_epochs. "
                 "Useful for quick sanity-checks on large datasets. "
                 "-1 disables the cap and uses num_train_epochs instead."
+            )
+        },
+    )
+
+    # ── vLLM Inference Acceleration ──────────────────────────────────────────
+    use_vllm: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Use vLLM for beam-search generation during evaluation. "
+                "vLLM's continuous batching achieves ~10-30x higher throughput "
+                "than HuggingFace generate(), reducing generation time for "
+                "57 k users from ~17 hours to ~30-60 minutes on an A100-40 GB. "
+                "Requires: pip install 'vllm>=0.4.0'. "
+                "vLLM handles LoRA loading directly; the HF model is not loaded "
+                "during generation when this flag is True."
+            )
+        },
+    )
+    vllm_gpu_memory_utilization: float = field(
+        default=0.85,
+        metadata={
+            "help": (
+                "Fraction of GPU memory reserved by the vLLM KV-cache. "
+                "Lower values leave more headroom if other processes share the GPU; "
+                "higher values improve throughput. Typical range: 0.7–0.95."
             )
         },
     )

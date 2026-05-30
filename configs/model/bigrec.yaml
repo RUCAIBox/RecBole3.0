@@ -9,6 +9,8 @@ model:
   # Local path or HuggingFace Hub identifier of the pretrained LLaMA model.
   llm_path: "/mnt/data/model/Llama-3.1-8B-Instruct"                         # REQUIRED: set to your local LLaMA path
   device_id: 0                         # GPU index for single-process runs (ignored under torchrun)
+  pipeline_parallel: false             # true = shard model across pipeline_parallel_gpus GPUs
+  pipeline_parallel_gpus: 2           # GPUs to use (keep ≤ 2 to avoid P2P exhaustion)
   torch_dtype: float16                 # "float16" or "bfloat16"
   load_in_8bit: false                  # INT8 quantization via bitsandbytes
   attn_implementation: flash_attention_2           # "eager" or "flash_attention_2"
@@ -89,9 +91,17 @@ model:
     - 10
     - 20
   eval_protocol: full               # "sampled" or "full"
+  eval_user_num: 5000               # users evaluated; mirrors official BIGRec 5k test set (-1 = all)
+
+  # ── Training Data Subsampling (official BIGRec "--sample" flag) ─────────────
+  sample_num: -1                        # -1 = full training set; N = random-subsample N rows
 
   # ── Training Cap ─────────────────────────────────────────────────────────────
   max_steps: 500                       # Hard step limit; -1 = use num_train_epochs
+
+  # ── vLLM Inference Acceleration ──────────────────────────────────────────────
+  use_vllm: false                      # Set true to use vLLM for ~10-30x faster generation
+  vllm_gpu_memory_utilization: 0.85    # KV-cache GPU fraction (0.7–0.95)
 
   # ── Pipeline Control ─────────────────────────────────────────────────────────
   pipeline_stage: training             # "training" or "evaluation"
