@@ -33,19 +33,22 @@ model:
   backbone_trainer: {}
 
   backend: openai
-  api_model_name: "/mnt/data/model/Qwen2.5-7B-Instruct"
-  api_base_url: http://localhost:8001/v1/chat/completions
+  api_model_name: Qwen3.5-4B
+  api_base_url: http://127.0.0.1:8001/v1/chat/completions
   api_key_env: OPENAI_API_KEY
   temperature: 0.0
-  max_output_tokens: 20
+  max_output_tokens: 10
   request_retries: 3
   retry_backoff_sec: 2.0
   request_timeout_sec: 60.0
-  api_batch: 8
-  async_dispatch: true
+  api_batch: 1
+  async_dispatch: false
   api_response_cache_path: outputs/candidate_cache/llm4rs_api_responses.jsonl
   refresh_api_response_cache: false
-  system_prompt: null
+  system_prompt: >-
+    You are a recommender. Reply with ONLY the ranking letters requested in the
+    user message (for example A B C D E), separated by spaces. No explanation or
+    other text.
 
 trainer:
   batch_size: 32

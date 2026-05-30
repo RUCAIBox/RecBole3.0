@@ -10,6 +10,11 @@ LLM4RSBackend = Literal["identity", "openai"]
 LLM4RSDomain = Literal["Movie", "Music", "Book", "News", "agnostic"]
 LLM4RSPolicy = Literal["point", "pair", "list"]
 
+LLM4RS_DEFAULT_SYSTEM_PROMPT = (
+    "You are a recommender. Reply with ONLY the ranking letters requested in the user message "
+    "(for example A B C D E), separated by spaces. No explanation or other text."
+)
+
 
 @dataclass(slots=True)
 class LLM4RSConfig(SequentialModelConfig):
@@ -113,18 +118,24 @@ class LLM4RSConfig(SequentialModelConfig):
         metadata={"help": "Optional extra fields merged into OpenAI-compatible chat-completions requests."},
     )
     temperature: float = field(default=0.0, metadata={"help": "Generation temperature; official requests use zero."})
-    max_output_tokens: int = field(default=20, metadata={"help": "Maximum generated tokens for one policy response."})
+    max_output_tokens: int = field(default=10, metadata={"help": "Maximum generated tokens for one policy response."})
     request_retries: int = field(default=3, metadata={"help": "API attempts before a response is marked failed."})
     retry_backoff_sec: float = field(default=2.0, metadata={"help": "Initial retry delay in seconds."})
     request_timeout_sec: float = field(default=60.0, metadata={"help": "Network timeout per request in seconds."})
-    api_batch: int = field(default=8, metadata={"help": "Maximum concurrent chat requests."})
-    async_dispatch: bool = field(default=True, metadata={"help": "Whether independent policy prompts are sent concurrently."})
+    api_batch: int = field(default=1, metadata={"help": "Maximum concurrent chat requests."})
+    async_dispatch: bool = field(
+        default=False,
+        metadata={"help": "Whether independent policy prompts are sent concurrently."},
+    )
     api_response_cache_path: str = field(
         default="outputs/candidate_cache/llm4rs_api_responses.jsonl",
         metadata={"help": "Prompt-response JSONL cache path."},
     )
     refresh_api_response_cache: bool = field(default=False, metadata={"help": "Whether cached API responses are ignored."})
-    system_prompt: str | None = field(default=None, metadata={"help": "Optional OpenAI-compatible system message."})
+    system_prompt: str | None = field(
+        default=LLM4RS_DEFAULT_SYSTEM_PROMPT,
+        metadata={"help": "OpenAI-compatible system message; keeps list-wise answers to letters only."},
+    )
 
     def __post_init__(self) -> None:
         if int(self.candidate_num) <= 0:

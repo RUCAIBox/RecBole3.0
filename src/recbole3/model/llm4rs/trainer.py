@@ -96,12 +96,20 @@ class LLM4RSTrainer(Trainer):
         model.configure_examples(source_frame)
         eval_frame = source_frame.iloc[int(model.config.begin_index) : model.config.end_index].reset_index(drop=True)
         eval_frame[LLM4RS_RECORD_INDEX] = list(range(len(eval_frame)))
-        dataloader = self.build_dataloader(FrameDataset(eval_frame), input_collator, shuffle=False)
+        eval_dataset = FrameDataset(eval_frame)
+        dataloader = self.build_dataloader(eval_dataset, input_collator, shuffle=False)
+        total_records = len(eval_frame)
+        total_batches = len(dataloader)
+        print(
+            f"[llm4rs:eval:{split}] {total_records} records, "
+            f"{total_batches} batches (batch_size={int(self.config.batch_size)})"
+        )
 
         outcomes: list[LLM4RSOutcome] = []
         target_item_ids: list[int] = []
         num_batches = 0
-        for model_inputs in dataloader:
+        progress_bar = self._create_progress_bar(dataloader, split=f"llm4rs:{split}")
+        for model_inputs in progress_bar:
             candidate_batches = model_inputs["candidate_item_ids"]
             batch_target_item_ids = model_inputs["target_item_ids"]
             batch_record_indices = model_inputs["record_indices"]
@@ -115,6 +123,17 @@ class LLM4RSTrainer(Trainer):
             )
             target_item_ids.extend(batch_target_item_ids)
             num_batches += 1
+            if hasattr(progress_bar, "set_postfix_str"):
+                failed_so_far = sum(
+                    1
+                    for outcome, target in zip(outcomes, target_item_ids, strict=True)
+                    if not outcome.target_ranks(target)
+                )
+                progress_bar.set_postfix_str(
+                    f"records={len(target_item_ids)}/{total_records} failed={failed_so_far}"
+                )
+        if hasattr(progress_bar, "close"):
+            progress_bar.close()
 
         target_rank_rows = [
             outcome.target_ranks(target_item_id)
