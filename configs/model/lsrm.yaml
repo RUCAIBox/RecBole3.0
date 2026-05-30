@@ -1,0 +1,37 @@
+# @package _global_
+
+model:
+  name: lsrm
+  history_max_length: 20
+  n_embd: 128
+  n_layer: 2
+  n_head: 2
+  n_inner: 512
+  activation_function: gelu_new
+  resid_pdrop: 0.5
+  embd_pdrop: 0.0
+  attn_pdrop: 0.5
+  layer_norm_epsilon: 1.0e-12
+  initializer_range: 0.02
+
+trainer:
+  batch_size: 2048
+  shuffle: true
+  monitor: ndcg@10
+  max_epochs: 100
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.001
+  optimizer:
+    name: AdamW
+    kwargs:
+      lr: 0.001
+  eval:
+    protocol: full
+    exclude_history: false
+    metrics:
+      - name: recall
+        ks: [5, 10]
+      - name: ndcg
+        ks: [5, 10]
