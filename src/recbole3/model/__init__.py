@@ -31,6 +31,12 @@ from recbole3.model.letter import (
     LETTERTrainer,
 )
 from recbole3.model.lcrec.config import LCRecConfig
+from recbole3.model.llm4rs import (
+    LLM4RSConfig,
+    LLM4RSModel,
+    LLM4RSModelDataset,
+)
+from recbole3.model.llm4rs.trainer import LLM4RSTrainer, LLM4RSTrainerConfig
 from recbole3.model.llmrank import (
     LLMRankConfig,
     LLMRankModel,
@@ -125,6 +131,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         config_cls=LCRecConfig,
         pipeline_cls=LazyImport("recbole3.model.lcrec.pipeline", "LCRecPipeline"),
     ),
+    "llm4rs": ModelSpec(
+        model_cls=LLM4RSModel,
+        config_cls=LLM4RSConfig,
+        model_data_cls=LLM4RSModelDataset,
+        trainer_cls=LLM4RSTrainer,
+        trainer_config_cls=LLM4RSTrainerConfig,
+        pipeline_cls=LazyImport("recbole3.model.llm4rs.pipeline", "LLM4RSPipeline"),
+    ),
     "llmrank": ModelSpec(
         model_cls=LLMRankModel,
         config_cls=LLMRankConfig,
@@ -183,6 +197,11 @@ __all__ = [
     "LETTERModel",
     "LETTERModelDataset",
     "LETTERTrainer",
+    "LLM4RSConfig",
+    "LLM4RSModel",
+    "LLM4RSModelDataset",
+    "LLM4RSTrainer",
+    "LLM4RSTrainerConfig",
     "LLMRankConfig",
     "LLMRankModel",
     "LLMRankModelDataset",

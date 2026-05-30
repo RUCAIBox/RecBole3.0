@@ -1,0 +1,70 @@
+# @package _global_
+
+model:
+  name: llm4rs
+  ranking_policy: list        # point, pair, or list
+  # RecBole-native default. Set Movie/Music/Book/News explicitly for the corresponding official data.
+  domain: agnostic            # Movie, Music, Book, News, or agnostic
+  history_max_length: 5
+  candidate_num: 5
+  no_instruction: false
+  example_num: 1
+  example_pool_size: 5
+  begin_index: 5
+  end_index: null
+  shuffle_candidates: true
+  item_text_field: title
+  fallback_item_text_field: metadata_text
+
+  # Use prepared when the dataset supplies the paper's preconstructed
+  # candidates; random follows the paper's generic target-plus-negative setup.
+  candidate_source: random
+  backbone_topk: 100
+  candidate_seed: 2023
+  candidate_cache_dir: outputs/candidate_cache
+  candidate_file_dir: outputs/candidate_files
+  refresh_candidate_cache: false
+  use_candidate_file: true
+  selected_user_count: -1
+  bm25_item_text_field: title
+  bm25_fallback_text_field: metadata_text
+  backbone_checkpoint_path: null
+  backbone_model: {}
+  backbone_trainer: {}
+
+  backend: openai
+  api_model_name: "/mnt/data/model/Qwen2.5-7B-Instruct"
+  api_base_url: http://localhost:8001/v1/chat/completions
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.0
+  max_output_tokens: 20
+  request_retries: 3
+  retry_backoff_sec: 2.0
+  request_timeout_sec: 60.0
+  api_batch: 8
+  async_dispatch: true
+  api_response_cache_path: outputs/candidate_cache/llm4rs_api_responses.jsonl
+  refresh_api_response_cache: false
+  system_prompt: null
+
+trainer:
+  batch_size: 32
+  shuffle: false
+  dataloader_num_workers: 0
+  max_epochs: 0
+  save_inference_results: false
+  eval:
+    protocol: full
+    neg_sampling_num: 0
+    candidate_seed: 2023
+    metrics:
+      - name: ndcg
+        ks: [1, 3, 5]
+      - name: recall
+        ks: [1, 3, 5]
+      - name: mrr
+        ks: [1, 3, 5]
+      - name: precision
+        ks: [1, 3, 5]
+      - name: map
+        ks: [1, 3, 5]

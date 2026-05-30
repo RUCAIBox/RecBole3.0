@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 import numpy as np
 import pandas as pd
@@ -20,15 +20,33 @@ from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset, ITEM_ID, SEEN_ITE
 from recbole3.dataset.base import BaseTaskDataset
 from recbole3.dataset.cache import DatasetCache
 from recbole3.model.base import BaseModelDataset, BaseRetrievalModel, ModelConfig
-from recbole3.model.llmrank.config import LLMRankConfig
 from recbole3.trainer import Trainer
 from recbole3.trainer_config import TrainerConfig
+
+
+class CandidateGenerationConfig(Protocol):
+    """Structural configuration contract shared by LLM candidate consumers."""
+
+    candidate_source: str
+    backbone_topk: int
+    recall_budget: int
+    candidate_seed: int
+    candidate_cache_dir: str
+    candidate_file_dir: str
+    refresh_candidate_cache: bool
+    use_candidate_file: bool
+    selected_user_count: int
+    bm25_item_text_field: str
+    bm25_fallback_text_field: str | None
+    backbone_checkpoint_path: str | None
+    backbone_model: dict[str, Any]
+    backbone_trainer: dict[str, Any]
 
 
 def build_candidate_frames(
     task_data: BaseTaskDataset,
     *,
-    model_config: LLMRankConfig,
+    model_config: CandidateGenerationConfig,
     runtime_cfg: Any,
     dataset_cfg: DictConfig,
     trainer_cfg: DictConfig,
@@ -52,7 +70,7 @@ class BaseCandidateGenerator(ABC):
         self,
         task_data: BaseTaskDataset,
         *,
-        model_config: LLMRankConfig,
+        model_config: CandidateGenerationConfig,
         runtime_cfg: Any,
         dataset_cfg: DictConfig,
         trainer_cfg: DictConfig,
@@ -315,7 +333,7 @@ class BM25CandidateGenerator(BaseCandidateGenerator):
         self,
         task_data: BaseTaskDataset,
         *,
-        model_config: LLMRankConfig,
+        model_config: CandidateGenerationConfig,
         runtime_cfg: Any,
         dataset_cfg: DictConfig,
         trainer_cfg: DictConfig,
@@ -390,7 +408,7 @@ class ModelBackboneCandidateGenerator(BaseCandidateGenerator):
         self,
         task_data: BaseTaskDataset,
         *,
-        model_config: LLMRankConfig,
+        model_config: CandidateGenerationConfig,
         runtime_cfg: Any,
         dataset_cfg: DictConfig,
         trainer_cfg: DictConfig,
@@ -595,7 +613,7 @@ class BM25Model:
 def _create_candidate_generator(
     task_data: BaseTaskDataset,
     *,
-    model_config: LLMRankConfig,
+    model_config: CandidateGenerationConfig,
     runtime_cfg: Any,
     dataset_cfg: DictConfig,
     trainer_cfg: DictConfig,
@@ -735,6 +753,7 @@ def _progress_iterable(values: Any, *, desc: str) -> Any:
 __all__ = [
     "BaseCandidateGenerator",
     "BM25CandidateGenerator",
+    "CandidateGenerationConfig",
     "HSTUCandidateGenerator",
     "ModelBackboneCandidateGenerator",
     "RandomCandidateGenerator",
