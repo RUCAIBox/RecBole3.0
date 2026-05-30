@@ -3,10 +3,10 @@
 model:
   name: lsrm
   history_max_length: 20
-  n_embd: 128
+  n_embd: 64
   n_layer: 2
   n_head: 2
-  n_inner: 512
+  n_inner: 256
   activation_function: gelu_new
   resid_pdrop: 0.5
   embd_pdrop: 0.0
