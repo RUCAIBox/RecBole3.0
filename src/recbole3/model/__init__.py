@@ -24,6 +24,11 @@ from recbole3.model.lares import (
     LARESModelDataset,
     LARESTrainer,
 )
+from recbole3.model.lsrm import (
+    LSRMConfig,
+    LSRMModel,
+    LSRMModelDataset,
+)
 from recbole3.model.letter import (
     LETTERConfig,
     LETTERModel,
@@ -101,6 +106,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         config_cls=LARESConfig,
         model_data_cls=LARESModelDataset,
         trainer_cls=LARESTrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
+    "lsrm": ModelSpec(
+        model_cls=LSRMModel,
+        config_cls=LSRMConfig,
+        model_data_cls=LSRMModelDataset,
+        trainer_cls=Trainer,
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),
@@ -184,6 +197,9 @@ __all__ = [
     "LETTERModelDataset",
     "LETTERTrainer",
     "LLMRankConfig",
+    "LSRMConfig",
+    "LSRMModel",
+    "LSRMModelDataset",
     "LLMRankModel",
     "LLMRankModelDataset",
     "MODEL_TABLE",
