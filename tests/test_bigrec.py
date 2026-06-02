@@ -1920,11 +1920,16 @@ class TestOfficialDefaultHyperparams:
     def test_fit_passes_max_steps_to_training_arguments(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """fit() must forward config.max_steps to HF TrainingArguments."""
+        """When max_steps < epoch_steps, effective_max_steps == max_steps.
+
+        StubDataset has 4 training rows; effective_batch=32; num_epochs=3
+        → epoch_steps = ceil(4/32)*3 = 3.  max_steps=1 < 3, so
+        effective_max_steps=1 is forwarded to HF TrainingArguments.
+        """
         data, _ = _prepare_bigrec_data()
         cfg = BIGRecConfig(
             history_max_length=2, max_input_length=32, max_new_tokens=8,
-            max_steps=42,
+            max_steps=1,  # 1 < epoch_steps(3) → effective_max_steps=1
         )
         trainer = BIGRecTrainer(cfg)
         _stub_fit_externals(trainer, monkeypatch)
@@ -1940,7 +1945,37 @@ class TestOfficialDefaultHyperparams:
 
         training_args = captured_args.get("args")
         assert training_args is not None
-        assert training_args.max_steps == 42
+        assert training_args.max_steps == 1
+
+    def test_fit_disables_max_steps_when_epochs_finish_first(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When max_steps > epoch_steps, effective_max_steps is -1 (epochs control).
+
+        StubDataset has 4 training rows; epoch_steps = ceil(4/32)*3 = 3.
+        max_steps=500 > 3 → effective_max_steps=-1 so that HF Trainer stops
+        after num_train_epochs instead of running 500÷3≈166 epochs.
+        """
+        data, _ = _prepare_bigrec_data()
+        cfg = BIGRecConfig(
+            history_max_length=2, max_input_length=32, max_new_tokens=8,
+            max_steps=500,  # 500 > epoch_steps(3) → effective_max_steps=-1
+        )
+        trainer = BIGRecTrainer(cfg)
+        _stub_fit_externals(trainer, monkeypatch)
+
+        captured_args: dict[str, Any] = {}
+
+        def _capture(**kwargs: Any) -> MagicMock:
+            captured_args.update(kwargs)
+            return MagicMock()
+
+        with patch("recbole3.model.bigrec.trainer.HFTrainer", side_effect=_capture):
+            trainer.fit(data, output_dir=str(tmp_path))
+
+        training_args = captured_args.get("args")
+        assert training_args is not None
+        assert training_args.max_steps == -1
 
 
 # ══════════════════════════════════════════════════════════════════════════════

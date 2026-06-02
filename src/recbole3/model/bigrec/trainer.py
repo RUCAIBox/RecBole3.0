@@ -22,6 +22,7 @@ hyperparameter.  A higher Wᵢ decreases D̃ᵢ, promoting the item in the ranki
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Any, Literal
 
@@ -39,6 +40,7 @@ from transformers import (
 )
 
 from recbole3.dataset.utils import CANDIDATE_ITEM_IDS, ITEM_ID
+from recbole3.model.sequential import HISTORY_ITEM_IDS
 from recbole3.evaluation.metric import NDCGMetric, RecallMetric, RetrievalEvalData
 from recbole3.model.bigrec.config import BIGRecConfig
 from recbole3.model.bigrec.data import (
@@ -639,23 +641,51 @@ class BIGRecTrainer:
                 len(task_data.get_train_dataset().frame),  # type: ignore[attr-defined]
             )
 
-        # When max_steps > 0, cap the training frame to avoid tokenising rows
-        # that will never be reached during training.  This cuts startup time
-        # from O(total_samples) to O(max_steps × effective_batch_size).
-        if self.config.max_steps > 0:
-            max_samples: int = (
-                self.config.max_steps
-                * self.config.train_batch_size
-                * self.config.gradient_accumulation_steps
+        # ── Resolve effective_max_steps ───────────────────────────────────────
+        # max_steps is intended as an *upper bound* on optimizer steps, not a
+        # fixed target.  When sample_num has already shrunk the dataset so that
+        # num_train_epochs finishes within max_steps, let epochs control training
+        # naturally (pass -1 to HF Trainer) to avoid over-training.
+        #
+        # Example: sample_num=1024, max_steps=500, num_train_epochs=3
+        #   effective_batch = 4×8 = 32
+        #   epoch_steps = ceil(1024/32) × 3 = 32 × 3 = 96
+        #   96 ≤ 500 → effective_max_steps = -1  (epochs control, not max_steps)
+        #
+        # Example: sample_num=-1, max_steps=500, num_train_epochs=3
+        #   epoch_steps = ceil(405k/32) × 3 = 37866
+        #   37866 > 500 → effective_max_steps = 500  (max_steps still bites)
+        effective_batch_size: int = (
+            self.config.train_batch_size * self.config.gradient_accumulation_steps
+        )
+        epoch_steps: int = (
+            math.ceil(len(train_frame) / effective_batch_size)
+            * self.config.num_train_epochs
+        )
+        if self.config.max_steps > 0 and epoch_steps <= self.config.max_steps:
+            effective_max_steps: int = -1
+            actual_train_steps: int = epoch_steps
+            self._log(
+                "epoch_steps=%d ≤ max_steps=%d: disabling max_steps cap — "
+                "num_train_epochs=%d controls training.",
+                epoch_steps, self.config.max_steps, self.config.num_train_epochs,
             )
+        elif self.config.max_steps > 0:
+            effective_max_steps = self.config.max_steps
+            actual_train_steps = self.config.max_steps
+        else:
+            effective_max_steps = -1
+            actual_train_steps = epoch_steps
+
+        # Cap training frame to rows that will actually be reached (speeds up
+        # tokenisation when max_steps is the limiting factor).
+        if effective_max_steps > 0:
+            max_samples: int = effective_max_steps * effective_batch_size
             if len(train_frame) > max_samples:
                 train_frame = train_frame.head(max_samples).reset_index(drop=True)
                 self._log(
-                    "max_steps=%d: capped training frame to %d samples "
-                    "(full dataset: %d rows).",
-                    self.config.max_steps,
-                    max_samples,
-                    len(task_data.get_train_dataset().frame),  # type: ignore[attr-defined]
+                    "max_steps=%d: capped training frame to %d samples.",
+                    effective_max_steps, max_samples,
                 )
 
         sft_train = BIGRecSFTDataset(
@@ -666,24 +696,17 @@ class BIGRecTrainer:
         )
         valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
 
-        # Mirror the training cap on the validation set so that eval time stays
-        # proportional to training time.  Without this, max_steps=500 trains on
-        # 16 k samples but evaluates on ~57 k (14 360 eval forward-passes on
-        # LLaMA-8B), which takes far longer than the training pass itself.
-        # Cap: max_steps × eval_batch_size gives the same number of forward
-        # passes during eval as optimizer steps during training (eval has no
-        # gradient accumulation).
-        if self.config.max_steps > 0:
-            max_eval_samples: int = self.config.max_steps * self.config.eval_batch_size
-            if len(valid_frame) > max_eval_samples:
-                valid_frame = valid_frame.head(max_eval_samples).reset_index(drop=True)
-                self._log(
-                    "max_steps=%d: capped validation frame to %d samples "
-                    "(full validation: %d rows).",
-                    self.config.max_steps,
-                    max_eval_samples,
-                    len(task_data.get_eval_dataset("valid").frame),  # type: ignore[attr-defined]
-                )
+        # Cap the validation frame proportional to actual training steps so that
+        # LM val-loss evaluation time stays comparable to training step time.
+        max_eval_samples: int = actual_train_steps * self.config.eval_batch_size
+        if len(valid_frame) > max_eval_samples:
+            valid_frame = valid_frame.head(max_eval_samples).reset_index(drop=True)
+            self._log(
+                "Capped validation frame to %d samples "
+                "(actual_train_steps=%d, full validation: %d rows).",
+                max_eval_samples, actual_train_steps,
+                len(task_data.get_eval_dataset("valid").frame),  # type: ignore[attr-defined]
+            )
 
         sft_val = BIGRecSFTDataset(
             records=valid_frame,
@@ -723,7 +746,7 @@ class BIGRecTrainer:
             per_device_eval_batch_size=self.config.eval_batch_size,
             gradient_accumulation_steps=self.config.gradient_accumulation_steps,
             num_train_epochs=self.config.num_train_epochs,
-            max_steps=self.config.max_steps,
+            max_steps=effective_max_steps,
             learning_rate=self.config.learning_rate,
             weight_decay=self.config.weight_decay,
             **warmup_kwargs,
