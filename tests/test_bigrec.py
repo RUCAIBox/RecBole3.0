@@ -13,7 +13,7 @@ Coverage areas
 9.  BIGRecTrainer._compute_metrics — Recall@K and NDCG@K correctness.
 10. BIGRecTrainer._extract_embeddings — deterministic shape with fake model.
 11. BIGRecTrainer._precompute_item_embeddings — cache save / load round-trip.
-12. BIGRecTrainer._evaluate_split — L2 ranking & metric computation (mock model).
+12. BIGRecTrainer._rank_from_texts — L2 ranking & metric computation (mock model).
 13. BIGRecTrainer.fit — smoke test with mocked HF Trainer.
 14. BIGRecTrainer.evaluate — smoke test with monkeypatched internals.
 15. Utility — _is_main_process / _get_device_map.
@@ -848,20 +848,20 @@ class TestPrecomputeItemEmbeddings:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 12. BIGRecTrainer._evaluate_split — L2 ranking & metrics
+# 12. BIGRecTrainer._rank_from_texts — L2 ranking & metrics
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 def _make_eval_frame_for_trainer(num_users: int = 2) -> tuple[pd.DataFrame, list[str]]:
-    """Build a minimal eval frame suitable for _evaluate_split."""
+    """Build a minimal eval frame and item lookup (used by grounding tests for num_items)."""
     data, cfg = _prepare_bigrec_data()
     item_lookup = build_item_text_lookup(data, cfg)
     eval_frame = data.get_eval_dataset("test").frame.head(num_users).reset_index(drop=True)
     return eval_frame, item_lookup
 
 
-class TestEvaluateSplit:
-    """Test _evaluate_split with a deterministic mock via monkeypatching."""
+class TestRankFromTexts:
+    """Test _rank_from_texts with deterministic mocks via monkeypatching."""
 
     def _trainer(self, eval_protocol: str = "full") -> BIGRecTrainer:
         return BIGRecTrainer(
@@ -879,25 +879,28 @@ class TestEvaluateSplit:
 
     def test_returns_recall_and_ndcg_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
         trainer = self._trainer()
-        eval_frame, item_lookup = _make_eval_frame_for_trainer()
+        data, cfg = _prepare_bigrec_data()
+        item_lookup = build_item_text_lookup(data, cfg)
         num_items = len(item_lookup)
 
-        # Monkeypatch _extract_embeddings to return fixed unit-vector embeddings.
-        call_count: list[int] = [0]
-
         def fake_extract(model, tok, texts, batch_size, device):
-            call_count[0] += 1
             return torch.zeros(len(texts), 4)
 
         monkeypatch.setattr(trainer, "_extract_embeddings", fake_extract)
 
-        item_emb = torch.zeros(num_items, 4)
-        results = trainer._evaluate_split(
-            model=_FakeModel(),
+        eval_frame = data.get_eval_dataset("test").frame.head(2).reset_index(drop=True)
+        generated_texts = ["MockTitle0", "MockTitle1"]
+        target_ids: list[int] = eval_frame[ITEM_ID].tolist()
+        cand_lists: list[list[int] | None] = [None] * len(target_ids)
+
+        results = trainer._rank_from_texts(
+            emb_model=_FakeModel(),
             tokenizer=_MockTokenizer(),
-            item_emb_device=item_emb,
-            item_text_lookup=item_lookup,
-            eval_frame=eval_frame,
+            item_emb_device=torch.zeros(num_items, 4),
+            generated_texts=generated_texts,
+            target_ids=target_ids,
+            cand_lists=cand_lists,
+            grounding_weights=None,
             device=torch.device("cpu"),
         )
 
@@ -908,13 +911,6 @@ class TestEvaluateSplit:
 
     def test_l2_ranking_selects_nearest_item(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Oracle embedding ≈ item_2's embedding → item_2 should rank first."""
-        # Build a minimal 1-row eval frame.
-        eval_frame, item_lookup = _make_eval_frame_for_trainer(num_users=1)
-        # Restrict num_items to 4 for a clean test.
-        num_items = 4
-        fake_item_lookup = [f"item_{i}" for i in range(num_items)]
-
-        # item embeddings: [1,0], [0,1], [0.9,0.1], [0.5,0.5]
         item_emb = torch.tensor([
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
@@ -935,7 +931,6 @@ class TestEvaluateSplit:
             )
         )
 
-        # Oracle embedding ≈ item_2's direction.
         oracle_vec = torch.tensor([[0.85, 0.15, 0.0, 0.0]])
 
         def fake_extract(model, tok, texts, batch_size, device):
@@ -943,16 +938,14 @@ class TestEvaluateSplit:
 
         monkeypatch.setattr(trainer, "_extract_embeddings", fake_extract)
 
-        # Patch eval_frame item_id to a known target (may or may not be rank-0).
-        eval_frame = eval_frame.copy()
-        eval_frame[ITEM_ID] = 2  # set target as item_2
-
-        results = trainer._evaluate_split(
-            model=_FakeModel(),
+        results = trainer._rank_from_texts(
+            emb_model=_FakeModel(),
             tokenizer=_MockTokenizer(),
             item_emb_device=item_emb,
-            item_text_lookup=fake_item_lookup,
-            eval_frame=eval_frame,
+            generated_texts=["oracle_title"],
+            target_ids=[2],  # item_2 is the target
+            cand_lists=[None],
+            grounding_weights=None,
             device=torch.device("cpu"),
         )
 
@@ -963,32 +956,28 @@ class TestEvaluateSplit:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """With sampled protocol only candidate_item_ids are ranked."""
-        eval_frame, item_lookup = _make_eval_frame_for_trainer(num_users=1)
-        num_items = len(item_lookup)
-
-        # Put the target as item_3 and restrict candidates to [3, 4, 5].
-        eval_frame = eval_frame.copy()
-        eval_frame[ITEM_ID] = 3
-        eval_frame["candidate_item_ids"] = [tuple([3, 4, 5])]
+        data, cfg = _prepare_bigrec_data()
+        num_items = len(build_item_text_lookup(data, cfg))
 
         trainer = self._trainer(eval_protocol="sampled")
 
-        # Oracle embedding is closest to item_0 — but item_0 is not in candidates.
         item_emb = torch.zeros(num_items, 4)
-        item_emb[3] = torch.tensor([0.0, 0.0, 0.0, 1.0])  # item_3: far from zeros
+        item_emb[3] = torch.tensor([0.0, 0.0, 0.0, 1.0])  # item_3 is in candidates
 
-        # Oracle embedding = [0,0,0,0.9] → closest among candidates is item_3.
+        # Oracle closest to item_3 among candidates [3, 4, 5].
         def fake_extract(model, tok, texts, batch_size, device):
             return torch.tensor([[0.0, 0.0, 0.0, 0.9]] * len(texts))
 
         monkeypatch.setattr(trainer, "_extract_embeddings", fake_extract)
 
-        results = trainer._evaluate_split(
-            model=_FakeModel(),
+        results = trainer._rank_from_texts(
+            emb_model=_FakeModel(),
             tokenizer=_MockTokenizer(),
             item_emb_device=item_emb,
-            item_text_lookup=item_lookup,
-            eval_frame=eval_frame,
+            generated_texts=["oracle_title"],
+            target_ids=[3],
+            cand_lists=[[3, 4, 5]],
+            grounding_weights=None,
             device=torch.device("cpu"),
         )
         # item_3 is closest in the candidate set and is the target → recall@1 = 1.0.
@@ -1551,8 +1540,6 @@ class TestGroundingWeightsEndToEnd:
           - With γ=50, D̃_2 = D̂_2 × 2^(−50) ≈ 0, so item_2 leaps to rank #2.
           - recall@2 should be 1.0.
         """
-        eval_frame, item_lookup = _make_eval_frame_for_trainer(num_users=1)
-
         num_items = 4
         # Oracle = zero vector; items have varying raw L2 distances.
         # L2(oracle, item_0)=0.1, L2(oracle,item_1)=L2(oracle,item_2)=0.5, item_3=1.0
@@ -1564,8 +1551,6 @@ class TestGroundingWeightsEndToEnd:
         ])
 
         TARGET = 2
-        eval_frame = eval_frame.copy()
-        eval_frame[ITEM_ID] = TARGET
 
         cfg = BIGRecConfig(
             eval_topk=(2,),          # recall@2 — item_2 should be in top-2
@@ -1591,14 +1576,15 @@ class TestGroundingWeightsEndToEnd:
         fake_weights = torch.zeros(num_items)
         fake_weights[TARGET] = 1.0
 
-        results = trainer._evaluate_split(
-            model=_FakeModel(),
+        results = trainer._rank_from_texts(
+            emb_model=_FakeModel(),
             tokenizer=_MockTokenizer(),
             item_emb_device=item_emb,
-            item_text_lookup=[f"item_{i}" for i in range(num_items)],
-            eval_frame=eval_frame,
-            device=torch.device("cpu"),
+            generated_texts=["oracle_title"],
+            target_ids=[TARGET],
+            cand_lists=[None],
             grounding_weights=fake_weights,
+            device=torch.device("cpu"),
         )
 
         # item_2 (equal raw dist with item_1, but max weight) → rank #2 → recall@2=1.0
@@ -1608,12 +1594,10 @@ class TestGroundingWeightsEndToEnd:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """With grounding_weights=None the ranking is identical to pure L2."""
-        eval_frame, item_lookup = _make_eval_frame_for_trainer(num_users=1)
+        _, item_lookup = _make_eval_frame_for_trainer(num_users=1)
         num_items = len(item_lookup)
 
         TARGET = 0
-        eval_frame = eval_frame.copy()
-        eval_frame[ITEM_ID] = TARGET
 
         cfg = BIGRecConfig(
             eval_topk=(1,),
@@ -1635,14 +1619,15 @@ class TestGroundingWeightsEndToEnd:
 
         monkeypatch.setattr(trainer, "_extract_embeddings", fake_extract)
 
-        results = trainer._evaluate_split(
-            model=_FakeModel(),
+        results = trainer._rank_from_texts(
+            emb_model=_FakeModel(),
             tokenizer=_MockTokenizer(),
             item_emb_device=item_emb,
-            item_text_lookup=item_lookup,
-            eval_frame=eval_frame,
-            device=torch.device("cpu"),
+            generated_texts=["oracle_title"],
+            target_ids=[TARGET],
+            cand_lists=[None],
             grounding_weights=None,   # explicit None → pure L2
+            device=torch.device("cpu"),
         )
 
         assert results["recall@1"] == pytest.approx(1.0)

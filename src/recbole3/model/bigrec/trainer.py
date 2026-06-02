@@ -160,14 +160,10 @@ class BIGRecTrainer:
             "low_cpu_mem_usage": True,
             "device_map": device_map,
         }
-        # INT8 quantization via bitsandbytes (requires: pip install bitsandbytes).
         if self.config.load_in_8bit:
             load_kwargs["load_in_8bit"] = True
 
-        # When using pipeline parallelism (device_map="auto"), pass max_memory so
-        # that the model is distributed evenly across the visible GPUs.
-        # This prevents a single GPU from being overloaded and keeps the shard
-        # sizes predictable.  ~90 % of each GPU's total memory is reserved.
+        # Distribute model evenly across visible GPUs (~90% of each GPU's memory).
         if device_map == "auto" and torch.cuda.is_available():
             n_visible = torch.cuda.device_count()
             per_gpu_bytes = int(torch.cuda.get_device_properties(0).total_memory * 0.9)
@@ -175,12 +171,9 @@ class BIGRecTrainer:
             load_kwargs["max_memory"] = {i: per_gpu_str for i in range(n_visible)}
 
         model = AutoModelForCausalLM.from_pretrained(self.config.llm_path, **load_kwargs)
-        # Disable KV cache during training to allow gradient checkpointing.
         model.config.use_cache = inference_mode
 
         if self.config.use_lora:
-            # When INT8 quantisation is active, peft requires an additional
-            # preparation step before LoRA adapters can be attached.
             if self.config.load_in_8bit and not inference_mode:
                 try:
                     from peft import prepare_model_for_kbit_training  # peft ≥ 0.4
@@ -506,15 +499,12 @@ class BIGRecTrainer:
         weights = torch.zeros(num_items, dtype=torch.float32)
 
         if "popularity" in mode:
-            pop = self._compute_popularity_weights(task_data, num_items)
-            weights = weights + pop
+            weights = weights + self._compute_popularity_weights(task_data, num_items)
 
         if "cf" in mode:
-            cf = self._load_cf_weights(num_items)
-            weights = weights + cf
+            weights = weights + self._load_cf_weights(num_items)
 
-        # When both signals are summed, re-normalise the combined vector so it
-        # stays in [0, 1] — required for Eq. 3 to behave consistently.
+        # Re-normalise after combining so the sum stays in [0, 1] for Eq. 3.
         if "popularity" in mode and "cf" in mode:
             w_min, w_max = weights.min(), weights.max()
             if w_max > w_min:
@@ -531,13 +521,9 @@ class BIGRecTrainer:
     ) -> torch.Tensor:
         """Apply Eq. 3 to reweight L2 distances by popularity / CF signal.
 
-        Steps:
-
-        1. Per-row min-max normalise the raw L2 distances → D̂ ∈ [0, 1].
-        2. Multiply by the inverse weight factor: D̃ᵢ = D̂ᵢ × (1 + Wᵢ)^(−γ).
-
-        A higher Wᵢ → smaller D̃ᵢ → item ranks higher.  When γ=0 the weights
-        have no effect and D̃ = D̂.
+        Per-row min-max normalises the raw distances, then multiplies by the
+        inverse weight factor: D̃ᵢ = D̂ᵢ × (1 + Wᵢ)^(−γ).
+        A higher Wᵢ → smaller D̃ᵢ → item ranks higher.
 
         Args:
             dist: Raw L2 distances, shape ``[B, num_items]``, on any device.
@@ -549,12 +535,10 @@ class BIGRecTrainer:
             Reweighted distances of shape ``[B, num_items]`` on the same device
             as *dist*.
         """
-        # Per-row min-max normalisation (eps guards against zero-range rows).
         dist_min = dist.min(dim=1, keepdim=True)[0]  # [B, 1]
         dist_max = dist.max(dim=1, keepdim=True)[0]  # [B, 1]
         dist_hat = (dist - dist_min) / (dist_max - dist_min + 1e-8)  # [B, num_items]
 
-        # Eq. 3: D̃ = D̂ × (1 + W)^(−γ)
         multiplier = torch.pow(1.0 + weights.unsqueeze(0), -gamma)  # [1, num_items]
         return dist_hat * multiplier  # [B, num_items]
 
@@ -590,9 +574,8 @@ class BIGRecTrainer:
         # (In DDP mode LOCAL_RANK is set by torchrun; skip this path.)
         if int(os.environ.get("LOCAL_RANK", "-1")) == -1:
             if self.config.pipeline_parallel:
-                # Expose pipeline_parallel_gpus consecutive GPUs starting from device_id.
-                # Limiting to 2 GPUs keeps GPU-pair P2P mappings at C(2,2)=1, which
-                # avoids "peer mapping resources exhausted" seen with 8 visible GPUs.
+                # Limit to pipeline_parallel_gpus GPUs starting at device_id;
+                # keeps P2P mappings at C(2,2)=1 instead of C(8,2)=28.
                 gpu_ids = ",".join(
                     str(self.config.device_id + i)
                     for i in range(self.config.pipeline_parallel_gpus)
@@ -612,21 +595,12 @@ class BIGRecTrainer:
         if self._is_main_process():
             tokenizer.save_pretrained(output_dir)
 
-        # 2. Item text lookup: list[str] indexed by framework item_id.
+        # 2. Item text lookup.
         item_text_lookup = build_item_text_lookup(task_data, self.config)
 
-        # 3. Tokenize training and validation (history, target) pairs.
-        #    The validation SFT dataset drives EarlyStoppingCallback via LM val
-        #    loss (official BIGRec approach; recommendation metrics are computed
-        #    post-training by evaluate()).
+        # 3. Build training frame; optionally subsample (mirrors official BIGRec --sample flag).
         train_frame: pd.DataFrame = task_data.get_train_dataset().frame  # type: ignore[attr-defined]
 
-        # ── Official BIGRec "--sample" subsampling ────────────────────────────
-        # When sample_num > 0, randomly shuffle the training frame and take the
-        # first sample_num rows.  This mirrors official BIGRec train.py line 192:
-        #   train_data.shuffle(seed=seed).select(range(sample))
-        # Unlike max_steps (which stops training early), sample_num shrinks the
-        # dataset and then trains it to completion (num_train_epochs epochs).
         if self.config.sample_num > 0 and len(train_frame) > self.config.sample_num:
             train_frame = (
                 train_frame
@@ -634,27 +608,13 @@ class BIGRecTrainer:
                 .reset_index(drop=True)
             )
             self._log(
-                "sample_num=%d: randomly subsampled %d training rows "
-                "(full dataset: %d rows).",
-                self.config.sample_num,
-                self.config.sample_num,
+                "sample_num=%d: subsampled %d training rows (full dataset: %d rows).",
+                self.config.sample_num, self.config.sample_num,
                 len(task_data.get_train_dataset().frame),  # type: ignore[attr-defined]
             )
 
-        # ── Resolve effective_max_steps ───────────────────────────────────────
-        # max_steps is intended as an *upper bound* on optimizer steps, not a
-        # fixed target.  When sample_num has already shrunk the dataset so that
-        # num_train_epochs finishes within max_steps, let epochs control training
-        # naturally (pass -1 to HF Trainer) to avoid over-training.
-        #
-        # Example: sample_num=1024, max_steps=500, num_train_epochs=3
-        #   effective_batch = 4×8 = 32
-        #   epoch_steps = ceil(1024/32) × 3 = 32 × 3 = 96
-        #   96 ≤ 500 → effective_max_steps = -1  (epochs control, not max_steps)
-        #
-        # Example: sample_num=-1, max_steps=500, num_train_epochs=3
-        #   epoch_steps = ceil(405k/32) × 3 = 37866
-        #   37866 > 500 → effective_max_steps = 500  (max_steps still bites)
+        # 4. Resolve effective_max_steps: when num_train_epochs finishes within
+        #    max_steps, let epochs control training naturally (pass -1 to HF Trainer).
         effective_batch_size: int = (
             self.config.train_batch_size * self.config.gradient_accumulation_steps
         )
@@ -677,8 +637,7 @@ class BIGRecTrainer:
             effective_max_steps = -1
             actual_train_steps = epoch_steps
 
-        # Cap training frame to rows that will actually be reached (speeds up
-        # tokenisation when max_steps is the limiting factor).
+        # Cap training frame to rows actually reached (speeds up tokenisation).
         if effective_max_steps > 0:
             max_samples: int = effective_max_steps * effective_batch_size
             if len(train_frame) > max_samples:
@@ -694,18 +653,16 @@ class BIGRecTrainer:
             item_text_lookup=item_text_lookup,
             config=self.config,
         )
-        valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
 
-        # Cap the validation frame proportional to actual training steps so that
-        # LM val-loss evaluation time stays comparable to training step time.
+        # Validation SFT dataset drives EarlyStoppingCallback via LM val loss
+        # (official BIGRec approach; recommendation metrics are computed post-training).
+        valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
         max_eval_samples: int = actual_train_steps * self.config.eval_batch_size
         if len(valid_frame) > max_eval_samples:
             valid_frame = valid_frame.head(max_eval_samples).reset_index(drop=True)
             self._log(
-                "Capped validation frame to %d samples "
-                "(actual_train_steps=%d, full validation: %d rows).",
+                "Capped validation frame to %d samples (actual_train_steps=%d).",
                 max_eval_samples, actual_train_steps,
-                len(task_data.get_eval_dataset("valid").frame),  # type: ignore[attr-defined]
             )
 
         sft_val = BIGRecSFTDataset(
@@ -715,11 +672,11 @@ class BIGRecTrainer:
             config=self.config,
         )
 
-        # 4. Load model for training (single model, no base model during training).
+        # 5. Load model for training.
         device_map = self._get_device_map()
         model = self._load_model(device_map, inference_mode=False)
 
-        # 5. Collator pads to a multiple of 8 for memory-efficient CUDA kernels.
+        # 6. Collator; pad_to_multiple_of=8 for memory-efficient CUDA kernels.
         data_collator = DataCollatorForSeq2Seq(
             tokenizer,
             pad_to_multiple_of=8,
@@ -727,19 +684,14 @@ class BIGRecTrainer:
             return_tensors="pt",
         )
 
-        # 6. HuggingFace TrainingArguments — mirror BIGRecConfig fields directly.
+        # 7. HuggingFace TrainingArguments.
         #    warmup_steps takes precedence over warmup_ratio (official BIGRec uses
-        #    a fixed 20-step warm-up rather than a ratio).
-        #    evaluation_strategy="epoch" + load_best_model_at_end=True matches
-        #    the official BIGRec train.py configuration exactly.
+        #    a fixed 20-step warm-up).
         warmup_kwargs: dict[str, Any] = (
             {"warmup_steps": self.config.warmup_steps}
             if self.config.warmup_steps is not None
             else {"warmup_ratio": self.config.warmup_ratio}
         )
-        # When max_steps > 0 it overrides num_train_epochs in HF Trainer.
-        # eval_strategy must stay "epoch" so EarlyStoppingCallback can run;
-        # HF Trainer handles the max_steps / epoch boundary automatically.
         hf_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=self.config.train_batch_size,
@@ -765,8 +717,6 @@ class BIGRecTrainer:
             remove_unused_columns=False,
         )
 
-        # 7. Construct and run the HF Trainer.
-        #    EarlyStoppingCallback monitors LM val loss (official BIGRec default).
         hf_trainer = HFTrainer(
             model=model,
             args=hf_args,
@@ -948,10 +898,8 @@ class BIGRecTrainer:
                 "or set model.use_vllm=false to fall back to HuggingFace generation."
             ) from exc
 
-        # Build prompts using the same helper as the HF path.
         prompts: list[str] = build_eval_prompts(eval_frame, item_text_lookup, self.config)
 
-        # Collect targets and candidates.
         target_ids: list[int] = []
         cand_lists: list[list[int] | None] = []
         for row in eval_frame.itertuples(index=False):
@@ -966,11 +914,9 @@ class BIGRecTrainer:
             else:
                 cand_lists.append(list(cand_val))
 
-        # Get EOS token id for the stop condition.
         tokenizer = self._load_tokenizer(padding_side="left")
         eos_id: int = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 2
 
-        # SamplingParams: try beam-search (vLLM ≤ 0.4 API), fall back to greedy.
         def _make_sampling_params(use_beam: bool) -> "SamplingParams":
             if use_beam:
                 try:
@@ -983,7 +929,7 @@ class BIGRecTrainer:
                         stop_token_ids=[eos_id],
                     )
                 except TypeError:
-                    # use_beam_search removed in vLLM ≥ 0.5; use greedy instead.
+                    # use_beam_search removed in vLLM ≥ 0.5; fall back to greedy.
                     self._log(
                         "vLLM: use_beam_search not supported; falling back to greedy.",
                         level="warning",
@@ -996,7 +942,6 @@ class BIGRecTrainer:
 
         sampling_params = _make_sampling_params(self.config.num_beams > 1)
 
-        # Launch vLLM engine with optional LoRA support.
         max_model_len = max(
             self.config.max_input_length + self.config.max_new_tokens, 1024
         )
@@ -1030,7 +975,6 @@ class BIGRecTrainer:
             text = out.outputs[0].text.strip().strip('"').strip()
             clean_texts.append(text or f"[empty_{i}]")
 
-        # Sample log — identical format to the HF path.
         if self._is_main_process():
             for i in range(min(3, len(clean_texts))):
                 logger.info(
@@ -1038,7 +982,6 @@ class BIGRecTrainer:
                     i, clean_texts[i], item_text_lookup[target_ids[i]],
                 )
 
-        # Free vLLM engine before Phase 2 loads the embedding model.
         del llm
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -1081,7 +1024,6 @@ class BIGRecTrainer:
         target_arr = np.array(target_ids, dtype=np.int64).reshape(n, 1)
         mask_arr = np.ones((n, 1), dtype=bool)
 
-        # Initialise best-score / best-gamma trackers keyed by "metric@K".
         metric_keys: list[str] = [
             f"{m.lower()}@{k}"
             for m in self.config.eval_metrics
@@ -1188,7 +1130,6 @@ class BIGRecTrainer:
                 key = f"{name}@{k}"
                 gamma = best_gammas.get(key, self.config.grounding_gamma)
 
-                # Apply the per-K optimal gamma.
                 if grounding_weights is not None:
                     eff_dist: torch.Tensor = self._apply_grounding_weights(
                         dist, grounding_weights, gamma
@@ -1221,7 +1162,7 @@ class BIGRecTrainer:
 
                 if name == "recall":
                     scores = RecallMetric((k,)).compute(eval_data)
-                else:  # ndcg
+                else:
                     scores = NDCGMetric((k,)).compute(eval_data)
 
                 if key in scores:
@@ -1272,25 +1213,10 @@ class BIGRecTrainer:
         item_text_lookup = build_item_text_lookup(task_data, self.config)
 
         # ── Phase 1: Generation ───────────────────────────────────────────────
-        #
-        # Two backends are supported:
-        #
-        # • HF (default, use_vllm=False): loads gen_model with HuggingFace,
-        #   runs beam-search batch-by-batch, then frees VRAM before Phase 2.
-        # • vLLM (use_vllm=True): processes ALL prompts in one call via vLLM's
-        #   continuous batching, achieving ~10-30x higher throughput (~30-60 min
-        #   for 57 k users vs ~17 hours with HF beam-search on A100-40 GB).
-        #   vLLM loads the base model + LoRA adapter internally, so no HF model
-        #   is loaded here; the engine is torn down before Phase 2.
         self._log("Eval phase 1: generation on %s split …", split)
         eval_frame: pd.DataFrame = task_data.get_eval_dataset(split).frame  # type: ignore[attr-defined]
 
-        # ── eval_user_num: fixed user cap (mirrors official BIGRec 5 k test set) ──
-        # Official BIGRec process.ipynb:
-        #   data.sample(n=5000, random_state=42).reset_index(drop=True)
-        # We apply the same random subsample before any max_steps cap so that
-        # full-training runs (max_steps=-1) still evaluate on a fixed, reproducible
-        # user set comparable to the paper's reported numbers.
+        # eval_user_num: subsample a fixed user set (mirrors official BIGRec 5k test set).
         if 0 < self.config.eval_user_num < len(eval_frame):
             eval_frame = (
                 eval_frame
@@ -1298,21 +1224,17 @@ class BIGRecTrainer:
                 .reset_index(drop=True)
             )
             self._log(
-                "eval_user_num=%d: sampled %d users from %s split (full split: %d rows).",
-                self.config.eval_user_num, self.config.eval_user_num,
-                split, len(task_data.get_eval_dataset(split).frame),  # type: ignore[attr-defined]
+                "eval_user_num=%d: sampled %d users from %s split.",
+                self.config.eval_user_num, self.config.eval_user_num, split,
             )
 
-        # Quick-test cap: keep eval proportional to training duration.
         if self.config.max_steps > 0:
             max_eval_users: int = self.config.max_steps * self.config.eval_batch_size
             if len(eval_frame) > max_eval_users:
                 eval_frame = eval_frame.head(max_eval_users).reset_index(drop=True)
                 self._log(
-                    "max_steps=%d: capped %s evaluation to %d users "
-                    "(full %s split: %d rows).",
+                    "max_steps=%d: capped %s evaluation to %d users.",
                     self.config.max_steps, split, max_eval_users,
-                    split, len(task_data.get_eval_dataset(split).frame),  # type: ignore[attr-defined]
                 )
 
         valid_texts: list[str] | None = None
@@ -1320,7 +1242,6 @@ class BIGRecTrainer:
         valid_cands: list[list[int] | None] | None = None
 
         if self.config.use_vllm:
-            # ── vLLM path ────────────────────────────────────────────────────
             eval_texts, target_ids, cand_lists = self._generate_all_titles_vllm(
                 checkpoint_path, eval_frame, item_text_lookup
             )
@@ -1334,13 +1255,11 @@ class BIGRecTrainer:
                 valid_texts, valid_targets, valid_cands = self._generate_all_titles_vllm(
                     checkpoint_path, valid_frame, item_text_lookup
                 )
-            # Phase 2 still needs a tokenizer; load it now (vLLM used its own).
             tokenizer = self._load_tokenizer(padding_side="left")
             device: torch.device = torch.device(
                 f"cuda:{self.config.device_id}" if torch.cuda.is_available() else "cpu"
             )
         else:
-            # ── HF path (original) ───────────────────────────────────────────
             gen_model = self._load_trained_model(checkpoint_path)
             tokenizer = self._load_tokenizer(padding_side="left")
             device = next(gen_model.parameters()).device
@@ -1363,7 +1282,7 @@ class BIGRecTrainer:
                 torch.cuda.empty_cache()
             self._log("Generation model freed from VRAM.")
 
-        # ── Phase 2: Embedding extraction (emb_model only in VRAM) ───────────
+        # ── Phase 2: Embedding extraction ────────────────────────────────────
         if self.config.embedding_use_base_model:
             emb_model: Any = self._load_base_model_for_embedding(self._get_device_map())
         else:
@@ -1420,7 +1339,6 @@ class BIGRecTrainer:
                 eval_dist, weights_device, target_ids, cand_lists, best_gammas, device
             )
 
-        # Standard path: batch-wise oracle embedding + L2 ranking.
         return self._rank_from_texts(
             emb_model=emb_model,
             tokenizer=tokenizer,
@@ -1527,190 +1445,6 @@ class BIGRecTrainer:
                 all_target_item_ids.append(np.array([[target_id]], dtype=np.int64))
                 all_target_masks.append(np.array([[True]], dtype=bool))
 
-        pred_arr = np.concatenate(all_pred_item_ids, axis=0)       # [N, maxk]
-        target_arr = np.concatenate(all_target_item_ids, axis=0)   # [N, 1]
-        mask_arr = np.concatenate(all_target_masks, axis=0)        # [N, 1]
-
-        eval_data = RetrievalEvalData(
-            pred_item_ids=pred_arr,
-            target_item_ids=target_arr,
-            target_mask=mask_arr,
-        )
-        return self._compute_metrics(eval_data)
-
-    def _evaluate_split(
-        self,
-        model: Any,
-        tokenizer: AutoTokenizer,
-        item_emb_device: torch.Tensor,
-        item_text_lookup: list[str],
-        eval_frame: pd.DataFrame,
-        device: torch.device,
-        grounding_weights: torch.Tensor | None = None,
-        emb_model: Any = None,
-    ) -> dict[str, Any]:
-        """Core evaluation loop: beam-search → oracle embedding → L2 ranking → metrics.
-
-        Args:
-            model: Loaded fine-tuned model in ``eval()`` mode (used for generation).
-            tokenizer: Left-padding tokenizer.
-            item_emb_device: Pre-computed item embeddings on *device*,
-                             shape ``[num_items, hidden_size]``.
-            item_text_lookup: Mapping ``item_id → title string``.
-            eval_frame: DataFrame with at least ``history_item_ids`` and
-                        ``item_id`` columns; optionally ``candidate_item_ids``.
-            device: Inference device.
-            grounding_weights: Optional per-item grounding weights of shape
-                               ``[num_items]`` in ``[0, 1]`` (CPU tensor).
-                               When provided, Eq. 3 is applied after computing
-                               raw L2 distances.  ``None`` → pure L2 ranking.
-            emb_model: Optional base CausalLM (no LoRA) used for oracle embedding
-                       extraction.  When ``None``, *model* is used instead.
-                       Supplying the base model ensures oracle embeddings live in
-                       the same space as the pre-computed item embeddings.
-
-        Returns:
-            Dict of metric scores averaged over all evaluation rows.
-        """
-        # Move grounding weights to the inference device once (avoids per-batch transfers).
-        weights_device: torch.Tensor | None = (
-            grounding_weights.to(device) if grounding_weights is not None else None
-        )
-        model.eval()
-        tokenizer.padding_side = "left"
-
-        maxk: int = max(self.config.eval_topk)
-        batch_size: int = self.config.eval_batch_size
-        num_rows: int = len(eval_frame)
-        is_sampled: bool = self.config.eval_protocol == "sampled"
-
-        # Accumulators — each element is shape [1, …] for easy concatenation.
-        all_pred_item_ids: list[np.ndarray] = []   # [1, maxk] per row
-        all_target_item_ids: list[np.ndarray] = [] # [1, 1]    per row
-        all_target_masks: list[np.ndarray] = []    # [1, 1]    per row
-
-        pbar = tqdm(
-            range(0, num_rows, batch_size),
-            desc="BIGRec eval",
-            disable=not self._is_main_process(),
-        )
-
-        for start in pbar:
-            batch_df = eval_frame.iloc[start : start + batch_size].reset_index(drop=True)
-            actual_bs: int = len(batch_df)
-
-            # ── Step 1: Build Alpaca-format prompts from history ───────────────
-            prompts: list[str] = build_eval_prompts(
-                batch_df, item_text_lookup, self.config
-            )
-
-            # ── Step 2: Tokenize prompts (left-padded) ─────────────────────────
-            encoded = tokenizer(
-                prompts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=self.config.max_input_length,
-            ).to(device)
-            prompt_length: int = encoded["input_ids"].shape[1]
-
-            # ── Step 3: Beam-search generation ────────────────────────────────
-            with torch.no_grad():
-                output_ids: torch.Tensor = model.generate(
-                    input_ids=encoded["input_ids"],
-                    attention_mask=encoded["attention_mask"],
-                    max_new_tokens=self.config.max_new_tokens,
-                    num_beams=self.config.num_beams,
-                    num_return_sequences=1,
-                    early_stopping=True,
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                )
-            # output_ids: [B, prompt_len + gen_len]
-            generated_ids = output_ids[:, prompt_length:]  # [B, gen_len]
-
-            # ── Step 4: Decode → strip surrounding quotes ──────────────────────
-            generated_texts: list[str] = tokenizer.batch_decode(
-                generated_ids,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=True,
-            )
-            # BIGRec wraps target titles in double-quotes in the SFT response.
-            clean_texts: list[str] = [
-                t.strip().strip('"').strip() or f"[empty_{i}]"
-                for i, t in enumerate(generated_texts)
-            ]
-
-            # ── Step 5: Extract oracle embeddings from decoded titles ──────────
-            # Use the base model (emb_model) when available so that oracle
-            # embeddings are in the same vector space as item embeddings.
-            _emb_model = emb_model if emb_model is not None else model
-            oracle_embeddings: torch.Tensor = self._extract_embeddings(
-                _emb_model,
-                tokenizer,
-                clean_texts,
-                batch_size=actual_bs,
-                device=device,
-            )  # [B, H] on CPU
-            oracle_emb_device = oracle_embeddings.to(device)  # [B, H]
-
-            # ── Step 6: L2 distance to all item embeddings ─────────────────────
-            # distances[i, j] = ||oracle_i - item_j||_2  →  [B, num_items]
-            distances: torch.Tensor = torch.cdist(
-                oracle_emb_device,  # [B, H]
-                item_emb_device,    # [num_items, H]
-                p=2.0,
-            )  # [B, num_items]
-
-            # ── Step 6b: Optional Eq. 3 grounding weight injection ────────────
-            # Apply popularity / CF reweighting when grounding_mode != 'none'.
-            # effective_dist is still small-is-better (lower → higher rank).
-            if weights_device is not None:
-                effective_dist: torch.Tensor = self._apply_grounding_weights(
-                    distances, weights_device, self.config.grounding_gamma
-                )  # [B, num_items]
-            else:
-                effective_dist = distances  # unchanged; pure L2 ranking
-
-            # ── Step 7: Rank and collect top-K predictions ─────────────────────
-            for i in range(actual_bs):
-                row = batch_df.iloc[i]
-                target_id = int(row[ITEM_ID])
-
-                if is_sampled:
-                    # Restrict ranking to pre-defined candidate_item_ids.
-                    cand_val = row.get(CANDIDATE_ITEM_IDS, None)
-                    if cand_val is None or (
-                        not hasattr(cand_val, "__len__")
-                        and isinstance(cand_val, float)
-                        and np.isnan(cand_val)
-                    ):
-                        # No candidates available; fall back to full ranking.
-                        cand_ids_list: list[int] = list(range(item_emb_device.shape[0]))
-                    else:
-                        cand_ids_list = list(cand_val)
-
-                    cand_tensor = torch.tensor(
-                        cand_ids_list, dtype=torch.long, device=device
-                    )
-                    cand_dists = effective_dist[i, cand_tensor]  # [num_cands]
-                    sorted_cand_idx = torch.argsort(cand_dists)[:maxk]  # [≤ maxk]
-                    top_k_ids = cand_tensor[sorted_cand_idx].cpu().numpy()  # [≤ maxk]
-
-                    # Pad with -1 sentinels when fewer candidates than maxk.
-                    if len(top_k_ids) < maxk:
-                        pad = np.full(maxk - len(top_k_ids), -1, dtype=np.int64)
-                        top_k_ids = np.concatenate([top_k_ids, pad])
-                else:
-                    # Full protocol: rank all items.
-                    sorted_idx = torch.argsort(effective_dist[i])[:maxk]  # [maxk]
-                    top_k_ids = sorted_idx.cpu().numpy()  # [maxk]
-
-                all_pred_item_ids.append(top_k_ids.reshape(1, maxk))
-                all_target_item_ids.append(np.array([[target_id]], dtype=np.int64))
-                all_target_masks.append(np.array([[True]], dtype=bool))
-
-        # ── Aggregate and compute metrics ──────────────────────────────────────
         pred_arr = np.concatenate(all_pred_item_ids, axis=0)       # [N, maxk]
         target_arr = np.concatenate(all_target_item_ids, axis=0)   # [N, 1]
         mask_arr = np.concatenate(all_target_masks, axis=0)        # [N, 1]

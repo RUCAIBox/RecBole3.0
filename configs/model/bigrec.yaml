@@ -6,16 +6,15 @@ model:
   name: bigrec
 
   # ── LLM Backbone ────────────────────────────────────────────────────────────
-  # Local path or HuggingFace Hub identifier of the pretrained LLaMA model.
-  llm_path: "/mnt/data/model/Llama-3.1-8B-Instruct"                         # REQUIRED: set to your local LLaMA path
-  device_id: 0                         # GPU index for single-process runs (ignored under torchrun)
-  pipeline_parallel: false             # true = shard model across pipeline_parallel_gpus GPUs
-  pipeline_parallel_gpus: 2           # GPUs to use (keep ≤ 2 to avoid P2P exhaustion)
-  torch_dtype: float16                 # "float16" or "bfloat16"
-  load_in_8bit: false                  # INT8 quantization via bitsandbytes
-  attn_implementation: flash_attention_2           # "eager" or "flash_attention_2"
+  llm_path: "/mnt/data/model/Llama-3.1-8B-Instruct"   # REQUIRED: local path or HF hub id
+  device_id: 0                          # GPU index (ignored under torchrun)
+  pipeline_parallel: false              # shard model across pipeline_parallel_gpus GPUs
+  pipeline_parallel_gpus: 2
+  torch_dtype: float16                  # "float16" or "bfloat16"
+  load_in_8bit: false                   # INT8 quantization via bitsandbytes
+  attn_implementation: flash_attention_2  # "eager" or "flash_attention_2"
 
-  # ── LoRA Fine-tuning ────────────────────────────────────────────────────────
+  # ── LoRA ────────────────────────────────────────────────────────────────────
   use_lora: true
   lora_r: 8
   lora_alpha: 16
@@ -25,64 +24,55 @@ model:
     - v_proj
 
   # ── Tokenization ────────────────────────────────────────────────────────────
-  max_input_length: 512                # Max tokens for the prompt (instruction + input)
-  max_new_tokens: 64                   # Max tokens generated during beam search
-
-  # ── SFT Training Flags ──────────────────────────────────────────────────────
-  train_on_inputs: true                # True = full-sequence loss (official default)
+  max_input_length: 512                 # max tokens for prompt (instruction + input)
+  max_new_tokens: 64                    # max tokens generated during beam search
 
   # ── SFT Training ────────────────────────────────────────────────────────────
+  train_on_inputs: true                 # true = full-sequence loss (official default)
   train_batch_size: 4
   gradient_accumulation_steps: 8
   num_train_epochs: 3
-  learning_rate: 3.0e-4                # Official BIGRec default (train.py)
+  learning_rate: 3.0e-4
   weight_decay: 0.0
-  warmup_steps: 20                     # Official: fixed 20 warm-up steps (not a ratio)
-  warmup_ratio: 0.0                    # Ignored when warmup_steps is set
+  warmup_steps: 20                      # fixed warm-up steps; overrides warmup_ratio
+  warmup_ratio: 0.0
   lr_scheduler_type: cosine
-  fp16: true                           # Official BIGRec uses fp16=True
+  fp16: true
   bf16: false
-  optim: adamw_torch                   # Official BIGRec default optimizer
+  optim: adamw_torch
   gradient_checkpointing: true
   logging_steps: 10
   save_strategy: epoch
   save_total_limit: 1
   load_best_model_at_end: true
-  deepspeed: null                      # Path to a DeepSpeed JSON config, or null
+  deepspeed: null                       # path to a DeepSpeed JSON config, or null
+  early_stopping_patience: 5
+  sample_num: -1                        # -1 = full dataset; N = subsample N rows
+  max_steps: 500                        # hard step cap; -1 = use num_train_epochs
 
-  # ── Early Stopping (LM Validation Loss, matching official BIGRec) ──────────
-  early_stopping_patience: 5           # Stop after N epochs with no LM loss improvement
-
-  # ── Beam-Search Generation (Eval Step 1) ────────────────────────────────────
-  num_beams: 4                         # Paper default: 4
+  # ── Beam-Search Generation ───────────────────────────────────────────────────
+  num_beams: 4
   eval_batch_size: 4
 
-  # ── Embedding Grounding (Eval Step 2) ───────────────────────────────────────
-  history_max_length: 10               # Most-recent history items in the prompt
-  item_text_field: title               # Primary item_table column for title text
+  # ── Embedding Grounding ──────────────────────────────────────────────────────
+  history_max_length: 10                # most-recent history items in the prompt
+  item_text_field: title                # item_table column for item name text
   fallback_item_text_field: metadata_text
-  domain: product                      # "movie", "product", or "item"
+  domain: product                       # "movie", "product", or "item"
   embedding_batch_size: 32
   embedding_cache_dir: outputs/bigrec/embeddings
   refresh_embedding_cache: false
-  embedding_use_base_model: true       # True = use base model for embeddings (official default)
+  embedding_use_base_model: true        # use base (non-LoRA) model for embeddings
 
   # ── Grounding Weight Injection (Eq. 3) ───────────────────────────────────────
-  # After computing raw L2 distances, BIGRec optionally reweights them by
-  # popularity or CF signals to improve ranking.
-  #
-  #   D̂ᵢ = (Dᵢ − min D) / (max D − min D)      [per-row L2 normalisation]
-  #   D̃ᵢ = D̂ᵢ × (1 + Wᵢ)^(−γ)                 [popularity / CF adjustment]
-  #
-  # Supported modes: "none", "popularity", "cf", "popularity+cf"
-  grounding_mode: none                 # Weight injection mode (Eq. 3)
-  grounding_gamma: 1.0                 # γ exponent; used when grounding_gamma_search=false
-  cf_score_path: null                  # .pt file with CF scores shape [num_items]
-                                       # Required when grounding_mode contains "cf"
-  grounding_gamma_search: false        # True = auto grid-search best γ per metric@K on val
-  grounding_gamma_search_values: []    # Custom γ grid; empty = official 199-value grid
+  # Modes: "none", "popularity", "cf", "popularity+cf"
+  grounding_mode: none
+  grounding_gamma: 1.0                  # γ exponent; larger = stronger weight effect
+  cf_score_path: null                   # .pt file [num_items]; required for cf mode
+  grounding_gamma_search: false         # auto grid-search best γ on val split
+  grounding_gamma_search_values: []     # custom γ grid; empty = official 199-value grid
 
-  # ── Evaluation Metrics ───────────────────────────────────────────────────────
+  # ── Evaluation ──────────────────────────────────────────────────────────────
   eval_metrics:
     - recall
     - ndcg
@@ -90,22 +80,16 @@ model:
     - 5
     - 10
     - 20
-  eval_protocol: full               # "sampled" or "full"
-  eval_user_num: 5000               # users evaluated; mirrors official BIGRec 5k test set (-1 = all)
+  eval_protocol: full                   # "sampled" or "full"
+  eval_user_num: 5000                   # -1 = all; 5000 mirrors official test set size
 
-  # ── Training Data Subsampling (official BIGRec "--sample" flag) ─────────────
-  sample_num: -1                        # -1 = full training set; N = random-subsample N rows
-
-  # ── Training Cap ─────────────────────────────────────────────────────────────
-  max_steps: 500                       # Hard step limit; -1 = use num_train_epochs
-
-  # ── vLLM Inference Acceleration ──────────────────────────────────────────────
-  use_vllm: false                      # Set true to use vLLM for ~10-30x faster generation
-  vllm_gpu_memory_utilization: 0.85    # KV-cache GPU fraction (0.7–0.95)
+  # ── vLLM Inference ───────────────────────────────────────────────────────────
+  use_vllm: false                       # ~10-30x faster generation; needs vllm>=0.4.0
+  vllm_gpu_memory_utilization: 0.85
 
   # ── Pipeline Control ─────────────────────────────────────────────────────────
-  pipeline_stage: training             # "training" or "evaluation"
-  checkpoint_path: null                # Required when pipeline_stage='evaluation'
+  pipeline_stage: training              # "training" or "evaluation"
+  checkpoint_path: null                 # required when pipeline_stage='evaluation'
 
 dataset:
   metadata_mode: fields
