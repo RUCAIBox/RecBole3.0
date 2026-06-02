@@ -18,8 +18,8 @@ arXiv:2308.08434) uses a two-step approach:
    (LLaMA + LoRA) to generate the title of the next item given a user's
    interaction history in an Alpaca-style instruction-following format.
 2. **Step 2 — Recommendation space → Actual item space**: Embed the generated
-   title with the fine-tuned LLM, compute L2 distances to pre-computed item
-   embeddings, and return the closest items as recommendations.
+   title with the LLM, compute L2 distances to pre-computed item embeddings,
+   and return the closest items as recommendations.
 
 Current implementation notes:
 
@@ -28,7 +28,10 @@ Current implementation notes:
   pattern.
 - Training delegates the optimisation loop to HuggingFace `Trainer`.
 - LoRA adapters are supported via the `peft` library.
-- An optional grounding weight injection step (Eq. 3) can reweight L2 distances
+- Evaluation is split into three phases (generation → embedding → ranking) so
+  that each heavy model can be freed from VRAM before the next is loaded.
+- An optional vLLM backend accelerates generation by ~10-30×.
+- An optional grounding weight injection step (Eq. 3) reweights L2 distances
   by item popularity or pre-computed CF scores to improve ranking.
 
 ## File Structure
@@ -82,25 +85,42 @@ BIGRecPipeline.run()
     └── BIGRecTrainer.evaluate()
 ```
 
-The evaluation path in detail:
+The evaluation path runs in three sequential phases so that each model is freed
+from VRAM before the next is loaded:
 
 ```
 BIGRecTrainer.evaluate()
 │
-├── _load_trained_model(checkpoint_path)      # base LLaMA + LoRA adapter
-├── _precompute_item_embeddings()             # [num_items, H], cached to disk
-├── _build_grounding_weights()                # [num_items] or None  (Eq. 3)
+├── Phase 1: Generation
+│   ├── [use_vllm=False]  _load_trained_model()        # base + LoRA adapter
+│   │                     _generate_all_titles()        # beam-search loop
+│   │                     → free gen_model from VRAM
+│   │
+│   └── [use_vllm=True]   _generate_all_titles_vllm()  # continuous batching
+│                         → vLLM engine torn down after generation
 │
-└── _evaluate_split()  [loop over batches]
-    ├── build_eval_prompts()                  # Alpaca-style prompt per row
-    ├── tokenizer(prompts).to(device)
-    ├── model.generate()                      # beam-search → generated_ids
-    ├── tokenizer.batch_decode()              # title text (strip quotes)
-    ├── _extract_embeddings()                 # oracle embedding [B, H]
-    ├── torch.cdist()                         # L2 distances [B, num_items]
-    ├── _apply_grounding_weights()  [optional]  # Eq. 3 reweighting
-    ├── argsort(effective_dist)               # top-K item ids
-    └── _compute_metrics()                    # Recall@K, NDCG@K
+├── Phase 2: Embedding
+│   ├── _load_base_model_for_embedding()    # base LLM (no LoRA)
+│   │   [or _load_trained_model() when embedding_use_base_model=False]
+│   ├── _precompute_item_embeddings()       # [num_items, H], cached to disk
+│   └── _build_grounding_weights()         # [num_items] or None
+│
+└── Phase 3: Ranking
+    ├── [grounding_gamma_search=True]
+    │   ├── _extract_embeddings(valid_texts)    # oracle embs for val split
+    │   ├── torch.cdist()                       # [N_valid, num_items]
+    │   ├── _run_gamma_search()                 # best γ per metric@K on val
+    │   ├── _extract_embeddings(eval_texts)     # oracle embs for test split
+    │   ├── torch.cdist()                       # [N_eval, num_items]
+    │   └── _evaluate_from_dist_per_k_gammas()  # apply per-K best γ
+    │
+    └── [standard path]
+        └── _rank_from_texts()                  # embed + L2 rank + metrics
+            ├── _extract_embeddings()           # oracle embs [B, H]
+            ├── torch.cdist()                   # L2 distances [B, num_items]
+            ├── _apply_grounding_weights()  [optional]
+            ├── argsort(effective_dist)         # top-K item ids
+            └── _compute_metrics()             # Recall@K, NDCG@K
 ```
 
 ## Runtime Flow in Detail
@@ -125,40 +145,73 @@ always the full prefix sequence.
 
 1. Load tokenizer (right-padded for SFT).
 2. Build item text lookup — a list indexed by framework `item_id`.
-3. Tokenize all training rows with `BIGRecSFTDataset`:
+3. Optionally subsample the training frame (controlled by `sample_num`).
+4. Resolve `effective_max_steps`: when `num_train_epochs` finishes within
+   `max_steps`, the epoch limit is used naturally; otherwise `max_steps` caps.
+5. Tokenize all training rows with `BIGRecSFTDataset`:
    - Each sample is an Alpaca-format prompt ending with the target item title
      as the response.
-   - Labels for the prompt portion are masked to `-100` so only the response
-     tokens contribute to cross-entropy loss.
-4. Load model from `llm_path` and wrap with a `LoraConfig` (if `use_lora=True`).
-5. Delegate the training loop to HuggingFace `Trainer` with `TrainingArguments`
-   mirroring the `BIGRecConfig` fields.
-6. Save the checkpoint to `output_dir`.
+   - When `train_on_inputs=False`, prompt tokens are masked to `-100` so only
+     the response tokens contribute to cross-entropy loss.
+   - When `train_on_inputs=True` (official BIGRec default), loss is computed
+     over the full sequence.
+6. Load model from `llm_path` and wrap with a `LoraConfig` (if `use_lora=True`).
+7. Delegate the training loop to HuggingFace `Trainer` with `TrainingArguments`
+   mirroring the `BIGRecConfig` fields.  Early stopping monitors validation LM
+   loss via `EarlyStoppingCallback`.
+8. Save the checkpoint to `output_dir`.
+9. Explicitly free the model from VRAM (`del model; torch.cuda.empty_cache()`)
+   so the subsequent `evaluate()` call can load without OOM.
 
 ### 3. Embedding Grounding (Step 2)
 
-`BIGRecTrainer.evaluate()` runs the two-sub-step grounding evaluation:
+`BIGRecTrainer.evaluate()` runs in three sequential phases.
 
-#### Sub-step A — Pre-compute item embeddings
+#### Phase 1 — Generation
+
+For each evaluation row, an Alpaca-format prompt is built from the user's
+interaction history and fed to the model for beam-search generation.  The
+decoded output is stripped of surrounding double-quotes to produce the oracle
+title text.
+
+Two backends are supported:
+
+- **HuggingFace (default, `use_vllm=False`)**: The fine-tuned model is loaded
+  once and used for a batched beam-search loop.  The model is freed from VRAM
+  after generation completes.
+- **vLLM (`use_vllm=True`)**: All prompts are passed to vLLM's continuous
+  batching engine in a single call, achieving ~10-30× higher throughput.
+  The vLLM engine is torn down and GPU memory freed after generation.
+
+When `grounding_gamma_search=True`, Phase 1 is repeated on the validation
+split so that the best γ can be found before evaluating the test split.
+
+#### Phase 2 — Item embedding pre-computation
 
 For each item title in the item table, the last-token hidden state of the last
 transformer layer is extracted as the item embedding.  The LLM uses left-padding
 so that position `-1` always contains the last real token.
 
+When `embedding_use_base_model=True` (official BIGRec default), a fresh base
+LLM without the LoRA adapter is loaded.  This ensures item embeddings and oracle
+embeddings are computed in the same vector space as the pre-trained model.
+
 Embeddings are cached as a `.pt` file under `embedding_cache_dir` and reloaded
 on subsequent runs (unless `refresh_embedding_cache=True`).
 
-#### Sub-step B — Oracle embedding and ranking
+#### Phase 3 — Ranking
 
-For each evaluation row:
+Oracle embeddings are extracted from the Phase 1 generated titles, then L2
+distances to all pre-computed item embeddings are computed via `torch.cdist`.
+Items are ranked by ascending effective distance and the top-K ids are returned.
 
-1. Build an Alpaca prompt from the user's interaction history (no response).
-2. Beam-search generate a title (up to `max_new_tokens` tokens, `num_beams` beams).
-3. Decode and strip surrounding double-quotes (BIGRec wraps titles in `"…"`).
-4. Extract the oracle embedding from the decoded title text.
-5. Compute L2 distances from the oracle embedding to all pre-computed item embeddings.
-6. Optionally apply Eq. 3 grounding weight injection.
-7. Argsort the (effective) distances and return the top-K item ids.
+When `grounding_gamma_search=True`:
+
+1. The same process is run on the validation split.
+2. `_run_gamma_search` evaluates every γ in the candidate grid and records the
+   best γ independently per metric×K combination.
+3. The best-found γ values are applied on the test split via
+   `_evaluate_from_dist_per_k_gammas`.
 
 ### 4. Grounding Weight Injection (Eq. 3)
 
@@ -185,14 +238,19 @@ Weight sources:
 **Key property of Eq. 3**: the item with the absolute minimum L2 distance always
 has D̂ = 0 and therefore D̃ = 0, placing it at rank 1 regardless of weights.
 Weight injection is most effective at reordering items that are NOT the uniquely
-closest to the oracle embedding (e.g., promoting a popular item among a set of
-similarly-distanced candidates).
+closest to the oracle embedding.
 
-The paper searches γ in [0, 100] on the validation split per top-K cutoff.
+The paper searches γ over [0, 100] on the validation split per top-K cutoff.
+Setting `grounding_gamma_search=True` automates this search using the official
+199-value grid (0.00–0.99 in steps of 0.01, then 1–99 in steps of 1), or a
+custom grid via `grounding_gamma_search_values`.
 
 ## Prompt Format
 
-BIGRec uses an Alpaca-style three-section prompt:
+BIGRec uses an Alpaca-style three-section prompt.  The exact wording is
+controlled by `domain` (`'product'`, `'movie'`, `'item'`).
+
+For `domain='product'`:
 
 ```
 Below is an instruction that describes a task, paired with an input that
@@ -200,20 +258,19 @@ provides further context. Write a response that appropriately completes the
 request.
 
 ### Instruction:
-I've purchased N products in the past. Please help me predict the next product
-I will purchase. The output should be only the product title, without
-explanation.
+Given a list of products the user has purchased before, please recommend
+a new product that the user likes to the user.
 
 ### Input:
-These are the N products I've purchased before:
-"<title_1>", "<title_2>", …, "<title_N>"
+The user has purchased the following products before:"<title_1>", "<title_2>", …, "<title_N>"
+
 
 ### Response:
-"<target_title>"          ← present during SFT; absent during beam-search eval
+"<target_title>"     ← present during SFT; absent during beam-search eval
 ```
 
-The domain vocabulary (product / movie / item) and action verb (purchased /
-watched / interacted with) are controlled by `domain`.
+For `domain='movie'`, the wording changes to "movies … watched"; for
+`domain='item'`, it uses "items … interacted with".
 
 ## File Structure of the Embedding Cache
 
@@ -226,6 +283,10 @@ Item embeddings are stored as:
 The cache is a float32 CPU tensor of shape `[num_items, hidden_size]`.  Index
 `i` corresponds to framework `item_id = i`; index 0 is the placeholder item
 reserved by the framework.
+
+The cache path encodes the dataset name and split but **not** the model name.
+When switching to a different checkpoint or base model, either change
+`embedding_cache_dir` or set `refresh_embedding_cache=true`.
 
 ## Common Configuration Parameters
 
@@ -246,6 +307,12 @@ Below are the most important parameters from `configs/model/bigrec.yaml`.
 
 - `model.attn_implementation`
   - `'eager'` (default) or `'flash_attention_2'` (requires the `flash-attn` package).
+
+- `model.pipeline_parallel` / `model.pipeline_parallel_gpus`
+  - Enable single-process pipeline parallelism to shard the model across
+    `pipeline_parallel_gpus` consecutive GPUs (starting from `device_id`).
+  - Does not require `torchrun`; uses HuggingFace `device_map='auto'`.
+  - Default: `false` / `2`.
 
 ### LoRA Fine-tuning
 
@@ -270,13 +337,28 @@ Below are the most important parameters from `configs/model/bigrec.yaml`.
 - `model.num_train_epochs`
 
 - `model.learning_rate`
-  - Paper default: `1e-4`.
+  - Official BIGRec default: `3e-4`.
 
 - `model.lr_scheduler_type`
   - `'cosine'` (default), `'linear'`, `'constant'`, etc.
 
 - `model.gradient_checkpointing`
   - Recomputes activations to reduce peak VRAM at extra compute cost.
+
+- `model.train_on_inputs`
+  - `true` (default): full-sequence loss — matches official BIGRec training.
+  - `false`: response-only supervision — prompt tokens masked to `-100`.
+
+- `model.sample_num`
+  - Randomly subsample this many training rows before training begins.
+  - Mirrors the official BIGRec `--sample` flag.  `-1` (default) uses the
+    full training set.  Unlike `max_steps`, the dataset is shrunk and then
+    trained to completion for `num_train_epochs` epochs.
+
+- `model.max_steps`
+  - Hard cap on the total number of optimiser steps.  Useful for quick
+    sanity-checks on large datasets.  `-1` disables the cap and lets
+    `num_train_epochs` control training.  Default: `500`.
 
 - `model.deepspeed`
   - Path to a DeepSpeed JSON config for multi-GPU / ZeRO optimisation, or `null`.
@@ -317,6 +399,11 @@ Below are the most important parameters from `configs/model/bigrec.yaml`.
 - `model.refresh_embedding_cache`
   - Re-compute item embeddings even when a cached file exists.
 
+- `model.embedding_use_base_model`
+  - `true` (default): use the base LLM (no LoRA) for both item and oracle
+    embeddings, so both live in the same vector space.
+  - `false`: use the fine-tuned LoRA model for embedding extraction.
+
 ### Grounding Weight Injection (Eq. 3)
 
 - `model.grounding_mode`
@@ -326,8 +413,18 @@ Below are the most important parameters from `configs/model/bigrec.yaml`.
   - `'popularity+cf'`: sum both signals and re-normalise.
 
 - `model.grounding_gamma`
-  - γ exponent.  Paper searches [0, 100] per top-K on the validation split.
-  - γ = 0 disables reweighting even when `grounding_mode` is set.
+  - γ exponent.  γ = 0 disables reweighting even when `grounding_mode` is set.
+  - Default: `1.0`.  Paper searches [0, 100] per top-K on the validation split.
+
+- `model.grounding_gamma_search`
+  - `true`: auto grid-search the best γ independently per metric×K on the
+    validation split (official BIGRec procedure), then apply the best-found
+    values on the test split.
+  - Default: `false`.
+
+- `model.grounding_gamma_search_values`
+  - Custom γ grid for the search.  Empty list (default) uses the official
+    199-value grid: `[0.00, 0.01, …, 0.99, 1, 2, …, 99]`.
 
 - `model.cf_score_path`
   - Path to a `.pt` file containing a 1-D float tensor of shape `[num_items]`
@@ -348,6 +445,21 @@ Below are the most important parameters from `configs/model/bigrec.yaml`.
 - `model.eval_protocol`
   - `'sampled'`: rank pre-defined `candidate_item_ids` sets.
   - `'full'`: rank all items (expensive; matches the paper's all-rank setting).
+
+- `model.eval_user_num`
+  - Number of users to evaluate per split.  Default: `5000`, mirroring the
+    official BIGRec test set (random subsample with `random_state=42`).
+  - `-1` evaluates all users in the split.
+
+### vLLM Acceleration
+
+- `model.use_vllm`
+  - Use vLLM for generation during evaluation.  Achieves ~10-30× faster
+    throughput than HuggingFace `generate()`.
+  - Requires `pip install 'vllm>=0.4.0'`.  Default: `false`.
+
+- `model.vllm_gpu_memory_utilization`
+  - Fraction of GPU memory reserved by the vLLM KV-cache.  Default: `0.85`.
 
 ### Pipeline Control
 
@@ -417,7 +529,20 @@ python -m recbole3.run \
   runtime.output_dir=outputs/bigrec_vg_pop
 ```
 
-### 5. CF-weighted grounding (provide pre-computed CF scores)
+### 5. Grounding with automatic γ search on the validation split
+
+```bash
+python -m recbole3.run \
+  dataset=amazon2023_retrieval \
+  model=bigrec \
+  dataset.category=Video_Games \
+  model.llm_path=/path/to/llama-2-7b-hf \
+  model.grounding_mode=popularity \
+  model.grounding_gamma_search=true \
+  runtime.output_dir=outputs/bigrec_vg_pop_search
+```
+
+### 6. CF-weighted grounding (provide pre-computed CF scores)
 
 ```bash
 python -m recbole3.run \
@@ -431,7 +556,7 @@ python -m recbole3.run \
   runtime.output_dir=outputs/bigrec_vg_cf
 ```
 
-### 6. Flash Attention 2 + bfloat16
+### 7. Flash Attention 2 + bfloat16
 
 ```bash
 python -m recbole3.run \
@@ -443,6 +568,33 @@ python -m recbole3.run \
   model.torch_dtype=bfloat16 \
   model.bf16=true \
   runtime.output_dir=outputs/bigrec_vg_fa2
+```
+
+### 8. Fast evaluation with vLLM
+
+```bash
+python -m recbole3.run \
+  dataset=amazon2023_retrieval \
+  model=bigrec \
+  dataset.category=Video_Games \
+  model.llm_path=/path/to/llama-2-7b-hf \
+  model.pipeline_stage=evaluation \
+  model.checkpoint_path=outputs/bigrec_vg/checkpoint \
+  model.use_vllm=true \
+  runtime.output_dir=outputs/bigrec_vg_vllm
+```
+
+### 9. Small-scale ablation with subsampled training data
+
+```bash
+python -m recbole3.run \
+  dataset=amazon2023_retrieval \
+  model=bigrec \
+  dataset.category=Video_Games \
+  model.llm_path=/path/to/llama-2-7b-hf \
+  model.sample_num=1024 \
+  model.max_steps=-1 \
+  runtime.output_dir=outputs/bigrec_vg_ablation
 ```
 
 ## Installing Dependencies
@@ -471,24 +623,30 @@ For Flash Attention 2 (`attn_implementation=flash_attention_2`):
 pip install flash-attn --no-build-isolation
 ```
 
+For vLLM acceleration (`use_vllm=True`):
+
+```bash
+pip install "vllm>=0.4.0"
+```
+
 ## Suggested Debugging Workflow
 
 When setting up a new experiment, proceed in this order:
 
 1. Verify `llm_path` is correct by checking the tokenizer loads cleanly.
-2. Run a smoke test with `num_train_epochs=1`, `train_batch_size=1`,
-   `gradient_accumulation_steps=1`, small `max_input_length` (128).
+2. Run a smoke test with `max_steps=5`, `train_batch_size=1`,
+   `gradient_accumulation_steps=1`, small `max_input_length=128`.
 3. Check that item embeddings are pre-computed and saved to `embedding_cache_dir`.
-4. Inspect a sample generated title to verify beam-search decodes sensible text.
-5. Enable grounding weight injection only after confirming the base L2 evaluation
-   runs end-to-end.
-6. Search `grounding_gamma` on the validation split before committing to a test
-   evaluation.
+4. Inspect sample generated titles to verify beam-search decodes sensible text.
+5. Confirm base L2 evaluation runs end-to-end before enabling grounding weight
+   injection.
+6. When using `grounding_mode != 'none'`, run `grounding_gamma_search=true` on
+   the validation split to find the best γ before committing to a test evaluation.
 
 ## Common Pitfalls
 
 - `llm_path` is empty or points to a missing directory
-  - `AutoModelForCausalLM.from_pretrained` will raise a `OSError` / `ValueError`.
+  - `AutoModelForCausalLM.from_pretrained` will raise `OSError` / `ValueError`.
   - Set `model.llm_path` to a local directory or a valid HuggingFace Hub ID.
 
 - OOM during training
@@ -496,17 +654,24 @@ When setting up a new experiment, proceed in this order:
     proportionally.
   - Enable `gradient_checkpointing=true` (already on by default).
   - Use `load_in_8bit=true` or `torch_dtype=bfloat16` to reduce VRAM usage.
+  - The training model is explicitly freed from VRAM before `evaluate()` runs,
+    but this requires `del` + `torch.cuda.empty_cache()` to take effect.
+
+- OOM during evaluation on large datasets
+  - Use `use_vllm=true` (more memory-efficient than HF batched generation).
+  - Reduce `eval_user_num` to limit the number of users evaluated.
+  - Reduce `eval_batch_size` or `embedding_batch_size`.
 
 - Generated titles are empty or contain only quotes
   - Empty titles are replaced by `[empty_i]` placeholders to avoid zero-vector
-    embeddings. This indicates the LoRA model is not converging.
+    embeddings.  This indicates the LoRA model is not converging.
   - Check `learning_rate`, `lora_r`, and `num_train_epochs`.
 
 - Embedding cache is stale after changing `llm_path` or LoRA checkpoint
   - Set `refresh_embedding_cache=true` to force re-computation.
-  - The cache path embeds the dataset name and split (e.g.,
+  - The cache path encodes the dataset name and split (e.g.,
     `Video_Games_test_item_embs.pt`), not the model name; rename the cache
-    directory when switching models.
+    directory or change `embedding_cache_dir` when switching models.
 
 - `cf_score_path` shape mismatch
   - The `.pt` file must contain a 1-D float tensor of length exactly `num_items`
@@ -517,6 +682,11 @@ When setting up a new experiment, proceed in this order:
   - Verify `eval_protocol` matches the dataset preparation.  Use `'full'` if
     the dataset does not provide `candidate_item_ids`.
 
+- `max_steps` stops training too early on a small dataset
+  - When `num_train_epochs` finishes within `max_steps`, the trainer
+    automatically disables the `max_steps` cap so epoch count controls training.
+  - For full training runs, set `max_steps=-1` explicitly.
+
 ## Summary
 
 BIGRec in RecBole3.0 follows the original bi-step grounding paradigm:
@@ -526,6 +696,10 @@ BIGRec in RecBole3.0 follows the original bi-step grounding paradigm:
    embeddings ranks all candidate items.
 3. An optional grounding weight injection step (Eq. 3) reweights distances by
    popularity or CF signals to further improve ranking.
+
+Evaluation runs in three phases (generation → embedding → ranking) so each
+large model can be fully freed from VRAM before the next is loaded.  An
+optional vLLM backend accelerates generation by ~10-30×.
 
 The implementation is self-contained within `src/recbole3/model/bigrec/` and
 integrates with the RecBole3.0 evaluation protocol through `RetrievalEvalData`,
