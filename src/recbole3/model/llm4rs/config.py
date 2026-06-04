@@ -10,12 +10,6 @@ LLM4RSBackend = Literal["identity", "openai"]
 LLM4RSDomain = Literal["Movie", "Music", "Book", "News", "agnostic"]
 LLM4RSPolicy = Literal["point", "pair", "list"]
 
-LLM4RS_DEFAULT_SYSTEM_PROMPT = (
-    "You are a recommender. Reply with ONLY the ranking letters requested in the user message "
-    "(for example A B C D E), separated by spaces. No explanation or other text."
-)
-
-
 @dataclass(slots=True)
 class LLM4RSConfig(SequentialModelConfig):
     """Configuration for Dai et al.'s prompt-based LLM recommendation probe."""
@@ -133,8 +127,8 @@ class LLM4RSConfig(SequentialModelConfig):
     )
     refresh_api_response_cache: bool = field(default=False, metadata={"help": "Whether cached API responses are ignored."})
     system_prompt: str | None = field(
-        default=LLM4RS_DEFAULT_SYSTEM_PROMPT,
-        metadata={"help": "OpenAI-compatible system message; keeps list-wise answers to letters only."},
+        default=None,
+        metadata={"help": "Optional system-message override; unset uses a policy-specific concise-answer instruction."},
     )
 
     def __post_init__(self) -> None:

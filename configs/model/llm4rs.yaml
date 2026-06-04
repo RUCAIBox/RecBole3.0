@@ -45,10 +45,8 @@ model:
   async_dispatch: false
   api_response_cache_path: outputs/candidate_cache/llm4rs_api_responses.jsonl
   refresh_api_response_cache: false
-  system_prompt: >-
-    You are a recommender. Reply with ONLY the ranking letters requested in the
-    user message (for example A B C D E), separated by spaces. No explanation or
-    other text.
+  # null selects a concise-answer system prompt matching point/pair/list policy.
+  system_prompt: null
 
 trainer:
   batch_size: 32

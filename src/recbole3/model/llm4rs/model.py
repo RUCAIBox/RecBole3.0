@@ -1,17 +1,8 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import os
 import re
-import threading
-import time
-import urllib.error
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import combinations
-from pathlib import Path
 from random import Random
 from typing import Any, Sequence
 
@@ -21,10 +12,19 @@ import torch
 from recbole3.dataset import CANDIDATE_ITEM_IDS, ITEM_ID
 from recbole3.model.base import BaseCollator, BaseRetrievalModel
 from recbole3.model.llm4rs.config import LLM4RSConfig
+from recbole3.model.openai import OpenAICompatibleClient, dispatch_requests
 from recbole3.model.sequential import HISTORY_ITEM_IDS
 
 
 LLM4RS_RECORD_INDEX = "_llm4rs_record_index"
+_LLM4RS_POLICY_SYSTEM_PROMPTS = {
+    "point": "Reply with ONLY one integer from 1 to 5. No explanation or other text.",
+    "pair": "Reply with ONLY A or B. No explanation or other text.",
+    "list": (
+        "Reply with ONLY the ranking letters requested in the user message "
+        "(for example A B C D E), separated by spaces. No explanation or other text."
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,8 +117,7 @@ class LLM4RSModel(BaseRetrievalModel):
         self.config = config
         self._item_text_lookup: tuple[str, ...] = ()
         self._example_text = ""
-        self._response_cache: dict[str, str] | None = None
-        self._cache_lock = threading.Lock()
+        self._openai_client = OpenAICompatibleClient.from_config(config)
 
     def build_train_collator(self, prepared_data: Any) -> BaseCollator:
         self._ensure_item_text_lookup(prepared_data)
@@ -180,6 +179,10 @@ class LLM4RSModel(BaseRetrievalModel):
         target_item_ids: Sequence[int] | None = None,
         record_indices: Sequence[int] | None = None,
     ) -> list[LLM4RSOutcome]:
+        if target_item_ids is not None and len(target_item_ids) != len(candidate_batches):
+            raise ValueError("target_item_ids and candidate_batches must have equal lengths.")
+        if record_indices is not None and len(record_indices) != len(candidate_batches):
+            raise ValueError("record_indices and candidate_batches must have equal lengths.")
         tasks: list[tuple[int, tuple[int, ...], str, str]] = []
         normalized_candidates: list[tuple[int, ...]] = []
         for batch_index, (history_texts, candidate_item_ids) in enumerate(
@@ -203,7 +206,14 @@ class LLM4RSModel(BaseRetrievalModel):
             elif self.config.ranking_policy == "pair":
                 target_position = None
                 if target_item_ids is not None:
-                    target_position = candidate_ids.index(int(target_item_ids[batch_index]))
+                    target_item_id = int(target_item_ids[batch_index])
+                    try:
+                        target_position = candidate_ids.index(target_item_id)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"Pair-wise LLM4RS record {record_index} requires target_item_id={target_item_id} "
+                            f"to be present in candidate_item_ids={candidate_ids}."
+                        ) from exc
                 for left_position, right_position in combinations(range(len(candidate_ids)), 2):
                     displayed_positions = [left_position, right_position]
                     if target_position in displayed_positions:
@@ -474,11 +484,8 @@ class LLM4RSModel(BaseRetrievalModel):
     def _parse_point_response(response: str | None) -> int | None:
         if response is None:
             return None
-        digits = "".join(char for char in response.strip() if char.isdigit())
-        if not digits:
-            return None
-        rating = int(digits)
-        return rating if 1 <= rating <= 5 else None
+        match = re.search(r"\b([1-5])\b", response)
+        return int(match.group(1)) if match else None
 
     @staticmethod
     def _parse_pair_response(response: str | None) -> int | None:
@@ -490,125 +497,38 @@ class LLM4RSModel(BaseRetrievalModel):
             return list(identity_responses)
         if len(prompts) != len(identity_responses):
             raise ValueError("prompts and identity_responses must have equal length.")
-        if not bool(self.config.async_dispatch) or len(prompts) < 2:
-            return [self._safe_request(prompt) for prompt in prompts]
-        max_workers = min(max(1, int(self.config.api_batch)), len(prompts))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            return list(executor.map(self._safe_request, prompts))
+        max_concurrency = int(self.config.api_batch) if bool(self.config.async_dispatch) else 1
+        return dispatch_requests(
+            list(prompts),
+            self._safe_request_openai_response,
+            max_concurrency=max_concurrency,
+        )
 
-    def _safe_request(self, prompt: str) -> str | None:
+    def _safe_request_openai_response(self, prompt: str) -> str | None:
         try:
             return self._request_openai_response(prompt)
         except RuntimeError:
             return None
 
     def _request_openai_response(self, prompt: str) -> str:
-        cache_key = self._api_cache_key(prompt)
-        cached_response = self._lookup_response_cache(cache_key)
-        if cached_response is not None:
-            return cached_response
-        response = self._request_openai_response_uncached(prompt)
-        self._store_response_cache(cache_key, response)
-        return response
-
-    def _request_openai_response_uncached(self, prompt: str) -> str:
-        messages: list[dict[str, str]] = []
-        if self.config.system_prompt:
-            messages.append({"role": "system", "content": str(self.config.system_prompt)})
-        messages.append({"role": "user", "content": prompt})
-        payload = {
-            "model": self.config.api_model_name,
-            "messages": messages,
-            "max_tokens": int(self.config.max_output_tokens),
-            "temperature": float(self.config.temperature),
+        extra_body: dict[str, Any] = {
             "top_p": 1,
             "frequency_penalty": 0.0,
             "presence_penalty": 0.0,
             "stop": "\n",
         }
         if self.config.api_extra_body:
-            payload.update(dict(self.config.api_extra_body))
-        headers = {"Content-Type": "application/json"}
-        api_key = os.environ.get(self.config.api_key_env)
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        request = urllib.request.Request(
-            str(self.config.api_base_url),
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
+            extra_body.update(dict(self.config.api_extra_body))
+        return self._openai_client.request(
+            prompt,
+            system_prompt=self._effective_system_prompt(),
+            extra_body=extra_body,
         )
-        backoff = max(0.0, float(self.config.retry_backoff_sec))
-        last_error: Exception | None = None
-        for attempt in range(max(1, int(self.config.request_retries))):
-            try:
-                with urllib.request.urlopen(request, timeout=float(self.config.request_timeout_sec)) as response:
-                    content = json.loads(response.read().decode("utf-8"))
-                return str(content["choices"][0]["message"]["content"])
-            except (
-                urllib.error.HTTPError,
-                urllib.error.URLError,
-                TimeoutError,
-                json.JSONDecodeError,
-                KeyError,
-                IndexError,
-                TypeError,
-            ) as exc:
-                last_error = exc
-                if attempt + 1 < max(1, int(self.config.request_retries)):
-                    time.sleep(backoff)
-                    backoff *= 2.0
-        raise RuntimeError(f"Failed to call the configured OpenAI-compatible endpoint: {last_error}") from last_error
 
-    def _api_cache_key(self, prompt: str) -> str:
-        payload = {
-            "endpoint": self.config.api_base_url,
-            "model": self.config.api_model_name,
-            "temperature": self.config.temperature,
-            "max_output_tokens": self.config.max_output_tokens,
-            "system_prompt": self.config.system_prompt,
-            "api_extra_body": self.config.api_extra_body,
-            "prompt": prompt,
-        }
-        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
-
-    def _lookup_response_cache(self, key: str) -> str | None:
-        if bool(self.config.refresh_api_response_cache):
-            return None
-        return self._load_response_cache().get(key)
-
-    def _load_response_cache(self) -> dict[str, str]:
-        with self._cache_lock:
-            if self._response_cache is not None:
-                return self._response_cache
-            cache: dict[str, str] = {}
-            path = Path(self.config.api_response_cache_path)
-            if path.exists():
-                with path.open("r", encoding="utf-8") as handle:
-                    for line in handle:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            record = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        key = str(record.get("key", "")).strip()
-                        response = record.get("response")
-                        if key and isinstance(response, str):
-                            cache[key] = response
-            self._response_cache = cache
-            return cache
-
-    def _store_response_cache(self, key: str, response: str) -> None:
-        with self._cache_lock:
-            cache = self._response_cache if self._response_cache is not None else {}
-            cache[key] = response
-            self._response_cache = cache
-            path = Path(self.config.api_response_cache_path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps({"key": key, "response": response}, ensure_ascii=False) + "\n")
+    def _effective_system_prompt(self) -> str:
+        if self.config.system_prompt is not None:
+            return str(self.config.system_prompt).strip()
+        return _LLM4RS_POLICY_SYSTEM_PROMPTS[str(self.config.ranking_policy)]
 
     def _ensure_item_text_lookup(self, prepared_data: Any) -> None:
         if self._item_text_lookup:

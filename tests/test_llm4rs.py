@@ -112,6 +112,20 @@ def test_llm4rs_prompt_without_instruction_starts_at_query() -> None:
     assert prompt.startswith("Input:")
 
 
+@pytest.mark.parametrize(
+    ("ranking_policy", "expected"),
+    (
+        ("point", "one integer from 1 to 5"),
+        ("pair", "ONLY A or B"),
+        ("list", "ranking letters requested"),
+    ),
+)
+def test_llm4rs_uses_policy_specific_default_system_prompts(ranking_policy: str, expected: str) -> None:
+    model = LLM4RSModel(LLM4RSConfig(ranking_policy=ranking_policy, example_num=0, backend="openai"))
+
+    assert expected in model._effective_system_prompt()
+
+
 def test_llm4rs_eval_collator_retains_candidate_target_and_record_alignment() -> None:
     config = LLM4RSConfig(ranking_policy="pair", candidate_num=3, example_num=0, backend="identity")
     prepared = _prepared_data(config)
@@ -210,12 +224,15 @@ def test_llm4rs_pair_policy_keeps_rows_with_partial_subrequest_failures() -> Non
     assert failed.target_ranks(2) == ()
 
 
-def test_llm4rs_parsers_accept_short_answer_sentences() -> None:
+def test_llm4rs_parsers_accept_common_short_responses() -> None:
     candidates = (2, 3, 4)
 
     assert LLM4RSModel._parse_list_response("The answer index is A B C.", candidates) == candidates
     assert LLM4RSModel._parse_pair_response("The answer index is B.") == 1
     assert LLM4RSModel._parse_pair_response("I choose B.") == 1
+    assert LLM4RSModel._parse_point_response("5/5") == 5
+    assert LLM4RSModel._parse_point_response("I rate it 4 out of 5.") == 4
+    assert LLM4RSModel._parse_point_response("15") is None
 
 
 def test_llm4rs_pair_evaluation_randomizes_target_choice_position() -> None:
@@ -228,6 +245,21 @@ def test_llm4rs_pair_evaluation_randomizes_target_choice_position() -> None:
 
     assert outcome.scores == (1, 1, 1)
     assert outcome.target_ranks(2) == (0, 1, 2)
+
+
+def test_llm4rs_pair_evaluation_reports_missing_target_context() -> None:
+    model = LLM4RSModel(LLM4RSConfig(ranking_policy="pair", example_num=0, backend="identity"))
+
+    with pytest.raises(
+        ValueError,
+        match=r"record 17 requires target_item_id=9 to be present in candidate_item_ids=\(2, 3, 4\)",
+    ):
+        model.rank_candidate_batches(
+            [["Alpha Quest"]],
+            [[2, 3, 4]],
+            target_item_ids=[9],
+            record_indices=[17],
+        )
 
 
 def test_llm4rs_pair_prompts_are_stable_across_batch_splits(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -357,6 +389,31 @@ def test_llm4rs_trainer_uses_collated_metadata_instead_of_batch_offsets(monkeypa
     assert result["metrics"]["recall@1"] == pytest.approx(1.0)
 
 
+def test_llm4rs_trainer_tracks_progress_failures_incrementally(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = LLM4RSConfig(ranking_policy="list", candidate_num=3, example_num=0, begin_index=0, backend="identity")
+    prepared = _prepared_data(config)
+    model = LLM4RSModel(config)
+    trainer = LLM4RSTrainer(
+        LLM4RSTrainerConfig(
+            batch_size=1,
+            eval=EvalConfig(protocol="full", metrics=(MetricSpec(name="recall", ks=(1,)),)),
+        )
+    )
+    original_target_ranks = LLM4RSOutcome.target_ranks
+    call_count = 0
+
+    def count_target_ranks(outcome: LLM4RSOutcome, target_item_id: int) -> tuple[int, ...]:
+        nonlocal call_count
+        call_count += 1
+        return original_target_ranks(outcome, target_item_id)
+
+    monkeypatch.setattr(LLM4RSOutcome, "target_ranks", count_target_ranks)
+
+    trainer.evaluate(model, prepared, split="test")
+
+    assert call_count == 4
+
+
 def test_llm4rs_tie_aware_metrics_match_official_average() -> None:
     trainer = LLM4RSTrainer(
         LLM4RSTrainerConfig(
@@ -410,6 +467,23 @@ def test_llm4rs_openai_backend_calls_local_compatible_endpoint(local_tmp_path: P
     outcome = model.rank_candidate_batches([["Alpha Quest"]], [[2, 3, 4]])[0]
 
     assert outcome.ordered_item_ids() == (2, 3, 4)
+
+
+def test_llm4rs_openai_runtime_errors_count_as_failed_subrequests(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = LLM4RSConfig(ranking_policy="pair", example_num=0, backend="openai", async_dispatch=False)
+    prepared = _prepared_data(config)
+    model = LLM4RSModel(config)
+    model.build_eval_collator(prepared)
+
+    def fail_request(prompt: str) -> str:
+        raise RuntimeError(f"failed prompt: {prompt}")
+
+    monkeypatch.setattr(model, "_request_openai_response", fail_request)
+
+    outcome = model.rank_candidate_batches([["Alpha Quest"]], [[2, 3, 4]])[0]
+
+    assert outcome.failed_subrequests == 3
+    assert outcome.target_ranks(2) == ()
 
 
 def test_llm4rs_pipeline_runs_end_to_end_with_official_candidate_injection(local_tmp_path: Path) -> None:

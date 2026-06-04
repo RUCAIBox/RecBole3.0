@@ -108,25 +108,25 @@ class LLM4RSTrainer(Trainer):
         outcomes: list[LLM4RSOutcome] = []
         target_item_ids: list[int] = []
         num_batches = 0
+        failed_so_far = 0
         progress_bar = self._create_progress_bar(dataloader, split=f"llm4rs:{split}")
         for model_inputs in progress_bar:
             candidate_batches = model_inputs["candidate_item_ids"]
             batch_target_item_ids = model_inputs["target_item_ids"]
             batch_record_indices = model_inputs["record_indices"]
-            outcomes.extend(
-                model.rank_candidate_batches(
-                    model_inputs["history_texts"],
-                    candidate_batches,
-                    target_item_ids=batch_target_item_ids,
-                    record_indices=batch_record_indices,
-                )
+            batch_outcomes = model.rank_candidate_batches(
+                model_inputs["history_texts"],
+                candidate_batches,
+                target_item_ids=batch_target_item_ids,
+                record_indices=batch_record_indices,
             )
+            outcomes.extend(batch_outcomes)
             target_item_ids.extend(batch_target_item_ids)
             num_batches += 1
             if hasattr(progress_bar, "set_postfix_str"):
-                failed_so_far = sum(
+                failed_so_far += sum(
                     1
-                    for outcome, target in zip(outcomes, target_item_ids, strict=True)
+                    for outcome, target in zip(batch_outcomes, batch_target_item_ids, strict=True)
                     if not outcome.target_ranks(target)
                 )
                 progress_bar.set_postfix_str(
