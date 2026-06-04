@@ -350,7 +350,7 @@ Below are the most important parameters from `configs/model/bigrec.yaml`.
   - `false`: response-only supervision — prompt tokens masked to `-100`.
 
 - `model.sample_num`
-  - Randomly subsample this many training rows before training begins.
+  - Randomly subsample this many training rows (integer count) before training begins.
   - Mirrors the official BIGRec `--sample` flag.  `-1` (default) uses the
     full training set.  Unlike `max_steps`, the dataset is shrunk and then
     trained to completion for `num_train_epochs` epochs.
