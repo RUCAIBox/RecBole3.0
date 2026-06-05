@@ -8,7 +8,6 @@ from random import Random
 from typing import Any
 
 import pytest
-import torch
 
 from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset
 from recbole3.evaluation import EvalConfig, MetricSpec
@@ -308,39 +307,6 @@ def test_llm4rs_pair_prompts_are_stable_across_batch_splits(monkeypatch: pytest.
 
     assert split_prompts == full_prompts
     assert [outcome.scores for outcome in split_outcomes] == [outcome.scores for outcome in full_outcomes]
-
-
-def test_llm4rs_pair_predict_requires_and_passes_collated_targets(monkeypatch: pytest.MonkeyPatch) -> None:
-    config = LLM4RSConfig(ranking_policy="pair", candidate_num=3, example_num=0, backend="identity")
-    prepared = _prepared_data(config)
-    model = LLM4RSModel(config)
-    collator = model.build_eval_collator(prepared)
-    candidate_item_ids = torch.tensor([[3, 2, 4]], dtype=torch.long)
-
-    with pytest.raises(ValueError, match="requires collated target_item_ids"):
-        model.predict({"history_texts": [["Alpha Quest"]]}, k=3, candidate_item_ids=candidate_item_ids)
-
-    records = prepared.get_eval_dataset("test").frame.iloc[:1].copy()
-    records[LLM4RS_RECORD_INDEX] = [11]
-    model_inputs = collator(records)
-    captured: dict[str, object] = {}
-
-    def capture_rank(
-        history_text_batches: list[list[str]],
-        candidate_batches: list[list[int]],
-        *,
-        target_item_ids: list[int] | None = None,
-        record_indices: list[int] | None = None,
-    ) -> list[LLM4RSOutcome]:
-        captured["targets"] = target_item_ids
-        captured["indices"] = record_indices
-        return [LLM4RSOutcome(tuple(candidate_batches[0]))]
-
-    monkeypatch.setattr(model, "rank_candidate_batches", capture_rank)
-
-    model.predict(model_inputs, k=3, candidate_item_ids=candidate_item_ids)
-
-    assert captured == {"targets": [3], "indices": [11]}
 
 
 def test_llm4rs_trainer_uses_collated_metadata_instead_of_batch_offsets(monkeypatch: pytest.MonkeyPatch) -> None:

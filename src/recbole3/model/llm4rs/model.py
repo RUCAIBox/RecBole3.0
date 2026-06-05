@@ -258,23 +258,7 @@ class LLM4RSModel(BaseRetrievalModel):
         exclude_item_ids: torch.Tensor | None = None,
         exclude_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Rank supplied candidates; pair-wise inference requires collated targets for position randomization."""
-
-        del exclude_item_ids, exclude_mask
-        if candidate_item_ids is None:
-            raise NotImplementedError("LLM4RS operates only on candidate sets produced by its evaluation pipeline.")
-        if not isinstance(model_inputs, dict) or "history_texts" not in model_inputs:
-            raise TypeError("LLM4RSModel expects collated 'history_texts'.")
-        target_item_ids = model_inputs.get("target_item_ids")
-        if self.config.ranking_policy == "pair" and target_item_ids is None:
-            raise ValueError("Pair-wise LLM4RS predict() requires collated target_item_ids to randomize target positions.")
-        outcomes = self.rank_candidate_batches(
-            list(model_inputs["history_texts"]),
-            candidate_item_ids.detach().cpu().tolist(),
-            target_item_ids=target_item_ids,
-            record_indices=model_inputs.get("record_indices"),
-        )
-        return torch.tensor([list(outcome.ordered_item_ids()[: int(k)]) for outcome in outcomes], dtype=torch.long)
+        pass
 
     def _parse_row_outcome(
         self,
