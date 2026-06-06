@@ -165,6 +165,7 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         model_cls=LazyImport("transformers", "PreTrainedModel"),
         config_cls=MiniOneRecConfig,
         pipeline_cls=LazyImport("recbole3.model.minionerec.pipeline", "MiniOneRecPipeline"),
+    ),
     "rankmixer": ModelSpec(
         model_cls=RankMixerModel,
         config_cls=RankMixerConfig,
