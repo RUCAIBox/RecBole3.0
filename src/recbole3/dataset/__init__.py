@@ -7,6 +7,16 @@ from recbole3.dataset.avazu import (
     AvazuCTRDataset,
     AvazuCTRParser,
 )
+from recbole3.dataset.agentcf import (
+    AgentCFDatasetConfig,
+    AgentCFDataset,
+    AgentCFDatasetParser,
+)
+from recbole3.dataset.agentcfpp_cross import (
+    AgentCFPPCrossConfig,
+    AgentCFPPCrossDataset,
+    AgentCFPPCrossParser,
+)
 from recbole3.dataset.amazon2014 import (
     Amazon2014BaseConfig,
     Amazon2014BaseParser,
@@ -52,6 +62,14 @@ class DatasetSpec:
 
 
 DATASET_TABLE: dict[str, DatasetSpec] = {
+    "agentcf": DatasetSpec(
+        dataset_cls=AgentCFDataset,
+        config_cls=AgentCFDatasetConfig,
+    ),
+    "agentcfpp_cross": DatasetSpec(
+        dataset_cls=AgentCFPPCrossDataset,
+        config_cls=AgentCFPPCrossConfig,
+    ),
     "avazu_ctr": DatasetSpec(
         dataset_cls=AvazuCTRDataset,
         config_cls=AvazuCTRConfig,
@@ -76,6 +94,12 @@ def get_dataset_spec(name: str) -> DatasetSpec:
 
 
 __all__ = [
+    "AgentCFDatasetConfig",
+    "AgentCFDataset",
+    "AgentCFDatasetParser",
+    "AgentCFPPCrossConfig",
+    "AgentCFPPCrossDataset",
+    "AgentCFPPCrossParser",
     "AvazuCTRConfig",
     "AvazuCTRDataset",
     "AvazuCTRParser",
