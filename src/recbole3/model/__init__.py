@@ -24,6 +24,11 @@ from recbole3.model.lares import (
     LARESModelDataset,
     LARESTrainer,
 )
+from recbole3.model.lsrm import (
+    LSRMConfig,
+    LSRMModel,
+    LSRMModelDataset,
+)
 from recbole3.model.letter import (
     LETTERConfig,
     LETTERModel,
@@ -45,12 +50,19 @@ from recbole3.model.agentcfpp import (
     AgentCFPPTrainerConfig,
 )
 from recbole3.model.lcrec.config import LCRecConfig
+from recbole3.model.llm4rs import (
+    LLM4RSConfig,
+    LLM4RSModel,
+    LLM4RSModelDataset,
+)
+from recbole3.model.llm4rs.trainer import LLM4RSTrainer, LLM4RSTrainerConfig
 from recbole3.model.llmrank import (
     LLMRankConfig,
     LLMRankModel,
     LLMRankModelDataset,
 )
 from recbole3.model.llmrank.trainer import LLMRankTrainer, LLMRankTrainerConfig
+from recbole3.model.minionerec.config import MiniOneRecConfig
 from recbole3.model.rankmixer import (
     RANKMIXER_FEATURES,
     RankMixerConfig,
@@ -134,6 +146,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),
+    "lsrm": ModelSpec(
+        model_cls=LSRMModel,
+        config_cls=LSRMConfig,
+        model_data_cls=LSRMModelDataset,
+        trainer_cls=Trainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
     "rqvae": ModelSpec(
         model_cls=RQVAEModel,
         config_cls=RQVAEConfig,
@@ -155,6 +175,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         config_cls=LCRecConfig,
         pipeline_cls=LazyImport("recbole3.model.lcrec.pipeline", "LCRecPipeline"),
     ),
+    "llm4rs": ModelSpec(
+        model_cls=LLM4RSModel,
+        config_cls=LLM4RSConfig,
+        model_data_cls=LLM4RSModelDataset,
+        trainer_cls=LLM4RSTrainer,
+        trainer_config_cls=LLM4RSTrainerConfig,
+        pipeline_cls=LazyImport("recbole3.model.llm4rs.pipeline", "LLM4RSPipeline"),
+    ),
     "llmrank": ModelSpec(
         model_cls=LLMRankModel,
         config_cls=LLMRankConfig,
@@ -162,6 +190,11 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_cls=LLMRankTrainer,
         trainer_config_cls=LLMRankTrainerConfig,
         pipeline_cls=LazyImport("recbole3.model.llmrank.pipeline", "LLMRankPipeline"),
+    ),
+    "minionerec": ModelSpec(
+        model_cls=LazyImport("transformers", "PreTrainedModel"),
+        config_cls=MiniOneRecConfig,
+        pipeline_cls=LazyImport("recbole3.model.minionerec.pipeline", "MiniOneRecPipeline"),
     ),
     "rankmixer": ModelSpec(
         model_cls=RankMixerModel,
@@ -223,7 +256,15 @@ __all__ = [
     "LETTERModel",
     "LETTERModelDataset",
     "LETTERTrainer",
+    "LLM4RSConfig",
+    "LLM4RSModel",
+    "LLM4RSModelDataset",
+    "LLM4RSTrainer",
+    "LLM4RSTrainerConfig",
     "LLMRankConfig",
+    "LSRMConfig",
+    "LSRMModel",
+    "LSRMModelDataset",
     "LLMRankModel",
     "LLMRankModelDataset",
     "MODEL_TABLE",
@@ -235,6 +276,7 @@ __all__ = [
     "ModelConfig",
     "ModelDatasets",
     "ModelSpec",
+    "MiniOneRecConfig",
     "RankMixerConfig",
     "RankMixerEvalCollator",
     "RankMixerModel",

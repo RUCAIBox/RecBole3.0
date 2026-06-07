@@ -136,6 +136,7 @@ class RQVAETrainer(Trainer):
         train_history: list[dict[str, Any]] = []
         valid_history: list[dict[str, Any]] = []
         self._collision_rates = {"valid": [], "test": []}
+        eval_steps = max(1, int(self.config.eval_steps))
         best_epoch: int | None = None
         best_value: float | None = None
         bad_epoch_count = 0
@@ -199,42 +200,44 @@ class RQVAETrainer(Trainer):
                     unused_codes=avg_unused_codes,
                 )
 
-            valid_result = self._run_evaluation(
-                model,
-                prepared_data,
-                split="valid",
-                accelerator=accelerator,
-                model_is_prepared=True,
-            )
-            valid_result["epoch"] = epoch
-            valid_history.append(valid_result)
-
-            if (logger := getattr(self, "_logger", None)) is not None:
-                logger.log_validation(epoch=epoch, metrics=valid_result["metrics"])
-
             current_value: float | None = None
             improved = False
-            if monitor is not None:
-                current_value = self._extract_monitor_value(valid_result["metrics"], monitor.name)
-                improved = self._is_improvement(
-                    current_value,
-                    best_value,
-                    higher_is_better=monitor.higher_is_better,
-                    min_delta=float(self.config.early_stopping.min_delta),
+            should_run_validation = (epoch % eval_steps == 0) or (epoch == int(self.config.max_epochs))
+            if should_run_validation:
+                valid_result = self._run_evaluation(
+                    model,
+                    prepared_data,
+                    split="valid",
+                    accelerator=accelerator,
+                    model_is_prepared=True,
                 )
-                if improved:
-                    best_value = current_value
-                    best_epoch = epoch
-                    bad_epoch_count = 0
-                    if checkpoint_paths["best"] is not None:
-                        self._save_model_checkpoint(model, accelerator, checkpoint_paths["best"])
-                elif self.config.early_stopping.enabled:
-                    bad_epoch_count += 1
+                valid_result["epoch"] = epoch
+                valid_history.append(valid_result)
+
+                if (logger := getattr(self, "_logger", None)) is not None:
+                    logger.log_validation(epoch=epoch, metrics=valid_result["metrics"])
+
+                if monitor is not None:
+                    current_value = self._extract_monitor_value(valid_result["metrics"], monitor.name)
+                    improved = self._is_improvement(
+                        current_value,
+                        best_value,
+                        higher_is_better=monitor.higher_is_better,
+                        min_delta=float(self.config.early_stopping.min_delta),
+                    )
+                    if improved:
+                        best_value = current_value
+                        best_epoch = epoch
+                        bad_epoch_count = 0
+                        if checkpoint_paths["best"] is not None:
+                            self._save_model_checkpoint(model, accelerator, checkpoint_paths["best"])
+                    elif self.config.early_stopping.enabled:
+                        bad_epoch_count += 1
             if scheduler is not None and scheduler_interval == "epoch":
                 self._step_epoch_scheduler(scheduler, current_value=current_value)
             if checkpoint_paths["last"] is not None:
                 self._save_model_checkpoint(model, accelerator, checkpoint_paths["last"])
-            if self.config.early_stopping.enabled and not improved and bad_epoch_count >= int(self.config.early_stopping.patience):
+            if should_run_validation and self.config.early_stopping.enabled and not improved and bad_epoch_count >= int(self.config.early_stopping.patience):
                 stopped_early = True
                 if (logger := getattr(self, "_logger", None)) is not None:
                     logger.log_early_stopping(
@@ -409,13 +412,74 @@ class RQVAETrainer(Trainer):
         output_dir.mkdir(parents=True, exist_ok=True)
 
         sid_path = output_dir / config.sid_output_file
-        with open(sid_path, "w") as f:
-            json.dump(item2sids, f, indent=2)
+        output_format = getattr(config, "sid_output_format", "int")
+        if str(config.sid_output_file).endswith(".index.json"):
+            output_format = "minionerec_index"
+
+        payload: Any
+        if output_format == "minionerec_index":
+            payload = self._to_minionerec_index_json(
+                item2sids,
+                token_prefixes=tuple(getattr(config, "minionerec_token_prefixes", ("a", "b", "c", "d", "e"))),
+                token_offset=int(getattr(config, "minionerec_token_offset", 0)),
+            )
+        else:
+            payload = item2sids
+
+        with open(sid_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
 
         accelerator.print(f"[SID] Generated {len(item2sids)} semantic IDs saved to {sid_path}")
 
         # Wait for all processes
         accelerator.wait_for_everyone()
+
+    @staticmethod
+    def _to_minionerec_index_json(
+        item2sids: dict[Any, Any],
+        *,
+        token_prefixes: tuple[str, ...],
+        token_offset: int,
+    ) -> dict[str, list[str]]:
+        """Convert integer code tuples into MiniOneRec `item.index.json` token lists.
+
+        Notes:
+        - Requires that each item's SID is a fixed-width integer tuple (typically codebook_num).
+        - Enforces uniqueness by minimally disambiguating remaining duplicates via one extra token
+          using the next available prefix (same idea as RecBole's MiniOneRec adapter).
+        """
+
+        def _format(level: int, code: int) -> str:
+            prefix = token_prefixes[level] if level < len(token_prefixes) else chr(ord("a") + level)
+            return f"<{prefix}_{int(code) + int(token_offset)}>"
+
+        formatted: dict[str, list[str]] = {}
+        for raw_item_id, raw_codes in item2sids.items():
+            codes = list(raw_codes) if isinstance(raw_codes, (list, tuple)) else None
+            if not codes:
+                raise ValueError(f"RQVAE SID for item {raw_item_id!r} must be a non-empty list/tuple of ints.")
+            if any(not isinstance(v, (int, np.integer)) or isinstance(v, bool) for v in codes):
+                raise ValueError(f"RQVAE SID for item {raw_item_id!r} must contain only integers, got {raw_codes!r}.")
+            formatted[str(raw_item_id)] = [_format(level, int(code)) for level, code in enumerate(codes)]
+
+        # Disambiguate duplicates to guarantee 1-1 decoding for item-level evaluation.
+        sid_to_items: dict[str, list[str]] = {}
+        for item_id, tokens in formatted.items():
+            sid_to_items.setdefault("".join(tokens), []).append(item_id)
+        duplicates = {sid: items for sid, items in sid_to_items.items() if len(items) > 1}
+        if duplicates:
+            for sid, items in sorted(duplicates.items()):
+                current_len = len(formatted[items[0]])
+                if current_len >= len(token_prefixes):
+                    raise ValueError(
+                        "RQVAE minionerec_index formatting produced duplicate SIDs but no remaining token_prefixes are available "
+                        f"to disambiguate (need index {current_len}, have {len(token_prefixes)}). Example: {sid!r} -> {items}."
+                    )
+                prefix = token_prefixes[current_len]
+                for offset, item_id in enumerate(sorted(items), start=1):
+                    formatted[item_id] = [*formatted[item_id], f"<{prefix}_{int(token_offset) + offset}>"]
+
+        return formatted
 
     def _generate_sids_sinkhorn(
         self,
@@ -465,7 +529,8 @@ class RQVAETrainer(Trainer):
         # Convert to string representation for collision detection
         str_sem_ids = _str_sids(initial_tokens)
         # Iteratively resolve collisions using sinkhorn
-        max_iters = 30
+        max_iters = 20
+        self._enable_sinkhorn_inference(model)
         for iteration in range(max_iters):
             if _check_collision(str_sem_ids):
                 break
@@ -495,6 +560,25 @@ class RQVAETrainer(Trainer):
         item2sids = _convert_to_dict(initial_tokens)
 
         return item2sids
+
+    @staticmethod
+    def _enable_sinkhorn_inference(model: BaseModel) -> None:
+        """Enable Sinkhorn inference on the last RQ level only.
+
+        This is used by the `sid_collision_handling="sinkhorn"` SID generation path to
+        iteratively re-encode colliding items.
+        """
+
+        rq_layer = getattr(model, "_rq_layer", None)
+        vq_layers = getattr(rq_layer, "vq_layers", ())
+        if not vq_layers:
+            return
+        last_layer = vq_layers[-1]
+        if getattr(last_layer, "sk_epsilon", -1) <= 0:
+            last_layer.sk_epsilon = 0.003
+        if getattr(last_layer, "sk_iters", -1) <= 0:
+            last_layer.sk_iters = 50
+        last_layer.use_sk = True
 
     def _extend_tokens(
         self,

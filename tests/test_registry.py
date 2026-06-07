@@ -40,6 +40,7 @@ def test_model_registry_import_does_not_require_transformers() -> None:
         assert get_model_spec("hstu").config_cls.__name__ == "HSTUConfig"
         assert get_model_spec("rqvae").config_cls.__name__ == "RQVAEConfig"
         assert get_model_spec("lcrec").config_cls.__name__ == "LCRecConfig"
+        assert get_model_spec("minionerec").config_cls.__name__ == "MiniOneRecConfig"
         assert "transformers" not in sys.modules
         """
     )

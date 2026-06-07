@@ -9,7 +9,7 @@ import torch
 
 from recbole3.evaluation import EvalConfig, MetricSpec
 from recbole3.model import LLMRankConfig, LLMRankModel, LLMRankModelDataset
-from recbole3.model.llmrank.candidates import BM25CandidateGenerator, HSTUCandidateGenerator, RandomCandidateGenerator
+from recbole3.dataset.candidates import BM25CandidateGenerator, HSTUCandidateGenerator, RandomCandidateGenerator
 from recbole3.run import compose_config, run_experiment
 from tests.test_helpers import StubDataset, StubDatasetConfig, ensure_stub_tables
 

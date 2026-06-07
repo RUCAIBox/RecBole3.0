@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from recbole3.model.base import ModelConfig
+
+
+RQVAEOutputSIDFormat = Literal["int", "minionerec_index"]
 
 
 @dataclass(slots=True)
@@ -85,10 +89,28 @@ class RQVAEConfig(ModelConfig):
         default="extend",
         metadata={"help": "Method for handling token collisions: 'sinkhorn' (iterative sinkhorn) or 'extend' (extend last digit)."},
     )
+    sid_output_format: RQVAEOutputSIDFormat = field(
+        default="int",
+        metadata={
+            "help": (
+                "Output SID file format. "
+                "'int' writes item_id -> list[int] codes (TIGER-style). "
+                "'minionerec_index' writes item_id -> list[str] tokens (MiniOneRec item.index.json)."
+            )
+        },
+    )
     sid_output_file: str = field(
         default="item_sids.json",
         metadata={"help": "Output file name for generated semantic IDs (saved in output directory)."},
     )
+    minionerec_token_prefixes: tuple[str, ...] = field(
+        default=("a", "b", "c", "d", "e"),
+        metadata={"help": "Token prefixes used when sid_output_format='minionerec_index'."},
+    )
+    minionerec_token_offset: int = field(
+        default=0,
+        metadata={"help": "Integer offset added to codes when formatting minionerec_index tokens."},
+    )
 
 
-__all__ = ["RQVAEConfig"]
+__all__ = ["RQVAEConfig", "RQVAEOutputSIDFormat"]
