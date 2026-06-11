@@ -12,6 +12,13 @@ from recbole3.model.base import (
     ModelConfig,
     ModelDatasets,
 )
+from recbole3.model.etegrec import (
+    ETEGRecConfig,
+    ETEGRecModel,
+    ETEGRecModelDataset,
+    ETEGRecTrainer,
+    ETEGRecTrainerConfig,
+)
 from recbole3.model.hstu import (
     HISTORY_TIMESTAMPS,
     HSTUConfig,
@@ -106,6 +113,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         model_data_cls=HSTUModelDataset,
         trainer_cls=Trainer,
         trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
+    "etegrec": ModelSpec(
+        model_cls=ETEGRecModel,
+        config_cls=ETEGRecConfig,
+        model_data_cls=ETEGRecModelDataset,
+        trainer_cls=ETEGRecTrainer,
+        trainer_config_cls=ETEGRecTrainerConfig,
         pipeline_cls=Pipeline,
     ),
     "lares": ModelSpec(
@@ -207,6 +222,11 @@ __all__ = [
     "BaseRankingModel",
     "BaseRetrievalModel",
     "BaseSequentialModelDataset",
+    "ETEGRecConfig",
+    "ETEGRecModel",
+    "ETEGRecModelDataset",
+    "ETEGRecTrainer",
+    "ETEGRecTrainerConfig",
     "HISTORY_ITEM_IDS",
     "HISTORY_TIMESTAMPS",
     "HSTUConfig",
