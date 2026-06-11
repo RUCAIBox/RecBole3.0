@@ -196,7 +196,8 @@ class LARESTrainer(Trainer):
             losses: list[float] = []
             rewards: list[float] = []
 
-            progress_bar = self._create_train_progress_bar(train_dataloader, epoch=epoch, max_epochs=int(self.config.max_epochs))
+            progress_bar = self._create_train_progress_bar(train_dataloader, epoch=epoch, max_epochs=int(self.config.max_epochs),
+                                                           disable=not accelerator.is_main_process)
             for batch in progress_bar:
                 with accelerator.accumulate(model):
                     optimizer.zero_grad()

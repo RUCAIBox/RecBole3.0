@@ -152,6 +152,7 @@ class RPGTrainer(Trainer):
                 train_dataloader,
                 epoch=epoch,
                 max_epochs=total_epochs,
+                disable=not accelerator.is_main_process,
             )
             for batch in progress_bar:
                 if max_optimizer_steps is not None and optimizer_steps >= max_optimizer_steps:

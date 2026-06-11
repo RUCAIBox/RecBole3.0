@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence
 
+import numpy as np
 import torch
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
@@ -393,6 +394,10 @@ class Trainer:
         if hasattr(progress_bar, "close"):
             progress_bar.close()
 
+        # Gather evaluation data across processes in multi-GPU setups so that
+        # metrics are computed on the full dataset rather than on each GPU shard.
+        batch_eval_data = self._gather_eval_data(batch_eval_data, accelerator, method)
+
         result = {
             "split": split,
             "protocol": method.protocol,
@@ -428,6 +433,179 @@ class Trainer:
             records=records,
             max_k=int(inference_topk),
         )
+
+    @staticmethod
+    def _gather_eval_data(
+        batch_eval_data: list[Any],
+        accelerator: Any,
+        method: Any,
+    ) -> list[Any]:
+        """Gather evaluation batches across processes so metrics are computed on the full dataset.
+
+        In single-process mode this returns *batch_eval_data* unchanged.  In multi-
+        GPU mode all per-process batches are concatenated, gathered with intra- and
+        inter-process padding, and returned as a single-element list that the
+        existing ``compute_metrics`` / ``_build_inference_results`` paths consume
+        without further change.
+        """
+        if accelerator.num_processes <= 1:
+            return batch_eval_data
+
+        # When a process has no batches (tiny eval set) we still must participate
+        # in the collective; infer the eval flavour from the evaluation method.
+        if batch_eval_data:
+            is_retrieval = isinstance(batch_eval_data[0], RetrievalEvalData)
+        else:
+            is_retrieval = getattr(method, "protocol", None) in ("sampled", "full")
+
+        if is_retrieval:
+            return Trainer._gather_retrieval_eval_data(batch_eval_data, accelerator)
+        return Trainer._gather_ranking_eval_data(batch_eval_data, accelerator)
+
+    @staticmethod
+    def _gather_ranking_eval_data(
+        batch_eval_data: list[Any],
+        accelerator: Any,
+    ) -> list[RankingEvalData]:
+        device = accelerator.device
+
+        if batch_eval_data:
+            scores_cat = np.concatenate(
+                [np.asarray(b.scores, dtype=np.float64).reshape(-1) for b in batch_eval_data]
+            )
+            labels_cat = np.concatenate(
+                [np.asarray(b.labels, dtype=np.float64).reshape(-1) for b in batch_eval_data]
+            )
+            group_ids_cat = np.concatenate(
+                [np.asarray(b.group_ids, dtype=np.int64).reshape(-1) for b in batch_eval_data]
+            )
+        else:
+            scores_cat = np.empty(0, dtype=np.float64)
+            labels_cat = np.empty(0, dtype=np.float64)
+            group_ids_cat = np.empty(0, dtype=np.int64)
+
+        scores = Trainer._gather_tensor(
+            torch.as_tensor(scores_cat, dtype=torch.float64, device=device), accelerator
+        )
+        labels = Trainer._gather_tensor(
+            torch.as_tensor(labels_cat, dtype=torch.float64, device=device), accelerator
+        )
+        group_ids = Trainer._gather_tensor(
+            torch.as_tensor(group_ids_cat, dtype=torch.int64, device=device), accelerator
+        )
+
+        return [
+            RankingEvalData(
+                scores=scores.cpu().numpy(),
+                labels=labels.cpu().numpy(),
+                group_ids=group_ids.cpu().numpy(),
+            )
+        ]
+
+    @staticmethod
+    def _gather_retrieval_eval_data(
+        batch_eval_data: list[Any],
+        accelerator: Any,
+    ) -> list[RetrievalEvalData]:
+        device = accelerator.device
+
+        if batch_eval_data:
+            preds_list = [np.asarray(b.pred_item_ids, dtype=np.int64) for b in batch_eval_data]
+            targets_list = [np.asarray(b.target_item_ids, dtype=np.int64) for b in batch_eval_data]
+            masks_list = [np.asarray(b.target_mask, dtype=bool) for b in batch_eval_data]
+
+            # Within a single process every batch shares the same column width
+            # (max_k for predictions; 1 for targets produced by _single_target_tensors),
+            # so plain np.concatenate is safe.
+            preds_cat = np.concatenate(preds_list, axis=0) if preds_list else np.empty((0, 1), dtype=np.int64)
+            targets_cat = np.concatenate(targets_list, axis=0) if targets_list else np.empty((0, 1), dtype=np.int64)
+            masks_cat = np.concatenate(masks_list, axis=0) if masks_list else np.empty((0, 1), dtype=bool)
+        else:
+            preds_cat = np.empty((0, 0), dtype=np.int64)
+            targets_cat = np.empty((0, 0), dtype=np.int64)
+            masks_cat = np.empty((0, 0), dtype=bool)
+
+        preds = Trainer._gather_tensor_2d(
+            torch.as_tensor(preds_cat, dtype=torch.int64, device=device), accelerator, fill_value=0
+        )
+        targets = Trainer._gather_tensor_2d(
+            torch.as_tensor(targets_cat, dtype=torch.int64, device=device), accelerator, fill_value=0
+        )
+        masks = Trainer._gather_tensor_2d(
+            torch.as_tensor(masks_cat, dtype=torch.bool, device=device), accelerator, fill_value=False
+        )
+
+        return [
+            RetrievalEvalData(
+                pred_item_ids=preds,
+                target_item_ids=targets,
+                target_mask=masks,
+            )
+        ]
+
+    @staticmethod
+    def _gather_tensor(tensor_1d: torch.Tensor, accelerator: Any) -> torch.Tensor:
+        """Gather a 1-D tensor from all processes, correctly handling uneven sizes."""
+        if accelerator.num_processes <= 1:
+            return tensor_1d
+
+        local_size = tensor_1d.shape[0]
+        padded = accelerator.pad_across_processes(tensor_1d, dim=0)
+        max_per_proc = padded.shape[0]
+        gathered = accelerator.gather(padded)
+
+        size_tensor = torch.tensor([local_size], device=tensor_1d.device, dtype=torch.long)
+        all_sizes = accelerator.gather(size_tensor)
+
+        # Concatenate only the valid prefix from each process's contribution.
+        parts: list[torch.Tensor] = []
+        for rank in range(accelerator.num_processes):
+            start = rank * max_per_proc
+            end = start + int(all_sizes[rank].item())
+            parts.append(gathered[start:end])
+        return torch.cat(parts, dim=0)
+
+    @staticmethod
+    def _gather_tensor_2d(
+        tensor_2d: torch.Tensor,
+        accelerator: Any,
+        *,
+        fill_value: int | float | bool = 0,
+    ) -> np.ndarray:
+        """Gather a 2-D tensor from all processes with row and column padding."""
+        if accelerator.num_processes <= 1:
+            return tensor_2d.cpu().numpy()
+
+        local_rows = tensor_2d.shape[0]
+        local_cols = tensor_2d.shape[1]
+
+        # --- pad columns to the global maximum width --------------------------------
+        col_tensor = torch.tensor([local_cols], device=tensor_2d.device, dtype=torch.long)
+        all_cols = accelerator.gather(col_tensor)
+        max_cols = int(all_cols.max().item())
+        if local_cols < max_cols:
+            pad_shape = (local_rows, max_cols - local_cols)
+            if isinstance(fill_value, bool):
+                col_pad = torch.full(pad_shape, fill_value, dtype=torch.bool, device=tensor_2d.device)
+            else:
+                col_pad = torch.full(pad_shape, fill_value, dtype=tensor_2d.dtype, device=tensor_2d.device)
+            tensor_2d = torch.cat([tensor_2d, col_pad], dim=1)
+
+        # --- pad rows to the global maximum ----------------------------------------
+        padded = accelerator.pad_across_processes(tensor_2d, dim=0)
+        max_rows_per_proc = padded.shape[0]
+        gathered = accelerator.gather(padded)
+
+        row_tensor = torch.tensor([local_rows], device=tensor_2d.device, dtype=torch.long)
+        all_rows = accelerator.gather(row_tensor)
+
+        # --- trim and concatenate valid rows ---------------------------------------
+        parts: list[torch.Tensor] = []
+        for rank in range(accelerator.num_processes):
+            start = rank * max_rows_per_proc
+            end = start + int(all_rows[rank].item())
+            parts.append(gathered[start:end])
+        return torch.cat(parts, dim=0).cpu().numpy()
 
     @staticmethod
     def _build_inference_results(batch_eval_data: Sequence[RankingEvalData | RetrievalEvalData]) -> dict[str, Any]:
