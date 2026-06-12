@@ -366,19 +366,28 @@ class BIGRecSFTDataset(Dataset):
         response = f'"{target_text}"{tok.eos_token}'
 
         # Tokenize each part separately so we can compute the boundary length.
-        # Prompts must be truncated from the LEFT so that if the history is too
-        # long, old items are dropped while the instruction header and
-        # "### Response:\n" suffix are always preserved.  Response tokens are
-        # short and truncated from the right (standard behaviour).
+        # Prompts are truncated from the LEFT so that if the history is too long,
+        # old items are dropped while "### Response:\n" is always preserved.
+        # We encode WITHOUT add_special_tokens so BOS is not included in the text
+        # before truncation; BOS is then prepended manually afterwards.  This
+        # ensures BOS survives even when the prompt body fills max_input_length.
+        bos_id: int | None = getattr(tok, "bos_token_id", None)
+        # Reserve one slot for BOS when the tokenizer uses one.
+        prompt_budget: int = (
+            self._config.max_input_length - 1 if bos_id is not None
+            else self._config.max_input_length
+        )
         orig_truncation_side = getattr(tok, "truncation_side", "right")
         tok.truncation_side = "left"
         prompt_ids: list[int] = tok.encode(
             prompt,
-            add_special_tokens=True,
+            add_special_tokens=False,
             truncation=True,
-            max_length=self._config.max_input_length,
+            max_length=prompt_budget,
         )
         tok.truncation_side = orig_truncation_side
+        if bos_id is not None:
+            prompt_ids = [bos_id] + prompt_ids
         response_ids: list[int] = tok.encode(
             response,
             add_special_tokens=False,

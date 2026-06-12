@@ -824,6 +824,10 @@ class BIGRecTrainer:
             actual_bs: int = len(batch_df)
 
             prompts: list[str] = build_eval_prompts(batch_df, item_text_lookup, self.config)
+            # Left-truncate so that if a prompt exceeds max_input_length, old history
+            # items are dropped rather than the "### Response:\n" suffix.
+            orig_trunc_side = getattr(tokenizer, "truncation_side", "right")
+            tokenizer.truncation_side = "left"
             encoded = tokenizer(
                 prompts,
                 return_tensors="pt",
@@ -831,6 +835,7 @@ class BIGRecTrainer:
                 truncation=True,
                 max_length=self.config.max_input_length,
             ).to(device)
+            tokenizer.truncation_side = orig_trunc_side
             prompt_length: int = encoded["input_ids"].shape[1]
 
             with torch.no_grad():
