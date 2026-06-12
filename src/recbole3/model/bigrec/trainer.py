@@ -21,9 +21,15 @@ hyperparameter.  A higher Wᵢ decreases D̃ᵢ, promoting the item in the ranki
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
 from typing import Any, Literal
 
 import numpy as np
@@ -56,6 +62,10 @@ logger = logging.getLogger(__name__)
 # Both values are the standard LLaMA / LLaMA-2 defaults.
 _DEFAULT_PAD_TOKEN_ID: int = 0   # unk_token_id; used when pad_token_id is None
 _DEFAULT_EOS_TOKEN_ID: int = 2   # </s>; used when eos_token_id is None
+
+# Name under which the LoRA adapter is registered with the vLLM server via
+# --lora-modules.  Requests use this as the "model" field to trigger LoRA.
+_VLLM_LORA_NAME: str = "bigrec_adapter"
 
 
 class BIGRecTrainer:
@@ -773,141 +783,158 @@ class BIGRecTrainer:
         coarse: tuple[float, ...] = tuple(float(i) for i in range(1, 100))         # 1.0  … 99.0
         return fine + coarse  # 199 values
 
-    def _generate_all_titles(
-        self,
-        model: Any,
-        tokenizer: AutoTokenizer,
-        eval_frame: pd.DataFrame,
-        item_text_lookup: list[str],
-        device: torch.device,
-    ) -> tuple[list[str], list[int], list[list[int] | None]]:
-        """Run beam-search over a full eval frame and collect generated titles.
+    # ── vLLM server management ────────────────────────────────────────────────
 
-        Used by the gamma-search path to decouple generation from distance
-        computation and the gamma grid-search loop.
+    def _resolve_vllm_python(self) -> str:
+        """Return the Python executable to use for the vLLM server subprocess.
 
-        Args:
-            model: Generation model (fine-tuned LoRA) in ``eval()`` mode.
-            tokenizer: Left-padding tokenizer.
-            eval_frame: Full evaluation DataFrame with ``history_item_ids`` and
-                        ``item_id`` columns; optionally ``candidate_item_ids``.
-            item_text_lookup: ``item_id → title string`` mapping.
-            device: Inference device.
+        When ``config.vllm_conda_env`` is empty, returns ``sys.executable``
+        (the current interpreter, which must have vLLM installed).  Otherwise
+        resolves ``<conda_base>/envs/<vllm_conda_env>/bin/python`` by querying
+        ``conda info --base``.
 
         Returns:
-            Tuple of:
+            Absolute path to a Python executable.
 
-            - ``clean_texts``:  Decoded (stripped) generated titles, one per row.
-            - ``target_ids``:   Ground-truth ``item_id`` per row.
-            - ``cand_lists``:   Candidate ``item_id`` lists per row, or ``None``
-                                when the row has no pre-defined candidates
-                                (→ full-ranking).
+        Raises:
+            RuntimeError: If conda is not on PATH or ``conda info --base`` fails.
+            FileNotFoundError: If the resolved Python path does not exist.
         """
-        model.eval()
-        tokenizer.padding_side = "left"
+        if not self.config.vllm_conda_env:
+            return sys.executable
 
-        clean_texts: list[str] = []
-        target_ids: list[int] = []
-        cand_lists: list[list[int] | None] = []
-
-        batch_size: int = self.config.eval_batch_size
-        num_rows: int = len(eval_frame)
-
-        pbar = tqdm(
-            range(0, num_rows, batch_size),
-            desc="BIGRec generation",
-            disable=not self._is_main_process(),
-        )
-
-        for start in pbar:
-            batch_df = eval_frame.iloc[start : start + batch_size].reset_index(drop=True)
-            actual_bs: int = len(batch_df)
-
-            prompts: list[str] = build_eval_prompts(batch_df, item_text_lookup, self.config)
-            # Left-truncate so that if a prompt exceeds max_input_length, old history
-            # items are dropped rather than the "### Response:\n" suffix.
-            orig_trunc_side = getattr(tokenizer, "truncation_side", "right")
-            tokenizer.truncation_side = "left"
-            encoded = tokenizer(
-                prompts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=self.config.max_input_length,
-            ).to(device)
-            tokenizer.truncation_side = orig_trunc_side
-            prompt_length: int = encoded["input_ids"].shape[1]
-
-            with torch.no_grad():
-                output_ids: torch.Tensor = model.generate(
-                    input_ids=encoded["input_ids"],
-                    attention_mask=encoded["attention_mask"],
-                    max_new_tokens=self.config.max_new_tokens,
-                    num_beams=self.config.num_beams,
-                    num_return_sequences=1,
-                    early_stopping=True,
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                )
-            generated_ids = output_ids[:, prompt_length:]
-            generated_texts: list[str] = tokenizer.batch_decode(
-                generated_ids,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=True,
+        try:
+            result = subprocess.run(
+                ["conda", "info", "--base"],
+                capture_output=True, text=True, timeout=15, check=True,
             )
+            conda_base = result.stdout.strip()
+        except FileNotFoundError:
+            raise RuntimeError(
+                "conda not found on PATH. "
+                "Add conda to PATH or set vllm_conda_env='' to use the current interpreter."
+            ) from None
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"'conda info --base' failed: {exc.stderr.strip()}"
+            ) from exc
 
-            for idx, t in enumerate(generated_texts):
-                clean_texts.append(t.strip().strip('"').strip() or f"[empty_{start + idx}]")
+        python_rel = (
+            os.path.join("Scripts", "python.exe")
+            if sys.platform == "win32"
+            else os.path.join("bin", "python")
+        )
+        python_path = os.path.join(conda_base, "envs", self.config.vllm_conda_env, python_rel)
+        if not os.path.isfile(python_path):
+            raise FileNotFoundError(
+                f"Python not found at {python_path!r}. "
+                f"Check that conda env '{self.config.vllm_conda_env}' exists."
+            )
+        return python_path
 
-            for i in range(actual_bs):
-                row = batch_df.iloc[i]
-                target_ids.append(int(row[ITEM_ID]))
-                cand_val = row.get(CANDIDATE_ITEM_IDS, None)
-                if cand_val is None or (
-                    not hasattr(cand_val, "__len__")
-                    and isinstance(cand_val, float)
-                    and np.isnan(cand_val)
-                ):
-                    cand_lists.append(None)
-                else:
-                    cand_lists.append(list(cand_val))
+    def _start_vllm_server(self, checkpoint_path: str) -> "subprocess.Popen[bytes]":
+        """Launch the vLLM OpenAI-compatible server as a background subprocess.
 
-        return clean_texts, target_ids, cand_lists
+        Sets ``CUDA_VISIBLE_DEVICES`` for the subprocess to
+        ``config.vllm_device_id``, which may differ from ``config.device_id``
+        (the GPU used for training and embedding extraction) so that generation
+        and Phase-2 embedding extraction can run on separate physical GPUs.
+
+        When ``config.use_lora=True``, the LoRA adapter is pre-registered via
+        ``--lora-modules`` so requests can reference it by name.
+
+        Args:
+            checkpoint_path: Directory containing the saved LoRA adapter
+                             (used for ``--lora-modules`` when LoRA is enabled).
+
+        Returns:
+            Running :class:`subprocess.Popen` handle.  The caller is responsible
+            for ``terminate()`` + ``wait()`` when generation is complete.
+        """
+        python_exe = self._resolve_vllm_python()
+        max_model_len: int = self.config.max_input_length + self.config.max_new_tokens
+
+        cmd: list[str] = [
+            python_exe, "-m", "vllm.entrypoints.openai.api_server",
+            "--model", self.config.llm_path,
+            "--dtype", self.config.torch_dtype,
+            "--max-model-len", str(max_model_len),
+            "--port", str(self.config.vllm_server_port),
+        ]
+        if self.config.use_lora:
+            cmd += [
+                "--enable-lora",
+                "--lora-modules", f"{_VLLM_LORA_NAME}={checkpoint_path}",
+                "--max-lora-rank", str(self.config.lora_r),
+            ]
+
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = str(self.config.vllm_device_id)
+
+        self._log(
+            "Starting vLLM server: env=%s, CUDA_VISIBLE_DEVICES=%s, port=%d%s",
+            self.config.vllm_conda_env or "(current)",
+            self.config.vllm_device_id,
+            self.config.vllm_server_port,
+            f", lora={checkpoint_path}" if self.config.use_lora else "",
+        )
+        return subprocess.Popen(cmd, env=env)
+
+    def _wait_vllm_ready(self, port: int, timeout: int) -> None:
+        """Block until the vLLM server's ``/health`` endpoint returns HTTP 200.
+
+        Polls every 5 seconds.  The server logs (printed by the subprocess to
+        the terminal) show model-loading progress while we wait.
+
+        Args:
+            port: TCP port the server is listening on.
+            timeout: Maximum seconds to wait before raising.
+
+        Raises:
+            TimeoutError: If the server does not become healthy in time.
+        """
+        url = f"http://localhost:{port}/health"
+        deadline = time.monotonic() + timeout
+        self._log("Waiting for vLLM server on port %d (timeout=%ds) …", port, timeout)
+
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(url, timeout=3) as resp:
+                    if resp.status == 200:
+                        self._log("vLLM server is ready.")
+                        return
+            except Exception:  # connection refused, timeout, non-200, etc.
+                pass
+            time.sleep(5)
+
+        raise TimeoutError(
+            f"vLLM server did not become ready within {timeout}s on port {port}. "
+            "Check the server output above for error details."
+        )
 
     def _generate_all_titles_vllm(
         self,
-        checkpoint_path: str,
         eval_frame: pd.DataFrame,
         item_text_lookup: list[str],
     ) -> tuple[list[str], list[int], list[list[int] | None]]:
-        """vLLM-accelerated generation for evaluation (10-30x faster than HF).
+        """Generate item titles by calling the running vLLM HTTP server.
 
-        Processes all prompts in a single ``llm.generate()`` call via vLLM's
-        continuous batching.  The vLLM engine loads the base model + LoRA adapter
-        directly, so no HF model needs to be loaded beforehand.  After generation
-        the engine is torn down and GPU memory is freed so Phase 2 can load the
-        HF embedding model.
+        Sends prompts to the OpenAI-compatible ``/v1/completions`` endpoint in
+        batches of ``eval_batch_size``.  The server must already be running and
+        healthy (started via :meth:`_start_vllm_server`).
 
-        Requires ``pip install 'vllm>=0.4.0'`` and ``config.use_vllm=True``.
+        No vLLM package is imported here — communication is via plain HTTP so
+        this method works even when vLLM lives in a separate conda environment.
 
         Args:
-            checkpoint_path: Directory containing the saved LoRA adapter.
             eval_frame: Evaluation DataFrame with ``history_item_ids`` and
-                        ``item_id`` columns.
+                        ``item_id`` columns; optionally ``candidate_item_ids``.
             item_text_lookup: ``item_id → title`` mapping for prompt building.
 
         Returns:
-            Same tuple as :meth:`_generate_all_titles`.
+            Tuple ``(clean_texts, target_ids, cand_lists)`` — one entry per row
+            in *eval_frame*.
         """
-        try:
-            from vllm import LLM, SamplingParams
-        except ImportError as exc:
-            raise ImportError(
-                "vLLM is not installed. Install it with:\n"
-                "  pip install 'vllm>=0.4.0'\n"
-                "or set model.use_vllm=false to fall back to HuggingFace generation."
-            ) from exc
-
         prompts: list[str] = build_eval_prompts(eval_frame, item_text_lookup, self.config)
 
         target_ids: list[int] = []
@@ -924,66 +951,50 @@ class BIGRecTrainer:
             else:
                 cand_lists.append(list(cand_val))
 
-        tokenizer = self._load_tokenizer(padding_side="left")
-        eos_id: int = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else _DEFAULT_EOS_TOKEN_ID
-
-        def _make_sampling_params(use_beam: bool) -> "SamplingParams":
-            if use_beam:
-                try:
-                    return SamplingParams(
-                        n=1,
-                        best_of=self.config.num_beams,
-                        use_beam_search=True,
-                        temperature=0.0,
-                        max_tokens=self.config.max_new_tokens,
-                        stop_token_ids=[eos_id],
-                    )
-                except TypeError:
-                    # use_beam_search removed in vLLM ≥ 0.5; fall back to greedy.
-                    self._log(
-                        "vLLM: use_beam_search not supported; falling back to greedy.",
-                        level="warning",
-                    )
-            return SamplingParams(
-                temperature=0.0,
-                max_tokens=self.config.max_new_tokens,
-                stop_token_ids=[eos_id],
-            )
-
-        sampling_params = _make_sampling_params(self.config.num_beams > 1)
-
-        max_model_len = max(
-            self.config.max_input_length + self.config.max_new_tokens, 1024
-        )
-        llm_kwargs: dict[str, Any] = dict(
-            model=self.config.llm_path,
-            dtype=self.config.torch_dtype,
-            gpu_memory_utilization=self.config.vllm_gpu_memory_utilization,
-            max_model_len=max_model_len,
-        )
-        if self.config.use_lora:
-            llm_kwargs["enable_lora"] = True
-            llm_kwargs["max_lora_rank"] = self.config.lora_r
-
-        self._log(
-            "vLLM: launching engine (use_lora=%s, gpu_mem=%.0f%%) …",
-            self.config.use_lora,
-            self.config.vllm_gpu_memory_utilization * 100,
-        )
-        llm = LLM(**llm_kwargs)
-
-        lora_request = None
-        if self.config.use_lora:
-            from vllm.lora.request import LoRARequest
-            lora_request = LoRARequest("bigrec_adapter", 1, checkpoint_path)
-
-        self._log("vLLM: generating %d prompts …", len(prompts))
-        outputs = llm.generate(prompts, sampling_params, lora_request=lora_request)
-
+        url = f"http://localhost:{self.config.vllm_server_port}/v1/completions"
+        model_name: str = _VLLM_LORA_NAME if self.config.use_lora else self.config.llm_path
+        batch_size: int = self.config.eval_batch_size
         clean_texts: list[str] = []
-        for i, out in enumerate(outputs):
-            text = out.outputs[0].text.strip().strip('"').strip()
-            clean_texts.append(text or f"[empty_{i}]")
+
+        pbar = tqdm(
+            range(0, len(prompts), batch_size),
+            desc="vLLM generation",
+            disable=not self._is_main_process(),
+        )
+        for start in pbar:
+            batch = prompts[start : start + batch_size]
+            payload: dict[str, Any] = {
+                "model": model_name,
+                "prompt": batch,
+                "max_tokens": self.config.max_new_tokens,
+                "temperature": 0.0,
+                "n": 1,
+            }
+            if self.config.num_beams > 1:
+                # best_of generates num_beams candidates server-side and returns
+                # the one with the highest log-probability (beam-search approximation).
+                payload["best_of"] = self.config.num_beams
+
+            req_data = json.dumps(payload).encode()
+            req = urllib.request.Request(
+                url,
+                data=req_data,
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=300) as resp:
+                    result: dict[str, Any] = json.loads(resp.read())
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode(errors="replace")
+                raise RuntimeError(
+                    f"vLLM server returned HTTP {exc.code}: {body}"
+                ) from exc
+
+            # choices are ordered by index, matching the input prompt order.
+            choices = sorted(result["choices"], key=lambda c: c["index"])
+            for i, choice in enumerate(choices):
+                text = choice["text"].strip().strip('"').strip()
+                clean_texts.append(text or f"[empty_{start + i}]")
 
         if self._is_main_process():
             for i in range(min(3, len(clean_texts))):
@@ -991,11 +1002,6 @@ class BIGRecTrainer:
                     "[vLLM sample %d]  generated: %r  |  target: %r",
                     i, clean_texts[i], item_text_lookup[target_ids[i]],
                 )
-
-        del llm
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        self._log("vLLM engine shut down, GPU memory freed.")
 
         return clean_texts, target_ids, cand_lists
 
@@ -1242,46 +1248,35 @@ class BIGRecTrainer:
         valid_targets: list[int] | None = None
         valid_cands: list[list[int] | None] | None = None
 
-        if self.config.use_vllm:
+        vllm_proc = self._start_vllm_server(checkpoint_path)
+        try:
+            self._wait_vllm_ready(self.config.vllm_server_port, self.config.vllm_startup_timeout)
+
             eval_texts, target_ids, cand_lists = self._generate_all_titles_vllm(
-                checkpoint_path, eval_frame, item_text_lookup
+                eval_frame, item_text_lookup
             )
+
             if self.config.grounding_gamma_search:
-                self._log("Eval phase 1b (vLLM): valid split for gamma-search …")
+                self._log("Eval phase 1b: valid split for gamma-search …")
                 valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
                 if self.config.max_steps > 0:
                     max_valid_users: int = self.config.max_steps * self.config.eval_batch_size
                     if len(valid_frame) > max_valid_users:
                         valid_frame = valid_frame.head(max_valid_users).reset_index(drop=True)
                 valid_texts, valid_targets, valid_cands = self._generate_all_titles_vllm(
-                    checkpoint_path, valid_frame, item_text_lookup
+                    valid_frame, item_text_lookup
                 )
-            tokenizer = self._load_tokenizer(padding_side="left")
-            device: torch.device = torch.device(
-                f"cuda:{self.config.device_id}" if torch.cuda.is_available() else "cpu"
-            )
-        else:
-            gen_model = self._load_trained_model(checkpoint_path)
-            tokenizer = self._load_tokenizer(padding_side="left")
-            device = next(gen_model.parameters()).device
-
-            eval_texts, target_ids, cand_lists = self._generate_all_titles(
-                gen_model, tokenizer, eval_frame, item_text_lookup, device
-            )
-            if self.config.grounding_gamma_search:
-                self._log("Eval phase 1b: valid split for gamma-search …")
-                valid_frame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
-                if self.config.max_steps > 0:
-                    max_valid_users = self.config.max_steps * self.config.eval_batch_size
-                    if len(valid_frame) > max_valid_users:
-                        valid_frame = valid_frame.head(max_valid_users).reset_index(drop=True)
-                valid_texts, valid_targets, valid_cands = self._generate_all_titles(
-                    gen_model, tokenizer, valid_frame, item_text_lookup, device
-                )
-            del gen_model
+        finally:
+            vllm_proc.terminate()
+            vllm_proc.wait(timeout=30)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            self._log("Generation model freed from VRAM.")
+            self._log("vLLM server stopped, VRAM freed.")
+
+        tokenizer = self._load_tokenizer(padding_side="left")
+        device: torch.device = torch.device(
+            f"cuda:{self.config.device_id}" if torch.cuda.is_available() else "cpu"
+        )
 
         # ── Phase 2: Embedding extraction ────────────────────────────────────
         if self.config.embedding_use_base_model:

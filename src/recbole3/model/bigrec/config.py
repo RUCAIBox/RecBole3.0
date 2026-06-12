@@ -423,28 +423,46 @@ class BIGRecConfig(SequentialModelConfig):
         },
     )
 
-    # ── vLLM Inference Acceleration ──────────────────────────────────────────
-    use_vllm: bool = field(
-        default=False,
+    # ── vLLM Inference (Server Mode) ─────────────────────────────────────────
+    # BIGRec evaluation always uses a vLLM OpenAI-compatible HTTP server for
+    # generation.  The server is auto-started as a subprocess before Phase 1
+    # and terminated after generation completes, freeing its VRAM before the
+    # embedding model is loaded for Phase 2.
+    vllm_conda_env: str = field(
+        default="",
         metadata={
             "help": (
-                "Use vLLM for beam-search generation during evaluation. "
-                "vLLM's continuous batching achieves ~10-30x higher throughput "
-                "than HuggingFace generate(), reducing generation time for "
-                "57 k users from ~17 hours to ~30-60 minutes on an A100-40 GB. "
-                "Requires: pip install 'vllm>=0.4.0'. "
-                "vLLM handles LoRA loading directly; the HF model is not loaded "
-                "during generation when this flag is True."
+                "Name of the conda environment that has vLLM installed. "
+                "BIGRec will auto-start a vLLM OpenAI-compatible server in that "
+                "environment before evaluation and shut it down after generation. "
+                "Empty string (default): use the current Python interpreter "
+                "(vLLM must be installed in the same env as recbole3)."
             )
         },
     )
-    vllm_gpu_memory_utilization: float = field(
-        default=0.85,
+    vllm_device_id: int = field(
+        default=0,
         metadata={
             "help": (
-                "Fraction of GPU memory reserved by the vLLM KV-cache. "
-                "Lower values leave more headroom if other processes share the GPU; "
-                "higher values improve throughput. Typical range: 0.7–0.95."
+                "CUDA device index for the vLLM server subprocess. "
+                "May differ from device_id (the training / embedding GPU) so "
+                "that generation and embedding extraction can run on separate "
+                "physical GPUs. CUDA_VISIBLE_DEVICES for the server process is "
+                "set to this value."
+            )
+        },
+    )
+    vllm_server_port: int = field(
+        default=8000,
+        metadata={"help": "TCP port the vLLM OpenAI-compatible server listens on."},
+    )
+    vllm_startup_timeout: int = field(
+        default=300,
+        metadata={
+            "help": (
+                "Seconds to wait for the vLLM server's /health endpoint to "
+                "return HTTP 200 after launch.  Large models (LLaMA-70B) may "
+                "need up to 600 s to load."
             )
         },
     )

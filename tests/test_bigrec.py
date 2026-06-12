@@ -1134,7 +1134,19 @@ class TestTrainerEvaluate:
         trainer = self._trainer()
         num_items = data.get_num_items()
 
-        monkeypatch.setattr(trainer, "_load_trained_model", lambda cp: _FakeModel())
+        # Stub the vLLM subprocess management so no real server is started.
+        fake_proc = MagicMock()
+        monkeypatch.setattr(trainer, "_start_vllm_server", lambda cp: fake_proc)
+        monkeypatch.setattr(trainer, "_wait_vllm_ready", lambda port, timeout: None)
+        monkeypatch.setattr(
+            trainer,
+            "_generate_all_titles_vllm",
+            lambda frame, lookup: (
+                ["MockTitle"] * len(frame),
+                list(frame[ITEM_ID]),
+                [None] * len(frame),
+            ),
+        )
         # Stub base-model loader so no real LLM is touched (embedding_use_base_model=True default).
         monkeypatch.setattr(trainer, "_load_base_model_for_embedding", lambda *a: _FakeModel())
         monkeypatch.setattr(trainer, "_load_tokenizer", lambda **kw: _MockTokenizer())
@@ -1160,7 +1172,18 @@ class TestTrainerEvaluate:
         trainer = self._trainer()
         num_items = data.get_num_items()
 
-        monkeypatch.setattr(trainer, "_load_trained_model", lambda cp: _FakeModel())
+        fake_proc = MagicMock()
+        monkeypatch.setattr(trainer, "_start_vllm_server", lambda cp: fake_proc)
+        monkeypatch.setattr(trainer, "_wait_vllm_ready", lambda port, timeout: None)
+        monkeypatch.setattr(
+            trainer,
+            "_generate_all_titles_vllm",
+            lambda frame, lookup: (
+                ["MockTitle"] * len(frame),
+                list(frame[ITEM_ID]),
+                [None] * len(frame),
+            ),
+        )
         monkeypatch.setattr(trainer, "_load_base_model_for_embedding", lambda *a: _FakeModel())
         monkeypatch.setattr(trainer, "_load_tokenizer", lambda **kw: _MockTokenizer())
         monkeypatch.setattr(
@@ -2089,3 +2112,215 @@ class TestFitValidationCapping:
         eval_ds = self._capture_eval_dataset(tmp_path, monkeypatch, cfg)
         assert eval_ds is not None
         assert len(eval_ds) == full_valid_len
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 22. vLLM server config fields
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestVLLMConfig:
+    """Verify defaults and overrides for the four vLLM server config fields."""
+
+    def test_default_vllm_conda_env_is_empty_string(self) -> None:
+        assert BIGRecConfig().vllm_conda_env == ""
+
+    def test_default_vllm_device_id_is_zero(self) -> None:
+        assert BIGRecConfig().vllm_device_id == 0
+
+    def test_default_vllm_server_port_is_8000(self) -> None:
+        assert BIGRecConfig().vllm_server_port == 8000
+
+    def test_default_vllm_startup_timeout_is_300(self) -> None:
+        assert BIGRecConfig().vllm_startup_timeout == 300
+
+    def test_vllm_conda_env_overridable(self) -> None:
+        cfg = BIGRecConfig(vllm_conda_env="vllm_env")
+        assert cfg.vllm_conda_env == "vllm_env"
+
+    def test_vllm_device_id_overridable(self) -> None:
+        cfg = BIGRecConfig(vllm_device_id=1)
+        assert cfg.vllm_device_id == 1
+
+    def test_vllm_server_port_overridable(self) -> None:
+        cfg = BIGRecConfig(vllm_server_port=9000)
+        assert cfg.vllm_server_port == 9000
+
+    def test_vllm_startup_timeout_overridable(self) -> None:
+        cfg = BIGRecConfig(vllm_startup_timeout=600)
+        assert cfg.vllm_startup_timeout == 600
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 23. vLLM server management methods
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestResolveVLLMPython:
+    """Tests for _resolve_vllm_python."""
+
+    def test_empty_conda_env_returns_sys_executable(self) -> None:
+        import sys as _sys
+
+        trainer = BIGRecTrainer(BIGRecConfig(vllm_conda_env=""))
+        result = trainer._resolve_vllm_python()
+        assert result == _sys.executable
+
+    def test_unknown_conda_env_raises_file_not_found(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the named env does not exist, resolved python path is missing."""
+        import subprocess as sp
+
+        def fake_run(cmd, **kwargs: Any) -> MagicMock:
+            mock = MagicMock()
+            mock.stdout = "/fake/conda/base"
+            return mock
+
+        monkeypatch.setattr(sp, "run", fake_run)
+        trainer = BIGRecTrainer(BIGRecConfig(vllm_conda_env="nonexistent_env_xyz"))
+        with pytest.raises(FileNotFoundError, match="nonexistent_env_xyz"):
+            trainer._resolve_vllm_python()
+
+
+class TestWaitVLLMReady:
+    """Tests for _wait_vllm_ready."""
+
+    def test_raises_timeout_when_server_absent(self) -> None:
+        """When no server is reachable, must raise TimeoutError after timeout expires."""
+        trainer = BIGRecTrainer(BIGRecConfig(vllm_server_port=19999))
+        with pytest.raises(TimeoutError, match="port 19999"):
+            trainer._wait_vllm_ready(port=19999, timeout=1)
+
+    def test_returns_immediately_when_server_responds_200(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When mock URL returns 200, _wait_vllm_ready should return without error."""
+        import urllib.request as _ur
+
+        class _FakeResp:
+            status: int = 200
+            def __enter__(self) -> "_FakeResp":
+                return self
+            def __exit__(self, *a: Any) -> None:
+                pass
+
+        monkeypatch.setattr(_ur, "urlopen", lambda url, timeout=None: _FakeResp())
+        trainer = BIGRecTrainer(BIGRecConfig(vllm_server_port=8123))
+        trainer._wait_vllm_ready(port=8123, timeout=10)  # must not raise
+
+
+class TestStartVLLMServer:
+    """Tests for _start_vllm_server."""
+
+    def test_start_server_sets_cuda_visible_devices(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        import subprocess as sp
+
+        captured: dict[str, Any] = {}
+
+        def fake_popen(cmd: list[str], env: dict[str, str] | None = None) -> MagicMock:
+            captured["cmd"] = cmd
+            captured["env"] = env
+            return MagicMock()
+
+        monkeypatch.setattr(sp, "Popen", fake_popen)
+
+        cfg = BIGRecConfig(vllm_conda_env="", vllm_device_id=2, vllm_server_port=8765, use_lora=False)
+        trainer = BIGRecTrainer(cfg)
+        trainer._start_vllm_server(str(tmp_path))
+
+        assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "2"
+        port_idx = captured["cmd"].index("--port")
+        assert captured["cmd"][port_idx + 1] == "8765"
+
+    def test_start_server_adds_lora_args_when_use_lora_true(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        import subprocess as sp
+
+        captured: dict[str, Any] = {}
+
+        def fake_popen(cmd: list[str], env: dict[str, str] | None = None) -> MagicMock:
+            captured["cmd"] = cmd
+            return MagicMock()
+
+        monkeypatch.setattr(sp, "Popen", fake_popen)
+
+        cfg = BIGRecConfig(vllm_conda_env="", use_lora=True, lora_r=16)
+        trainer = BIGRecTrainer(cfg)
+        trainer._start_vllm_server(str(tmp_path))
+
+        assert "--enable-lora" in captured["cmd"]
+        assert "--lora-modules" in captured["cmd"]
+        lora_rank_idx = captured["cmd"].index("--max-lora-rank")
+        assert captured["cmd"][lora_rank_idx + 1] == "16"
+
+    def test_start_server_omits_lora_args_when_use_lora_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        import subprocess as sp
+
+        captured: dict[str, Any] = {}
+
+        def fake_popen(cmd: list[str], env: dict[str, str] | None = None) -> MagicMock:
+            captured["cmd"] = cmd
+            return MagicMock()
+
+        monkeypatch.setattr(sp, "Popen", fake_popen)
+
+        cfg = BIGRecConfig(vllm_conda_env="", use_lora=False)
+        trainer = BIGRecTrainer(cfg)
+        trainer._start_vllm_server(str(tmp_path))
+
+        assert "--enable-lora" not in captured["cmd"]
+        assert "--lora-modules" not in captured["cmd"]
+
+    def test_vllm_server_terminated_after_generation(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """evaluate() must call terminate() + wait() on the vLLM proc in all cases."""
+        data, _ = _prepare_bigrec_data()
+        cfg = BIGRecConfig(
+            eval_topk=(1,),
+            eval_metrics=("recall",),
+            eval_protocol="full",
+            eval_batch_size=2,
+            max_input_length=32,
+            max_new_tokens=8,
+            num_beams=1,
+            history_max_length=3,
+        )
+        trainer = BIGRecTrainer(cfg)
+        num_items = data.get_num_items()
+
+        fake_proc = MagicMock()
+        monkeypatch.setattr(trainer, "_start_vllm_server", lambda cp: fake_proc)
+        monkeypatch.setattr(trainer, "_wait_vllm_ready", lambda port, timeout: None)
+        monkeypatch.setattr(
+            trainer,
+            "_generate_all_titles_vllm",
+            lambda frame, lookup: (
+                ["MockTitle"] * len(frame),
+                list(frame[ITEM_ID]),
+                [None] * len(frame),
+            ),
+        )
+        monkeypatch.setattr(trainer, "_load_base_model_for_embedding", lambda *a: _FakeModel())
+        monkeypatch.setattr(trainer, "_load_tokenizer", lambda **kw: _MockTokenizer())
+        monkeypatch.setattr(
+            trainer,
+            "_precompute_item_embeddings",
+            lambda *a, **kw: torch.zeros(num_items, _FakeModel.H),
+        )
+        monkeypatch.setattr(
+            trainer,
+            "_extract_embeddings",
+            lambda model, tok, texts, batch_size, device: torch.zeros(len(texts), _FakeModel.H),
+        )
+
+        trainer.evaluate(data, checkpoint_path=str(tmp_path), split="test")
+
+        fake_proc.terminate.assert_called_once()
+        fake_proc.wait.assert_called_once()

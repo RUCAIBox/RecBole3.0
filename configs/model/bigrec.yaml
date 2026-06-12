@@ -83,9 +83,13 @@ model:
   eval_protocol: full                   # "sampled" or "full"
   eval_user_num: 5000                   # -1 = all; 5000 mirrors official test set size
 
-  # ── vLLM Inference ───────────────────────────────────────────────────────────
-  use_vllm: false                       # ~10-30x faster generation; needs vllm>=0.4.0
-  vllm_gpu_memory_utilization: 0.85
+  # ── vLLM Server (used for generation during evaluation) ─────────────────────
+  # vLLM is always used for inference; set vllm_conda_env if vLLM lives in a
+  # different conda env from the training environment.
+  vllm_conda_env: ""                    # conda env name with vLLM; empty = current env
+  vllm_device_id: 0                     # GPU index for the vLLM server subprocess
+  vllm_server_port: 8000                # TCP port the vLLM OpenAI-compatible server uses
+  vllm_startup_timeout: 300             # seconds to wait for /health endpoint
 
   # ── Pipeline Control ─────────────────────────────────────────────────────────
   pipeline_stage: training              # "training" or "evaluation"
