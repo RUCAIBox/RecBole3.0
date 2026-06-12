@@ -111,6 +111,7 @@ class _MockTokenizer:
         self.eos_token = "</s>"
         self.eos_token_id = 2
         self.padding_side = "right"
+        self.truncation_side = "right"
 
     def encode(
         self,

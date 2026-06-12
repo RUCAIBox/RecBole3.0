@@ -52,6 +52,11 @@ from recbole3.model.bigrec.data import (
 
 logger = logging.getLogger(__name__)
 
+# Fallback token IDs used when the tokenizer does not expose them explicitly.
+# Both values are the standard LLaMA / LLaMA-2 defaults.
+_DEFAULT_PAD_TOKEN_ID: int = 0   # unk_token_id; used when pad_token_id is None
+_DEFAULT_EOS_TOKEN_ID: int = 2   # </s>; used when eos_token_id is None
+
 
 class BIGRecTrainer:
     """BIGRec trainer: LoRA SFT fine-tuning and embedding-grounding evaluation.
@@ -131,7 +136,7 @@ class BIGRecTrainer:
             padding_side=padding_side,
         )
         if tokenizer.pad_token_id is None:
-            tokenizer.pad_token_id = 0
+            tokenizer.pad_token_id = _DEFAULT_PAD_TOKEN_ID
         return tokenizer
 
     # ── Model loading ─────────────────────────────────────────────────────────
@@ -915,7 +920,7 @@ class BIGRecTrainer:
                 cand_lists.append(list(cand_val))
 
         tokenizer = self._load_tokenizer(padding_side="left")
-        eos_id: int = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 2
+        eos_id: int = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else _DEFAULT_EOS_TOKEN_ID
 
         def _make_sampling_params(use_beam: bool) -> "SamplingParams":
             if use_beam:
@@ -1032,8 +1037,6 @@ class BIGRecTrainer:
         best_scores: dict[str, float] = {key: -1.0 for key in metric_keys}
         best_gammas: dict[str, float] = {key: gamma_values[0] for key in metric_keys}
 
-        ks: tuple[int, ...] = tuple(self.config.eval_topk)
-
         for gamma in tqdm(
             gamma_values,
             desc="Gamma search",
@@ -1066,18 +1069,11 @@ class BIGRecTrainer:
                 target_mask=mask_arr,
             )
 
-            for metric_name in self.config.eval_metrics:
-                name = metric_name.strip().lower()
-                if name == "recall":
-                    scores = RecallMetric(ks).compute(eval_data)
-                elif name == "ndcg":
-                    scores = NDCGMetric(ks).compute(eval_data)
-                else:
-                    continue
-                for key, val in scores.items():
-                    if val > best_scores.get(key, -1.0):
-                        best_scores[key] = val
-                        best_gammas[key] = gamma
+            scores = self._compute_metrics(eval_data)
+            for key, val in scores.items():
+                if val > best_scores.get(key, -1.0):
+                    best_scores[key] = val
+                    best_gammas[key] = gamma
 
         self._log("Gamma search complete — best γ per metric@K:")
         for key in metric_keys:
