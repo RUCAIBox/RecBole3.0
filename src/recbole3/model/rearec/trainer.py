@@ -17,6 +17,16 @@ Responsibilities beyond the base ``Trainer``:
 3. **Trim valid_history** – the base result includes one entry per validated
    epoch.  For concise terminal output the list is replaced with only the
    best-epoch record (or the last record when no best epoch is tracked).
+
+4. **Upstream-regression workaround for `_ExistingAcceleratorEvalContext`** –
+   the framework's ``_ExistingAcceleratorEvalContext`` (returned by
+   ``Trainer.create_accelerator()`` whenever ``AcceleratorState._shared_state``
+   is already populated, e.g. when ``Trainer.evaluate()`` is called after
+   ``Trainer.fit()``) does not implement ``is_main_process``, but the base
+   ``Trainer._run_evaluation`` accesses ``accelerator.is_main_process`` since
+   the "fix bug in multi-gpu running" commit.  ``create_accelerator`` is
+   overridden here to backfill the attribute.  Remove once the upstream class
+   implements ``is_main_process`` natively.
 """
 from __future__ import annotations
 
@@ -32,6 +42,29 @@ from recbole3.trainer import Trainer
 
 class ReaRecTrainer(Trainer):
     """Trainer variant for ReaRec with epoch-begin hooks and clean result output."""
+
+    def create_accelerator(self) -> Any:
+        """Return the base accelerator with ``is_main_process`` backfilled if missing.
+
+        Workaround for an upstream regression: ``Trainer.create_accelerator`` may
+        return ``_ExistingAcceleratorEvalContext`` (when ``AcceleratorState`` is
+        already initialised, e.g. during ``Trainer.run`` after ``fit`` completes
+        and ``evaluate`` is called for the test split), which lacks the
+        ``is_main_process`` attribute that ``Trainer._run_evaluation`` (and the
+        train progress bar in ``Trainer.fit``) now require.  The context is by
+        construction the single-process / rank-0 case, so ``True`` is the correct
+        value to backfill.  This shim becomes a no-op once the framework class
+        implements the attribute natively.
+        """
+        accel = super().create_accelerator()
+        if not hasattr(accel, "is_main_process"):
+            try:
+                accel.is_main_process = True
+            except (AttributeError, TypeError):
+                # Defensive fallback for classes using __slots__; not expected
+                # for _ExistingAcceleratorEvalContext, which is a plain class.
+                pass
+        return accel
 
     def fit(
         self,

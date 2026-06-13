@@ -153,6 +153,29 @@ def test_rearec_model_registration_uses_correct_classes() -> None:
     assert spec.trainer_config_cls is TrainerConfig
 
 
+def test_rearec_trainer_backfills_is_main_process_on_existing_accelerator_context() -> None:
+    """Regression guard: ReaRecTrainer.create_accelerator must inject is_main_process
+    when the base returns the _ExistingAcceleratorEvalContext stand-in (which lacks
+    that attribute upstream). See framework regression in commit 0960bc4.
+    """
+    from recbole3.trainer import _ExistingAcceleratorEvalContext
+
+    stand_in = _ExistingAcceleratorEvalContext()
+    assert not hasattr(stand_in, "is_main_process")  # pre-condition: upstream still broken
+
+    trainer = ReaRecTrainer.__new__(ReaRecTrainer)  # skip __init__ (it expects configs)
+    # Stub super().create_accelerator() to return the bare stand-in
+    trainer_super = Trainer.create_accelerator
+    Trainer.create_accelerator = lambda self: stand_in  # type: ignore[assignment]
+    try:
+        result = trainer.create_accelerator()
+    finally:
+        Trainer.create_accelerator = trainer_super  # type: ignore[assignment]
+
+    assert result is stand_in
+    assert result.is_main_process is True
+
+
 # ---------------------------------------------------------------------------
 # ReaRecModelDataset
 # ---------------------------------------------------------------------------
