@@ -82,12 +82,16 @@ class ReaRecTrainer(Trainer):
         *,
         epoch: int,
         max_epochs: int,
+        **kwargs: Any,
     ) -> Any:
+        # Forward any additional keyword arguments (e.g. ``disable`` introduced in
+        # later Trainer versions) verbatim so this override stays compatible when
+        # the base ``Trainer._create_train_progress_bar`` signature grows.
         model = getattr(self, "_rearec_model", None)
         if model is not None and hasattr(model, "on_epoch_begin"):
             model.on_epoch_begin(epoch)
         return Trainer._create_train_progress_bar(
-            train_dataloader, epoch=epoch, max_epochs=max_epochs
+            train_dataloader, epoch=epoch, max_epochs=max_epochs, **kwargs
         )
 
 
