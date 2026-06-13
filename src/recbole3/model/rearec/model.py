@@ -161,8 +161,9 @@ class ReaRecModel(BaseRetrievalModel):
         self._require_initialized()
         ar_wrapper = self._ar_wrapper_module()
 
-        history_item_ids = batch[HISTORY_ITEM_IDS].to(dtype=torch.long)   # [B, L]
-        history_lengths = batch["history_lengths"].to(dtype=torch.long)    # [B]
+        device = self._model_device()
+        history_item_ids = batch[HISTORY_ITEM_IDS].to(device=device, dtype=torch.long)   # [B, L]
+        history_lengths = batch["history_lengths"].to(device=device, dtype=torch.long)    # [B]
 
         # Count this training step and, on the first call, infer steps_per_epoch
         # from the training-dataset size stored by build_train_collator.
@@ -174,7 +175,7 @@ class ReaRecModel(BaseRetrievalModel):
         backbone_name = str(self.config.backbone).lower()
         if backbone_name == "hstu":
             from recbole3.model.hstu.data import HISTORY_TIMESTAMPS
-            timestamps = batch[HISTORY_TIMESTAMPS].to(dtype=torch.float32)
+            timestamps = batch[HISTORY_TIMESTAMPS].to(device=device, dtype=torch.float32)
             raw_context: dict[str, torch.Tensor] | None = {
                 "item_ids": history_item_ids,
                 "timestamps": timestamps,
@@ -204,7 +205,8 @@ class ReaRecModel(BaseRetrievalModel):
     ) -> torch.Tensor:
         """Compute ERL or PRL training loss."""
         self._require_initialized()
-        target_item_ids = batch[ITEM_ID].to(dtype=torch.long)  # [B]
+        device = self._model_device()
+        target_item_ids = batch[ITEM_ID].to(device=device, dtype=torch.long)  # [B]
         model_output: torch.Tensor = outputs["model_output"]   # [B*(1 or 2), K+1, D]
         item_emb_weight: torch.Tensor = outputs["item_emb_weight"]  # [num_items, D] (or [num_items+1, D] for SASRec)
 
@@ -402,13 +404,14 @@ class ReaRecModel(BaseRetrievalModel):
 
     def _encode_user_embeddings(self, batch: Mapping[str, torch.Tensor]) -> torch.Tensor:
         """Encode batch histories and return the final-step user embeddings [B, D]."""
-        history_item_ids = batch[HISTORY_ITEM_IDS].to(dtype=torch.long)   # [B, L]
-        history_lengths = batch["history_lengths"].to(dtype=torch.long)    # [B]
+        device = self._model_device()
+        history_item_ids = batch[HISTORY_ITEM_IDS].to(device=device, dtype=torch.long)   # [B, L]
+        history_lengths = batch["history_lengths"].to(device=device, dtype=torch.long)    # [B]
 
         backbone_name = str(self.config.backbone).lower()
         if backbone_name == "hstu":
             from recbole3.model.hstu.data import HISTORY_TIMESTAMPS
-            timestamps = batch[HISTORY_TIMESTAMPS].to(dtype=torch.float32)
+            timestamps = batch[HISTORY_TIMESTAMPS].to(device=device, dtype=torch.float32)
             raw_context: dict[str, torch.Tensor] | None = {
                 "item_ids": history_item_ids,
                 "timestamps": timestamps,
@@ -660,6 +663,18 @@ class ReaRecModel(BaseRetrievalModel):
                 "ReaRecModel must be initialized via ensure_initialized() or "
                 "build_train_collator() before use."
             )
+
+    def _model_device(self) -> torch.device:
+        """Return the device of the model parameters.
+
+        The framework's evaluation path may hand us batches that have not been
+        moved to the model device (specifically when ``Trainer.create_accelerator``
+        returns ``_ExistingAcceleratorEvalContext``, whose ``prepare`` is a no-op
+        and does not wrap the dataloader).  Forward / compute_loss / predict use
+        this helper to migrate batch tensors defensively so the model works
+        regardless of how the batch arrived.
+        """
+        return next(self.parameters()).device
 
     def _item_emb_module(self) -> nn.Embedding:
         if self._item_emb is None:

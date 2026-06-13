@@ -153,6 +153,53 @@ def test_rearec_model_registration_uses_correct_classes() -> None:
     assert spec.trainer_config_cls is TrainerConfig
 
 
+def test_rearec_model_device_returns_parameter_device() -> None:
+    """_model_device() must reflect the device of the model parameters."""
+    model = ReaRecModel(_sasrec_config())
+    model._init_params(_NUM_ITEMS)
+
+    expected = next(model.parameters()).device
+    assert model._model_device() == expected
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA to test cross-device handling")
+def test_rearec_predict_handles_cpu_batch_with_cuda_model() -> None:
+    """Regression: framework eval may deliver CPU batches while the model is on CUDA
+    (e.g. via _ExistingAcceleratorEvalContext.prepare being a no-op). predict() must
+    migrate the batch internally so it does not crash with a device mismatch.
+    """
+    model = ReaRecModel(_sasrec_config())
+    model._init_params(_NUM_ITEMS)
+    model.cuda()
+    model.eval()
+
+    batch = _make_sasrec_batch()  # CPU tensors
+    assert batch[HISTORY_ITEM_IDS].device.type == "cpu"
+
+    with torch.no_grad():
+        top_k = model.predict(batch, k=5)
+
+    assert top_k.shape == (_B, 5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA to test cross-device handling")
+def test_rearec_forward_handles_cpu_batch_with_cuda_model() -> None:
+    """Regression: forward() must migrate CPU batch tensors to model device."""
+    model = ReaRecModel(_sasrec_config())
+    model._init_params(_NUM_ITEMS)
+    model.cuda()
+    model.train()
+
+    batch = _make_sasrec_batch()  # CPU tensors
+    assert batch[HISTORY_ITEM_IDS].device.type == "cpu"
+
+    outputs = model.forward(batch)
+    loss = model.compute_loss(batch, outputs)
+
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+
+
 def test_rearec_trainer_backfills_is_main_process_on_existing_accelerator_context() -> None:
     """Regression guard: ReaRecTrainer.create_accelerator must inject is_main_process
     when the base returns the _ExistingAcceleratorEvalContext stand-in (which lacks
