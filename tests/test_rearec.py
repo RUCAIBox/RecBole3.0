@@ -16,6 +16,7 @@ from recbole3.model import (
     ReaRecConfig,
     ReaRecModel,
     ReaRecModelDataset,
+    ReaRecTrainer,
     get_model_spec,
 )
 from recbole3.model.hstu.config import HSTU_PADDING_ITEM_ID, ITEM_ID_OFFSET
@@ -148,7 +149,7 @@ def test_rearec_model_registration_uses_correct_classes() -> None:
     assert spec.model_cls is ReaRecModel
     assert spec.config_cls is ReaRecConfig
     assert spec.model_data_cls is ReaRecModelDataset
-    assert spec.trainer_cls is Trainer
+    assert spec.trainer_cls is ReaRecTrainer
     assert spec.trainer_config_cls is TrainerConfig
 
 
@@ -544,6 +545,23 @@ def test_ar_wrapper_no_batch_doubling_when_reason_step_zero() -> None:
     out = wrapper(seq, lengths, noise_factor=0.1)
 
     assert out.shape == (_B, 1, _D)
+
+
+def test_ar_wrapper_dropout_p_defaults_match_cfg() -> None:
+    """Wrapper dropout must come from cfg.dropout, not the previous hard-coded 0.2."""
+    cfg = _sasrec_config(dropout=0.5)
+    model = ReaRecModel(cfg)
+    model._init_params(_NUM_ITEMS)
+
+    assert model._ar_wrapper.dropout.p == pytest.approx(0.5)
+
+
+def test_ar_wrapper_dropout_p_respects_custom_value() -> None:
+    cfg = _sasrec_config(dropout=0.3)
+    model = ReaRecModel(cfg)
+    model._init_params(_NUM_ITEMS)
+
+    assert model._ar_wrapper.dropout.p == pytest.approx(0.3)
 
 
 def test_ar_wrapper_raw_context_doubled_with_batch() -> None:

@@ -190,9 +190,12 @@ def _build_rearec_history_batch(
 class ReaRecHSTUTrainCollator(BaseCollator):
     """Train collator for HSTU backbone: right-padded history + timestamps.
 
-    Produces fixed-length sequences of length ``history_max_length``:
+    Produces fixed-width tensors of width ``history_max_length + 1`` (one extra
+    column reserved for the virtual query-timestamp slot at position
+    ``history_lengths[b]``):
       - items at positions 0..history_lengths[b]-1  (right-padding with 0)
-      - ``history_timestamps`` aligned with item positions
+      - ``history_timestamps`` aligned with item positions; the query timestamp
+        is written into the virtual slot at position ``history_lengths[b]``
       - ``ITEM_ID`` as separate target key (NOT included in history sequence)
 
     The last distinction is what separates this collator from

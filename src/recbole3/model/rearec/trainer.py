@@ -2,10 +2,12 @@
 
 Responsibilities beyond the base ``Trainer``:
 
-1. **on_epoch_begin hook** – calls ``model.on_epoch_begin(epoch)`` at the start
-   of each training epoch by overriding ``_create_train_progress_bar``.  This
-   ensures PRL warmup gating (``warmup_epochs > 0``) works without any changes
-   to the base training loop.
+1. **Optional on_epoch_begin hook** – overrides ``_create_train_progress_bar``
+   to call ``model.on_epoch_begin(epoch)`` if the model defines it.  This is an
+   opt-in extension point for future models that need an epoch-begin callback;
+   ``ReaRecModel`` itself does not currently use it.  PRL warmup gating is
+   implemented inside ``ReaRecModel._effective_noise_factor`` via a step-based
+   counter and does not depend on this hook.
 
 2. **Clean fit() result** – the base ``fit()`` stores per-batch loss values in
    ``train_history[i]["losses"]`` (a ``list[float]`` with one entry per batch).

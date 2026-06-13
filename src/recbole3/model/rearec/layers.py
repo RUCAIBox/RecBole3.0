@@ -376,11 +376,22 @@ class SASRecBackbone(SequenceBackbone):
         orig_L: int = state["original_seq_len"]
         curr_len = orig_L + step  # total sequence length after appending this token
 
-        # Build the full mask then slice the last row for the single-query case.
-        # This gives [B, 1, 1, curr_len]: the new token attends to all prior positions
-        # that are not left-padding and respects causality.
-        full_mask = build_causal_attention_mask(curr_len, history_lengths, original_seq_len=orig_L)
-        step_mask = full_mask[:, :, -1:, :]  # [B, 1, 1, curr_len]
+        # Build the [B, 1, 1, curr_len] mask directly instead of constructing the full
+        # [B, 1, curr_len, curr_len] causal mask and slicing the last row. The last row
+        # of the causal mask is all-attended (it's the bottom row of a lower-triangular),
+        # so the only thing to mask is left-padding columns in the original portion.
+        device = history_lengths.device
+        B = int(history_lengths.shape[0])
+        orig_positions = torch.arange(orig_L, device=device)                  # [L]
+        left_pad_count = (orig_L - history_lengths).clamp(min=0)              # [B]
+        padding_cols = orig_positions.unsqueeze(0) < left_pad_count.unsqueeze(1)  # [B, L]
+        if curr_len > orig_L:
+            # Reasoning tokens appended after L are never padding
+            no_pad = torch.zeros(B, curr_len - orig_L, dtype=torch.bool, device=device)
+            padding_cols = torch.cat([padding_cols, no_pad], dim=1)           # [B, curr_len]
+        step_mask = torch.zeros(B, 1, 1, curr_len, device=device, dtype=new_token.dtype)
+        step_mask = step_mask.masked_fill(padding_cols.unsqueeze(1).unsqueeze(2), -1e10)
+        # [B, 1, 1, curr_len]
 
         output, new_kv_caches = self.encoder(new_token, step_mask, kv_caches=kv_caches)
         # output: [B, 1, D]
@@ -627,13 +638,14 @@ class ReaRecAutoRegressiveWrapper(nn.Module):
         backbone: SequenceBackbone,
         hidden_size: int,
         reason_step: int,
+        dropout_p: float = 0.5,
     ) -> None:
         super().__init__()
         self.backbone = backbone
         self.hidden_size = hidden_size
         self.reason_step = reason_step
         self.layer_norm = nn.LayerNorm(hidden_size)
-        self.dropout = nn.Dropout(p=0.2)
+        self.dropout = nn.Dropout(p=float(dropout_p))
         if reason_step > 0:
             # RPE: one embedding per reasoning step (step index 0..K-1)
             self.reason_pos_emb = nn.Embedding(reason_step, hidden_size)

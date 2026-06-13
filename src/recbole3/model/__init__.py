@@ -36,6 +36,7 @@ from recbole3.model.rearec import (
     ReaRecConfig,
     ReaRecModel,
     ReaRecModelDataset,
+    ReaRecTrainer,
 )
 from recbole3.model.rankmixer import (
     RANKMIXER_FEATURES,
@@ -85,7 +86,7 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         model_cls=ReaRecModel,
         config_cls=ReaRecConfig,
         model_data_cls=ReaRecModelDataset,
-        trainer_cls=Trainer,
+        trainer_cls=ReaRecTrainer,
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),

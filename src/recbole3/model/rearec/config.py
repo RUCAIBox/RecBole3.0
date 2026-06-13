@@ -9,11 +9,13 @@ from recbole3.model.sequential import SequentialModelConfig
 class ReaRecConfig(SequentialModelConfig):
     """Configuration for the ReaRec inference-time reasoning sequential recommendation model.
 
-    Supports two learning strategies built on a SASRec-style Transformer backbone:
+    Supports two learning strategies built on top of either a SASRec-style Transformer
+    backbone or the HSTU backbone:
       - ERL (Ensemble Reasoning Learning): ensemble average of K+1 steps + KL diversity.
       - PRL (Progressive Reasoning Learning): progressive temperature CE + noise contrastive.
 
-    The HSTU backbone is reserved for future work (backbone='hstu' raises NotImplementedError).
+    Both 'sasrec' and 'hstu' backbones are supported; the HSTU backbone additionally
+    requires fbgemm_gpu and timestamp-enriched data.
     """
 
     name: str = field(default="rearec")
@@ -21,7 +23,7 @@ class ReaRecConfig(SequentialModelConfig):
     # --- backbone ---
     backbone: str = field(
         default="sasrec",
-        metadata={"help": "Sequence encoder backbone. Currently only 'sasrec' is supported."},
+        metadata={"help": "Sequence encoder backbone. Choose 'sasrec' or 'hstu'."},
     )
 
     # --- SASRec Transformer architecture ---

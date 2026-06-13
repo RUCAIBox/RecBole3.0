@@ -216,8 +216,8 @@ HSTU-specific architecture parameters are only active when `backbone=hstu`:
 `ReaRecModelDataset` detects `backbone='hstu'` and dispatches to `HSTUModelDataset._build_model_datasets`. This builds both `history_item_ids` and `history_timestamps`. Datasets without timestamps will raise a `ValueError` at this stage.
 
 - `ReaRecHSTUTrainCollator`
-  - right-pads sequences to `history_max_length`
-  - outputs: `history_item_ids [B, L]`, `history_timestamps [B, L]`, `history_lengths [B]`, `item_id [B]`
+  - right-pads sequences to width `history_max_length + 1` (one extra column reserved for the virtual query-timestamp slot)
+  - outputs: `history_item_ids [B, L+1]`, `history_timestamps [B, L+1]` (with the query timestamp written into the virtual slot at position `history_lengths[b]`), `history_lengths [B]`, `item_id [B]`
   - the target item is NOT appended to the sequence (unlike the base `HSTUTrainCollator`)
 - `ReaRecHSTUEvalCollator`
   - same as the HSTU train collator but omits `item_id`
