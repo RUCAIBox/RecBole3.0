@@ -11,6 +11,7 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset
 
 from recbole3.dataset.base import BaseTaskDataset
+from recbole3.evaluation.config import EvalConfig
 from recbole3.model.base import BaseModel
 from recbole3.model.rpg.model import RPGModel
 from recbole3.trainer import Trainer
@@ -36,6 +37,11 @@ class RPGTrainerConfig(TrainerConfig):
     max_grad_norm: float | None = field(
         default=1.0,
         metadata={"help": "RPG defaults to L2 grad-norm clipping at 1.0, matching the released implementation."},
+    )
+    eval: EvalConfig = field(
+        default_factory=lambda: EvalConfig(protocol="full"),
+        kw_only=True,
+        metadata={"help": "Evaluation protocol settings."},
     )
 
 

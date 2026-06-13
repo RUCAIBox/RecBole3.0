@@ -68,6 +68,11 @@ class Trainer:
 
     def create_accelerator(self) -> Any:
         from accelerate import Accelerator
+        from accelerate.state import AcceleratorState
+
+        # GRPO 等流程在 accelerate launch 下已初始化 AcceleratorState；再 new Accelerator() 会报错。
+        if AcceleratorState._shared_state:
+            return _ExistingAcceleratorEvalContext()
 
         return Accelerator(
             mixed_precision=self.config.mixed_precision,
@@ -173,12 +178,15 @@ class Trainer:
             epoch_start = time.perf_counter()
             model.train()
             losses: list[float] = []
-            progress_bar = self._create_train_progress_bar(train_dataloader, epoch=epoch, max_epochs=int(self.config.max_epochs))
+            progress_bar = self._create_train_progress_bar(train_dataloader, epoch=epoch, 
+                                                           max_epochs=int(self.config.max_epochs), 
+                                                           disable=not accelerator.is_main_process)
             for batch in progress_bar:
                 with accelerator.accumulate(model):
                     optimizer.zero_grad()
                     outputs = model.forward(batch)
-                    loss = model.compute_loss(batch, outputs)
+                    unwrap_model = accelerator.unwrap_model(model)
+                    loss = unwrap_model.compute_loss(batch, outputs)
                     accelerator.backward(loss)
                     optimizer.step()
                     if scheduler is not None and scheduler_interval == "step":
@@ -374,7 +382,7 @@ class Trainer:
         scoring_model = accelerator.unwrap_model(prepared_model)
         batch_eval_data: list[Any] = []
         num_batches = 0
-        progress_bar = self._create_progress_bar(eval_dataloader, split=split)
+        progress_bar = self._create_progress_bar(eval_dataloader, split=split, disable=not accelerator.is_main_process)
         with torch.no_grad():
             for model_inputs, records in progress_bar:
                 batch_eval_data.append(self._collect_eval_batch(method, scoring_model, model_inputs, records))
@@ -606,23 +614,23 @@ class Trainer:
         return "{ " + ", ".join(parts) + " }"
 
     @staticmethod
-    def _create_progress_bar(eval_dataloader: DataLoader, *, split: str) -> Any:
+    def _create_progress_bar(eval_dataloader: DataLoader, *, split: str, disable: bool) -> Any:
         description = f"[eval:{split}]"
         try:
             from tqdm.auto import tqdm
 
-            return tqdm(eval_dataloader, desc=description, total=len(eval_dataloader), leave=True)
+            return tqdm(eval_dataloader, desc=description, total=len(eval_dataloader), leave=True, disable=disable)
         except ModuleNotFoundError:
             print(f"{description} progress logging enabled without tqdm; total_batches={len(eval_dataloader)}")
             return eval_dataloader
 
     @staticmethod
-    def _create_train_progress_bar(train_dataloader: DataLoader, *, epoch: int, max_epochs: int) -> Any:
+    def _create_train_progress_bar(train_dataloader: DataLoader, *, epoch: int, max_epochs: int, disable: bool) -> Any:
         description = f"[train:{epoch}/{max_epochs}]"
         try:
             from tqdm.auto import tqdm
 
-            return tqdm(train_dataloader, desc=description, total=len(train_dataloader), leave=True)
+            return tqdm(train_dataloader, desc=description, total=len(train_dataloader), leave=True, disable=disable)
         except ModuleNotFoundError:
             print(f"{description} progress logging enabled without tqdm; total_batches={len(train_dataloader)}")
             return train_dataloader
@@ -632,6 +640,26 @@ class Trainer:
         if not values:
             return None
         return float(sum(values) / len(values))
+
+
+class _ExistingAcceleratorEvalContext:
+    """Evaluation helper when AcceleratorState is already initialized (e.g. post-GRPO on rank 0)."""
+
+    @property
+    def device(self) -> torch.device:
+        from accelerate.state import AcceleratorState
+
+        return AcceleratorState().device
+
+    def prepare(self, *args: Any) -> Any:
+        if len(args) == 1:
+            return args[0]
+        model, dataloader = args
+        return model, dataloader
+
+    @staticmethod
+    def unwrap_model(model: Any) -> Any:
+        return model
 
 
 __all__ = [

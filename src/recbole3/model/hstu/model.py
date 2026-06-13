@@ -284,8 +284,6 @@ class HSTUModel(BaseRetrievalModel):
         if self._num_items is None:
             raise RuntimeError("HSTUModel must be initialized with prepared_data before it can compute loss.")
         num_negatives = int(self.config.num_negatives)
-        if num_negatives <= 0:
-            raise ValueError("HSTU requires config.num_negatives to be a positive integer.")
 
         sequence_embeddings = outputs["sequence_embeddings"]
         history_item_ids = batch[HISTORY_ITEM_IDS].to(
@@ -311,6 +309,12 @@ class HSTUModel(BaseRetrievalModel):
 
         flat_prediction_embeddings = prediction_embeddings[supervision_mask]
         positive_item_ids = next_item_ids[supervision_mask]
+
+        if num_negatives <= 0:
+            all_item_embeddings = self._item_embedding_module().weight[ITEM_ID_OFFSET:]
+            logits = self._score_embeddings(flat_prediction_embeddings, all_item_embeddings)
+            return F.cross_entropy(logits, positive_item_ids)
+
         negative_item_ids = torch.randint(
             0,
             self._num_items,
