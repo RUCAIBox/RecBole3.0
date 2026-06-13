@@ -7,7 +7,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from recbole3.config import RuntimeConfig, instantiate_dataclass
 from recbole3.dataset import BaseTaskDataset, FrameDataset, get_dataset_spec
-from recbole3.model.llmrank.candidates import build_candidate_frames
+from recbole3.dataset.candidates import build_candidate_frames
 from recbole3.model.llmrank.config import LLMRankConfig
 from recbole3.pipeline import Pipeline
 from recbole3.utils import require_component_cfg, require_component_name

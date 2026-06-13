@@ -18,6 +18,17 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
+from recbole3.model.lares import (
+    LARESConfig,
+    LARESModel,
+    LARESModelDataset,
+    LARESTrainer,
+)
+from recbole3.model.lsrm import (
+    LSRMConfig,
+    LSRMModel,
+    LSRMModelDataset,
+)
 from recbole3.model.letter import (
     LETTERConfig,
     LETTERModel,
@@ -25,6 +36,12 @@ from recbole3.model.letter import (
     LETTERTrainer,
 )
 from recbole3.model.lcrec.config import LCRecConfig
+from recbole3.model.llm4rs import (
+    LLM4RSConfig,
+    LLM4RSModel,
+    LLM4RSModelDataset,
+)
+from recbole3.model.llm4rs.trainer import LLM4RSTrainer, LLM4RSTrainerConfig
 from recbole3.model.llmrank import (
     LLMRankConfig,
     LLMRankModel,
@@ -38,6 +55,7 @@ from recbole3.model.rearec import (
     ReaRecModelDataset,
     ReaRecTrainer,
 )
+from recbole3.model.minionerec.config import MiniOneRecConfig
 from recbole3.model.rankmixer import (
     RANKMIXER_FEATURES,
     RankMixerConfig,
@@ -45,6 +63,13 @@ from recbole3.model.rankmixer import (
     RankMixerModel,
     RankMixerPipeline,
     RankMixerTrainCollator,
+)
+from recbole3.model.rpg import (
+    RPGConfig,
+    RPGModel,
+    RPGModelDataset,
+    RPGTrainer,
+    RPGTrainerConfig,
 )
 from recbole3.model.rqvae import (
     RQVAEConfig,
@@ -98,6 +123,22 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),
+    "lares": ModelSpec(
+        model_cls=LARESModel,
+        config_cls=LARESConfig,
+        model_data_cls=LARESModelDataset,
+        trainer_cls=LARESTrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
+    "lsrm": ModelSpec(
+        model_cls=LSRMModel,
+        config_cls=LSRMConfig,
+        model_data_cls=LSRMModelDataset,
+        trainer_cls=Trainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
     "rqvae": ModelSpec(
         model_cls=RQVAEModel,
         config_cls=RQVAEConfig,
@@ -119,6 +160,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         config_cls=LCRecConfig,
         pipeline_cls=LazyImport("recbole3.model.lcrec.pipeline", "LCRecPipeline"),
     ),
+    "llm4rs": ModelSpec(
+        model_cls=LLM4RSModel,
+        config_cls=LLM4RSConfig,
+        model_data_cls=LLM4RSModelDataset,
+        trainer_cls=LLM4RSTrainer,
+        trainer_config_cls=LLM4RSTrainerConfig,
+        pipeline_cls=LazyImport("recbole3.model.llm4rs.pipeline", "LLM4RSPipeline"),
+    ),
     "llmrank": ModelSpec(
         model_cls=LLMRankModel,
         config_cls=LLMRankConfig,
@@ -127,12 +176,25 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=LLMRankTrainerConfig,
         pipeline_cls=LazyImport("recbole3.model.llmrank.pipeline", "LLMRankPipeline"),
     ),
+    "minionerec": ModelSpec(
+        model_cls=LazyImport("transformers", "PreTrainedModel"),
+        config_cls=MiniOneRecConfig,
+        pipeline_cls=LazyImport("recbole3.model.minionerec.pipeline", "MiniOneRecPipeline"),
+    ),
     "rankmixer": ModelSpec(
         model_cls=RankMixerModel,
         config_cls=RankMixerConfig,
         trainer_cls=Trainer,
         trainer_config_cls=TrainerConfig,
         pipeline_cls=RankMixerPipeline,
+    ),
+    "rpg": ModelSpec(
+        model_cls=RPGModel,
+        config_cls=RPGConfig,
+        model_data_cls=RPGModelDataset,
+        trainer_cls=RPGTrainer,
+        trainer_config_cls=RPGTrainerConfig,
+        pipeline_cls=Pipeline,
     ),
     "tiger": ModelSpec(
         model_cls=TIGERModel,
@@ -173,7 +235,15 @@ __all__ = [
     "LETTERModel",
     "LETTERModelDataset",
     "LETTERTrainer",
+    "LLM4RSConfig",
+    "LLM4RSModel",
+    "LLM4RSModelDataset",
+    "LLM4RSTrainer",
+    "LLM4RSTrainerConfig",
     "LLMRankConfig",
+    "LSRMConfig",
+    "LSRMModel",
+    "LSRMModelDataset",
     "LLMRankModel",
     "LLMRankModelDataset",
     "MODEL_TABLE",
@@ -185,6 +255,7 @@ __all__ = [
     "ModelConfig",
     "ModelDatasets",
     "ModelSpec",
+    "MiniOneRecConfig",
     "RankMixerConfig",
     "RankMixerEvalCollator",
     "RankMixerModel",
