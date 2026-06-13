@@ -2134,6 +2134,12 @@ class TestVLLMConfig:
     def test_default_vllm_startup_timeout_is_300(self) -> None:
         assert BIGRecConfig().vllm_startup_timeout == 300
 
+    def test_default_vllm_tensor_parallel_size_is_1(self) -> None:
+        assert BIGRecConfig().vllm_tensor_parallel_size == 1
+
+    def test_default_vllm_gpu_memory_utilization_is_0_9(self) -> None:
+        assert BIGRecConfig().vllm_gpu_memory_utilization == pytest.approx(0.9)
+
     def test_vllm_conda_env_overridable(self) -> None:
         cfg = BIGRecConfig(vllm_conda_env="vllm_env")
         assert cfg.vllm_conda_env == "vllm_env"
@@ -2141,6 +2147,14 @@ class TestVLLMConfig:
     def test_vllm_device_id_overridable(self) -> None:
         cfg = BIGRecConfig(vllm_device_id=1)
         assert cfg.vllm_device_id == 1
+
+    def test_vllm_tensor_parallel_size_overridable(self) -> None:
+        cfg = BIGRecConfig(vllm_tensor_parallel_size=4)
+        assert cfg.vllm_tensor_parallel_size == 4
+
+    def test_vllm_gpu_memory_utilization_overridable(self) -> None:
+        cfg = BIGRecConfig(vllm_gpu_memory_utilization=0.7)
+        assert cfg.vllm_gpu_memory_utilization == pytest.approx(0.7)
 
     def test_vllm_server_port_overridable(self) -> None:
         cfg = BIGRecConfig(vllm_server_port=9000)
@@ -2213,7 +2227,7 @@ class TestWaitVLLMReady:
 class TestStartVLLMServer:
     """Tests for _start_vllm_server."""
 
-    def test_start_server_sets_cuda_visible_devices(
+    def test_start_server_single_gpu_sets_cuda_visible_devices(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
         import subprocess as sp
@@ -2227,13 +2241,62 @@ class TestStartVLLMServer:
 
         monkeypatch.setattr(sp, "Popen", fake_popen)
 
-        cfg = BIGRecConfig(vllm_conda_env="", vllm_device_id=2, vllm_server_port=8765, use_lora=False)
+        cfg = BIGRecConfig(
+            vllm_conda_env="", vllm_device_id=2, vllm_tensor_parallel_size=1,
+            vllm_server_port=8765, use_lora=False,
+        )
         trainer = BIGRecTrainer(cfg)
         trainer._start_vllm_server(str(tmp_path))
 
         assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "2"
+        assert "--tensor-parallel-size" not in captured["cmd"]
         port_idx = captured["cmd"].index("--port")
         assert captured["cmd"][port_idx + 1] == "8765"
+
+    def test_start_server_multi_gpu_sets_consecutive_devices(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """vllm_device_id=1, vllm_tensor_parallel_size=3 → CUDA_VISIBLE_DEVICES=1,2,3."""
+        import subprocess as sp
+
+        captured: dict[str, Any] = {}
+
+        def fake_popen(cmd: list[str], env: dict[str, str] | None = None) -> MagicMock:
+            captured["cmd"] = cmd
+            captured["env"] = env
+            return MagicMock()
+
+        monkeypatch.setattr(sp, "Popen", fake_popen)
+
+        cfg = BIGRecConfig(
+            vllm_conda_env="", vllm_device_id=1, vllm_tensor_parallel_size=3, use_lora=False,
+        )
+        trainer = BIGRecTrainer(cfg)
+        trainer._start_vllm_server(str(tmp_path))
+
+        assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "1,2,3"
+        tp_idx = captured["cmd"].index("--tensor-parallel-size")
+        assert captured["cmd"][tp_idx + 1] == "3"
+
+    def test_start_server_passes_gpu_memory_utilization(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        import subprocess as sp
+
+        captured: dict[str, Any] = {}
+
+        def fake_popen(cmd: list[str], env: dict[str, str] | None = None) -> MagicMock:
+            captured["cmd"] = cmd
+            return MagicMock()
+
+        monkeypatch.setattr(sp, "Popen", fake_popen)
+
+        cfg = BIGRecConfig(vllm_conda_env="", vllm_gpu_memory_utilization=0.7, use_lora=False)
+        trainer = BIGRecTrainer(cfg)
+        trainer._start_vllm_server(str(tmp_path))
+
+        gmu_idx = captured["cmd"].index("--gpu-memory-utilization")
+        assert captured["cmd"][gmu_idx + 1] == "0.7"
 
     def test_start_server_adds_lora_args_when_use_lora_true(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any

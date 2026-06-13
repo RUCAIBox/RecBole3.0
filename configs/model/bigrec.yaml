@@ -87,7 +87,9 @@ model:
   # vLLM is always used for inference; set vllm_conda_env if vLLM lives in a
   # different conda env from the training environment.
   vllm_conda_env: ""                    # conda env name with vLLM; empty = current env
-  vllm_device_id: 0                     # GPU index for the vLLM server subprocess
+  vllm_device_id: 0                     # starting GPU index for the vLLM server subprocess
+  vllm_tensor_parallel_size: 1          # number of GPUs for vLLM tensor parallelism (>1 for large models)
+  vllm_gpu_memory_utilization: 0.9      # fraction of GPU VRAM vLLM pre-allocates; lower if OOM on startup
   vllm_server_port: 8000                # TCP port the vLLM OpenAI-compatible server uses
   vllm_startup_timeout: 300             # seconds to wait for /health endpoint
 

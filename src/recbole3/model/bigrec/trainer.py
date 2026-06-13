@@ -854,13 +854,22 @@ class BIGRecTrainer:
         python_exe = self._resolve_vllm_python()
         max_model_len: int = self.config.max_input_length + self.config.max_new_tokens
 
+        # Build CUDA_VISIBLE_DEVICES: consecutive GPUs starting at vllm_device_id.
+        tp: int = max(1, self.config.vllm_tensor_parallel_size)
+        vllm_gpu_ids: str = ",".join(
+            str(self.config.vllm_device_id + i) for i in range(tp)
+        )
+
         cmd: list[str] = [
             python_exe, "-m", "vllm.entrypoints.openai.api_server",
             "--model", self.config.llm_path,
             "--dtype", self.config.torch_dtype,
             "--max-model-len", str(max_model_len),
+            "--gpu-memory-utilization", str(self.config.vllm_gpu_memory_utilization),
             "--port", str(self.config.vllm_server_port),
         ]
+        if tp > 1:
+            cmd += ["--tensor-parallel-size", str(tp)]
         if self.config.use_lora:
             cmd += [
                 "--enable-lora",
@@ -869,12 +878,13 @@ class BIGRecTrainer:
             ]
 
         env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(self.config.vllm_device_id)
+        env["CUDA_VISIBLE_DEVICES"] = vllm_gpu_ids
 
         self._log(
-            "Starting vLLM server: env=%s, CUDA_VISIBLE_DEVICES=%s, port=%d%s",
+            "Starting vLLM server: env=%s, CUDA_VISIBLE_DEVICES=%s, tp=%d, port=%d%s",
             self.config.vllm_conda_env or "(current)",
-            self.config.vllm_device_id,
+            vllm_gpu_ids,
+            tp,
             self.config.vllm_server_port,
             f", lora={checkpoint_path}" if self.config.use_lora else "",
         )

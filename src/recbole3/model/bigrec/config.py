@@ -444,11 +444,34 @@ class BIGRecConfig(SequentialModelConfig):
         default=0,
         metadata={
             "help": (
-                "CUDA device index for the vLLM server subprocess. "
-                "May differ from device_id (the training / embedding GPU) so "
-                "that generation and embedding extraction can run on separate "
-                "physical GPUs. CUDA_VISIBLE_DEVICES for the server process is "
-                "set to this value."
+                "Starting CUDA device index for the vLLM server subprocess. "
+                "When vllm_tensor_parallel_size > 1, consecutive GPU indices "
+                "[vllm_device_id, vllm_device_id + vllm_tensor_parallel_size) "
+                "are assigned to the server via CUDA_VISIBLE_DEVICES. "
+                "May differ from device_id (the training / embedding GPU)."
+            )
+        },
+    )
+    vllm_tensor_parallel_size: int = field(
+        default=1,
+        metadata={
+            "help": (
+                "Number of GPUs for vLLM tensor parallelism (--tensor-parallel-size). "
+                "Uses vllm_tensor_parallel_size consecutive GPUs starting from "
+                "vllm_device_id.  Set > 1 when the model does not fit on a single GPU. "
+                "Example: vllm_device_id=2, vllm_tensor_parallel_size=2 → "
+                "CUDA_VISIBLE_DEVICES=2,3 and --tensor-parallel-size 2."
+            )
+        },
+    )
+    vllm_gpu_memory_utilization: float = field(
+        default=0.9,
+        metadata={
+            "help": (
+                "Fraction of GPU memory vLLM pre-allocates on startup "
+                "(--gpu-memory-utilization, default 0.9). "
+                "Reduce (e.g. 0.7) if another process already occupies VRAM on "
+                "the same device, or if vLLM raises a 'free memory < desired' error."
             )
         },
     )
