@@ -37,6 +37,17 @@ class ReaRecConfig(SequentialModelConfig):
     )
     layer_norm_eps: float = field(default=1e-12, metadata={"help": "Epsilon for LayerNorm stability."})
     dropout: float = field(default=0.5, metadata={"help": "Dropout probability applied to embeddings and attention."})
+    wrapper_dropout: float = field(
+        default=0.2,
+        metadata={"help": (
+            "Dropout probability applied by the autoregressive reasoning wrapper to the "
+            "(LayerNorm'd) initial sequence and each reasoning token before they enter the "
+            "backbone encoder. Intentionally distinct from `dropout` and lighter (0.2 vs 0.5) "
+            "by design: the wrapper dropout interacts with the PRL contrastive task — too "
+            "much here drowns out the actual `noise_factor` perturbation. Matches the official "
+            "ReaRec implementation, which hard-codes this to 0.2."
+        )},
+    )
     initializer_range: float = field(
         default=0.02, metadata={"help": "Std of truncated normal weight initialization."}
     )

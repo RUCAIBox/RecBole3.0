@@ -638,13 +638,19 @@ class ReaRecAutoRegressiveWrapper(nn.Module):
         backbone: SequenceBackbone,
         hidden_size: int,
         reason_step: int,
-        dropout_p: float = 0.5,
+        dropout_p: float = 0.2,
     ) -> None:
         super().__init__()
         self.backbone = backbone
         self.hidden_size = hidden_size
         self.reason_step = reason_step
         self.layer_norm = nn.LayerNorm(hidden_size)
+        # Default matches official ReaRec, which hard-codes wrapper input dropout to 0.2.
+        # This is intentionally distinct from (and lighter than) the transformer's internal
+        # dropout (cfg.dropout=0.5): in PRL, the contrastive loss compares clean vs noisy
+        # reasoning trajectories whose only intended difference is the cfg.noise_factor
+        # perturbation. If the wrapper dropout is set too high, independent dropout masks
+        # on the two halves dominate the actual noise signal and ruin the CL objective.
         self.dropout = nn.Dropout(p=float(dropout_p))
         if reason_step > 0:
             # RPE: one embedding per reasoning step (step index 0..K-1)

@@ -617,21 +617,36 @@ def test_ar_wrapper_no_batch_doubling_when_reason_step_zero() -> None:
     assert out.shape == (_B, 1, _D)
 
 
-def test_ar_wrapper_dropout_p_defaults_match_cfg() -> None:
-    """Wrapper dropout must come from cfg.dropout, not the previous hard-coded 0.2."""
-    cfg = _sasrec_config(dropout=0.5)
+def test_ar_wrapper_dropout_matches_official_default() -> None:
+    """Wrapper input dropout default must be 0.2 to match the official ReaRec
+    implementation, which intentionally hard-codes this lighter than the
+    transformer's internal dropout (cfg.dropout=0.5). This separation matters
+    for PRL: too-heavy wrapper dropout drowns out the cfg.noise_factor signal
+    in the contrastive loss and degrades PRL results.
+    """
+    cfg = _sasrec_config()
     model = ReaRecModel(cfg)
     model._init_params(_NUM_ITEMS)
 
-    assert model._ar_wrapper.dropout.p == pytest.approx(0.5)
+    assert model._ar_wrapper.dropout.p == pytest.approx(0.2)
 
 
-def test_ar_wrapper_dropout_p_respects_custom_value() -> None:
-    cfg = _sasrec_config(dropout=0.3)
+def test_ar_wrapper_dropout_independent_from_cfg_dropout() -> None:
+    """Changing cfg.dropout must NOT change wrapper dropout (they are decoupled)."""
+    cfg = _sasrec_config(dropout=0.9)  # extreme value
     model = ReaRecModel(cfg)
     model._init_params(_NUM_ITEMS)
 
-    assert model._ar_wrapper.dropout.p == pytest.approx(0.3)
+    assert model._ar_wrapper.dropout.p == pytest.approx(0.2)  # still default
+
+
+def test_ar_wrapper_dropout_respects_explicit_override() -> None:
+    """cfg.wrapper_dropout must control the wrapper input dropout when set."""
+    cfg = _sasrec_config(wrapper_dropout=0.35)
+    model = ReaRecModel(cfg)
+    model._init_params(_NUM_ITEMS)
+
+    assert model._ar_wrapper.dropout.p == pytest.approx(0.35)
 
 
 def test_ar_wrapper_raw_context_doubled_with_batch() -> None:

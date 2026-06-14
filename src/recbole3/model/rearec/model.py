@@ -554,7 +554,7 @@ class ReaRecModel(BaseRetrievalModel):
             backbone=backbone,
             hidden_size=D,
             reason_step=K,
-            dropout_p=float(cfg.dropout),
+            dropout_p=float(cfg.wrapper_dropout),
         )
 
         self._loss_fct = nn.CrossEntropyLoss(ignore_index=self._num_items)

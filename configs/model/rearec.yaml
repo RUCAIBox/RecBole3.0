@@ -13,6 +13,7 @@ model:
   hidden_act: gelu
   layer_norm_eps: 1.0e-12
   dropout: 0.5
+  wrapper_dropout: 0.2   # input dropout for the AR reasoning wrapper; lighter than `dropout` by design (matches official ReaRec)
   initializer_range: 0.02
 
   # --- ReaRec reasoning ---
