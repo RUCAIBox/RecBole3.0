@@ -35,8 +35,18 @@ hstu = [
 rqvae = [
   "sentence-transformers",
 ]
+letter = [
+  "sentence-transformers",
+  "k-means-constrained",
+]
 tiger = [
   "transformers>=4.40,<5.0",
+]
+minionerec = [
+  "bitsandbytes",
+  "sentence-transformers",
+  "transformers>=4.40",
+  "trl>=0.15",
 ]
 lc-rec = [
   "peft<0.19.0",

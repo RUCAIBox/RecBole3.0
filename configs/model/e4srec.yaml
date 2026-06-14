@@ -1,0 +1,60 @@
+# @package _global_
+
+model:
+  name: e4srec
+  history_max_length: 20
+
+  # LLM backbone
+  base_model: "Qwen/Qwen2.5-1.5B"
+  cache_dir: ""
+  device_map: "auto"
+  load_in_8bit: false
+  load_in_4bit: false
+  torch_dtype: "bfloat16"
+  use_gradient_checkpointing: true
+
+  # LoRA
+  lora_r: 16
+  lora_alpha: 16
+  lora_dropout: 0.05
+  lora_target_modules:
+    - gate_proj
+    - down_proj
+    - up_proj
+
+  # HF Trainer settings
+  warmup_steps: 100
+  lr_scheduler_type: "cosine"
+  optim: "adamw_torch_fused"
+
+  # Pipeline stage
+  pipeline_stage: "training"
+  checkpoint_path: ""
+
+  # Pre-trained item embeddings
+  item_embed_path: ""
+  item_embed_dim: 64
+
+  # Prompt template
+  instruction_text: "Given the user's purchase history, predict next possible item to be purchased."
+  prompt_template: "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.\n\n### Instruction:\n{instruction}\n\n### Input:\n"
+  response_split: "\n### Response:\n"
+
+trainer:
+  batch_size: 8
+  shuffle: true
+  monitor: ndcg@10
+  max_epochs: 10
+  gradient_accumulation_steps: 1
+  mixed_precision: "bf16"
+  optimizer:
+    kwargs:
+      lr: 3.0e-4
+  eval:
+    protocol: full
+    exclude_history: false
+    metrics:
+      - name: recall
+        ks: [5, 10, 20]
+      - name: ndcg
+        ks: [5, 10, 20]

@@ -31,8 +31,8 @@ The main LLMRank implementation lives in these files:
   - LLMRank model config dataclass
 - `src/recbole3/model/llmrank/pipeline.py`
   - end-to-end pipeline entry for LLMRank
-- `src/recbole3/model/llmrank/candidates.py`
-  - candidate generation and backbone wrapping
+- `src/recbole3/dataset/candidates.py`
+  - shared candidate generation and backbone wrapping used by LLM rerankers
 - `src/recbole3/model/llmrank/model.py`
   - prompt construction, backend calls, response parsing, and reranking
 - `src/recbole3/model/llmrank/trainer.py`
@@ -501,7 +501,7 @@ This isolates whether problems come from:
   - candidate rows and eval rows may be misaligned
 
 - candidate generation works, but backbone auto-training behavior is confusing
-  - remember that backbone training is handled in `candidates.py`, not in `LLMRankTrainer`
+  - remember that backbone training is handled in `dataset/candidates.py`, not in `LLMRankTrainer`
 
 - the final candidate list looks too easy or too hard
   - check `has_gt`, `fix_pos`, and `shuffle`

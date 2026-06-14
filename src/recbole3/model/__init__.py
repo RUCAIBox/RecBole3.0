@@ -19,13 +19,65 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
+from recbole3.model.e4srec import (
+    E4SRecConfig,
+    E4SRecModel,
+    E4SRecModelDataset,
+    E4SRecTrainer,
+)
+from recbole3.model.lares import (
+    LARESConfig,
+    LARESModel,
+    LARESModelDataset,
+    LARESTrainer,
+)
+from recbole3.model.lsrm import (
+    LSRMConfig,
+    LSRMModel,
+    LSRMModelDataset,
+)
+from recbole3.model.letter import (
+    LETTERConfig,
+    LETTERModel,
+    LETTERModelDataset,
+    LETTERTrainer,
+)
 from recbole3.model.lcrec.config import LCRecConfig
+from recbole3.model.llm4rs import (
+    LLM4RSConfig,
+    LLM4RSModel,
+    LLM4RSModelDataset,
+)
+from recbole3.model.llm4rs.trainer import LLM4RSTrainer, LLM4RSTrainerConfig
 from recbole3.model.llmrank import (
     LLMRankConfig,
     LLMRankModel,
     LLMRankModelDataset,
 )
 from recbole3.model.llmrank.trainer import LLMRankTrainer, LLMRankTrainerConfig
+
+from recbole3.model.rearec import (
+    ReaRecConfig,
+    ReaRecModel,
+    ReaRecModelDataset,
+    ReaRecTrainer,
+)
+from recbole3.model.minionerec.config import MiniOneRecConfig
+from recbole3.model.rankmixer import (
+    RANKMIXER_FEATURES,
+    RankMixerConfig,
+    RankMixerEvalCollator,
+    RankMixerModel,
+    RankMixerPipeline,
+    RankMixerTrainCollator,
+)
+from recbole3.model.rpg import (
+    RPGConfig,
+    RPGModel,
+    RPGModelDataset,
+    RPGTrainer,
+    RPGTrainerConfig,
+)
 from recbole3.model.rqvae import (
     RQVAEConfig,
     RQVAEModel,
@@ -66,11 +118,42 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         model_cls=LazyImport("transformers", "PreTrainedModel"),
         config_cls=BIGRecConfig,
         pipeline_cls=LazyImport("recbole3.model.bigrec.pipeline", "BIGRecPipeline"),
+    "rearec": ModelSpec(
+        model_cls=ReaRecModel,
+        config_cls=ReaRecConfig,
+        model_data_cls=ReaRecModelDataset,
+        trainer_cls=ReaRecTrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
     ),
     "hstu": ModelSpec(
         model_cls=HSTUModel,
         config_cls=HSTUConfig,
         model_data_cls=HSTUModelDataset,
+        trainer_cls=Trainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
+    "e4srec": ModelSpec(
+        model_cls=E4SRecModel,
+        config_cls=E4SRecConfig,
+        model_data_cls=E4SRecModelDataset,
+        trainer_cls=E4SRecTrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
+    "lares": ModelSpec(
+        model_cls=LARESModel,
+        config_cls=LARESConfig,
+        model_data_cls=LARESModelDataset,
+        trainer_cls=LARESTrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
+    "lsrm": ModelSpec(
+        model_cls=LSRMModel,
+        config_cls=LSRMConfig,
+        model_data_cls=LSRMModelDataset,
         trainer_cls=Trainer,
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
@@ -83,10 +166,26 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),
+    "letter": ModelSpec(
+        model_cls=LETTERModel,
+        config_cls=LETTERConfig,
+        model_data_cls=LETTERModelDataset,
+        trainer_cls=LETTERTrainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
     "lcrec": ModelSpec(
         model_cls=LazyImport("transformers", "PreTrainedModel"),
         config_cls=LCRecConfig,
         pipeline_cls=LazyImport("recbole3.model.lcrec.pipeline", "LCRecPipeline"),
+    ),
+    "llm4rs": ModelSpec(
+        model_cls=LLM4RSModel,
+        config_cls=LLM4RSConfig,
+        model_data_cls=LLM4RSModelDataset,
+        trainer_cls=LLM4RSTrainer,
+        trainer_config_cls=LLM4RSTrainerConfig,
+        pipeline_cls=LazyImport("recbole3.model.llm4rs.pipeline", "LLM4RSPipeline"),
     ),
     "llmrank": ModelSpec(
         model_cls=LLMRankModel,
@@ -95,6 +194,26 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_cls=LLMRankTrainer,
         trainer_config_cls=LLMRankTrainerConfig,
         pipeline_cls=LazyImport("recbole3.model.llmrank.pipeline", "LLMRankPipeline"),
+    ),
+    "minionerec": ModelSpec(
+        model_cls=LazyImport("transformers", "PreTrainedModel"),
+        config_cls=MiniOneRecConfig,
+        pipeline_cls=LazyImport("recbole3.model.minionerec.pipeline", "MiniOneRecPipeline"),
+    ),
+    "rankmixer": ModelSpec(
+        model_cls=RankMixerModel,
+        config_cls=RankMixerConfig,
+        trainer_cls=Trainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=RankMixerPipeline,
+    ),
+    "rpg": ModelSpec(
+        model_cls=RPGModel,
+        config_cls=RPGConfig,
+        model_data_cls=RPGModelDataset,
+        trainer_cls=RPGTrainer,
+        trainer_config_cls=RPGTrainerConfig,
+        pipeline_cls=Pipeline,
     ),
     "tiger": ModelSpec(
         model_cls=TIGERModel,
@@ -118,20 +237,41 @@ def get_model_spec(name: str) -> ModelSpec:
 __all__ = [
     "BaseCollator",
     "BIGRecConfig",
+    "ReaRecConfig",
+    "ReaRecModel",
+    "ReaRecModelDataset",
+    "ReaRecTrainer",
     "BaseModel",
     "BaseModelDataset",
     "BaseRankingModel",
     "BaseRetrievalModel",
     "BaseSequentialModelDataset",
+    "E4SRecConfig",
+    "E4SRecModel",
+    "E4SRecModelDataset",
+    "E4SRecTrainer",
     "HISTORY_ITEM_IDS",
     "HISTORY_TIMESTAMPS",
     "HSTUConfig",
     "HSTUModel",
     "HSTUModelDataset",
+    "LETTERConfig",
+    "LETTERModel",
+    "LETTERModelDataset",
+    "LETTERTrainer",
+    "LLM4RSConfig",
+    "LLM4RSModel",
+    "LLM4RSModelDataset",
+    "LLM4RSTrainer",
+    "LLM4RSTrainerConfig",
     "LLMRankConfig",
+    "LSRMConfig",
+    "LSRMModel",
+    "LSRMModelDataset",
     "LLMRankModel",
     "LLMRankModelDataset",
     "MODEL_TABLE",
+    "RANKMIXER_FEATURES",
     "RQVAEConfig",
     "RQVAEModel",
     "RQVAEModelDataset",
@@ -139,6 +279,12 @@ __all__ = [
     "ModelConfig",
     "ModelDatasets",
     "ModelSpec",
+    "MiniOneRecConfig",
+    "RankMixerConfig",
+    "RankMixerEvalCollator",
+    "RankMixerModel",
+    "RankMixerPipeline",
+    "RankMixerTrainCollator",
     "SequentialModelConfig",
     "TIGERConfig",
     "TIGERModel",

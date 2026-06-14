@@ -71,7 +71,12 @@ class TrainerConfig:
     max_epochs: int = field(default=1, metadata={"help": "Number of epochs executed by fit()."})
     eval_steps: int = field(
         default=1,
-        metadata={"help": "Run validation once every N training epochs."},
+        metadata={
+            "help": (
+                "Run validation (and best-checkpointing) every `eval_steps` epochs. "
+                "The last epoch is always evaluated. Set to 2000 to reproduce the original LETTER schedule."
+            ),
+        },
     )
     save_inference_results: bool = field(
         default=False,

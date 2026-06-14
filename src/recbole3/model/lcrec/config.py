@@ -40,6 +40,14 @@ class LCRecConfig(ModelConfig):
     # --- HF Trainer parameters ---
     train_batch_size: int = field(default=4, metadata={"help": "Per-device training batch size."})
     eval_batch_size: int = field(default=4, metadata={"help": "Per-device evaluation batch size."})
+    train_dataloader_num_workers: int = field(
+        default=8,
+        metadata={"help": "Number of worker processes for training DataLoader tokenization/collation."},
+    )
+    eval_dataloader_num_workers: int = field(
+        default=0,
+        metadata={"help": "Number of worker processes for evaluation DataLoader. Must be 0 (dataset mutates prompt_id)."},
+    )
     gradient_accumulation_steps: int = field(default=4, metadata={"help": "Gradient accumulation steps."})
     warmup_ratio: float = field(default=0.1, metadata={"help": "Warmup ratio."})
     num_train_epochs: int = field(default=3, metadata={"help": "Number of training epochs."})
