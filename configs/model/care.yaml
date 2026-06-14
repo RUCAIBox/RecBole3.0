@@ -1,0 +1,78 @@
+# @package _global_
+
+model:
+  name: care
+
+  # CARE/TIGER item identifier mapping.
+  # Keys must be RecBole remapped item ids: "0", "1", ...
+  # Values are fixed-length textual code tokens, e.g. ["<a_1>", "<b_2>", "<c_3>", "<d_4>"].
+  sid_file: "/home/hadoop-ba-dealrank/dolphinfs_hdd_hadoop-ba-dealrank/oukesha/oukesha_oukesha/Rec613/RecBole3.0/data/sid/Musical_Instruments.item_sids.json"
+
+  # Qwen2/Qwen2.5 backbone.
+  base_model: "/home/hadoop-ba-dealrank/dolphinfs_hdd_hadoop-ba-dealrank/oukesha/oukesha_oukesha/huggingface.co/Qwen/qwen0.5B"
+  model_max_length: 2048
+  torch_dtype: float32
+  attn_implementation: null
+  trust_remote_code: false
+  low_cpu_mem_usage: true
+
+  # Sequential input format.
+  history_max_length: 20
+  history_separator: ""
+  add_history_prefix: false
+  special_token_for_answer: "|start_of_answer|"
+
+  # CARE reasoning.
+  query_list: [1, 1, 1, 1]
+  progressive_list: [true, true, true, true]
+  progressive_attn: true
+  attention_strategy: hard
+  query_div_scale: 0.3
+
+  # Evaluation.
+  # CARE uses SID-constrained beam search, then maps generated SID tokens back to item ids.
+  num_beams: 20
+
+trainer:
+  batch_size: 256
+  eval_batch_size: 8
+  shuffle: true
+  max_epochs: 20
+  eval_steps: 1
+  monitor: ndcg@10
+  inference_topk: 10
+  mixed_precision: bf16
+  gradient_accumulation_steps: 1
+  dataloader_num_workers: 0
+  pin_memory: true
+  save_inference_results: false
+
+  early_stopping:
+    enabled: true
+    patience: 3
+    min_delta: 0.0
+
+  checkpoint:
+    save_best: true
+    save_last: true
+
+  optimizer:
+    name: AdamW
+    kwargs:
+      lr: 5.0e-5
+      weight_decay: 0.01
+
+  scheduler:
+    name: CosineAnnealingLR
+    interval: epoch
+    kwargs:
+      T_max: 20
+
+  eval:
+    protocol: full
+    exclude_history: true
+    metrics:
+      - name: recall
+        ks: [5, 10]
+      - name: ndcg
+        ks: [5, 10]

@@ -75,6 +75,14 @@ from recbole3.model.tiger import (
     TIGERModel,
     TIGERModelDataset,
 )
+from recbole3.model.care import (
+    CAREConfig,
+    CAREEvalCollator,
+    CAREModel,
+    CAREModelDataset,
+    CARETokenCodec,
+    CARETrainCollator,
+)
 from recbole3.model.sequential import (
     BaseSequentialModelDataset,
     HISTORY_ITEM_IDS,
