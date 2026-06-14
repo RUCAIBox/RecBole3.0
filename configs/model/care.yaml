@@ -6,10 +6,10 @@ model:
   # CARE/TIGER item identifier mapping.
   # Keys must be RecBole remapped item ids: "0", "1", ...
   # Values are fixed-length textual code tokens, e.g. ["<a_1>", "<b_2>", "<c_3>", "<d_4>"].
-  sid_file: "/home/hadoop-ba-dealrank/dolphinfs_hdd_hadoop-ba-dealrank/oukesha/oukesha_oukesha/Rec613/RecBole3.0/data/sid/Musical_Instruments.item_sids.json"
+  sid_file: "path/to/dataset.item_sids.json"
 
   # Qwen2/Qwen2.5 backbone.
-  base_model: "/home/hadoop-ba-dealrank/dolphinfs_hdd_hadoop-ba-dealrank/oukesha/oukesha_oukesha/huggingface.co/Qwen/qwen0.5B"
+  base_model: "path/to/Qwen/qwen0.5B"
   model_max_length: 2048
   torch_dtype: float32
   attn_implementation: null
