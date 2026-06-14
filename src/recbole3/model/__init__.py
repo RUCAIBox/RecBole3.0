@@ -18,6 +18,12 @@ from recbole3.model.hstu import (
     HSTUModel,
     HSTUModelDataset,
 )
+from recbole3.model.e4srec import (
+    E4SRecConfig,
+    E4SRecModel,
+    E4SRecModelDataset,
+    E4SRecTrainer,
+)
 from recbole3.model.lares import (
     LARESConfig,
     LARESModel,
@@ -120,6 +126,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         config_cls=HSTUConfig,
         model_data_cls=HSTUModelDataset,
         trainer_cls=Trainer,
+        trainer_config_cls=TrainerConfig,
+        pipeline_cls=Pipeline,
+    ),
+    "e4srec": ModelSpec(
+        model_cls=E4SRecModel,
+        config_cls=E4SRecConfig,
+        model_data_cls=E4SRecModelDataset,
+        trainer_cls=E4SRecTrainer,
         trainer_config_cls=TrainerConfig,
         pipeline_cls=Pipeline,
     ),
@@ -226,6 +240,10 @@ __all__ = [
     "BaseRankingModel",
     "BaseRetrievalModel",
     "BaseSequentialModelDataset",
+    "E4SRecConfig",
+    "E4SRecModel",
+    "E4SRecModelDataset",
+    "E4SRecTrainer",
     "HISTORY_ITEM_IDS",
     "HISTORY_TIMESTAMPS",
     "HSTUConfig",

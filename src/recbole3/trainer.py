@@ -4,7 +4,8 @@ import inspect
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Sequence
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Literal, Mapping, Sequence
 
 import torch
 from torch.optim import Optimizer
@@ -660,6 +661,19 @@ class _ExistingAcceleratorEvalContext:
     @staticmethod
     def unwrap_model(model: Any) -> Any:
         return model
+
+    @property
+    def is_main_process(self) -> bool:
+        from accelerate import PartialState
+
+        return PartialState().is_main_process
+
+    @contextmanager
+    def accumulate(self, model: Any) -> Iterator[None]:
+        yield
+
+    def backward(self, loss: torch.Tensor, **kwargs: Any) -> None:
+        loss.backward(**kwargs)
 
 
 __all__ = [
