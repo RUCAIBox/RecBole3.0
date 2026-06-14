@@ -45,13 +45,8 @@ Our library includes algorithms covering five major categories:
 
 RecBole3.0 is developed and maintained by members from [RUCAIBox](http://aibox.ruc.edu.cn/), the main developers are Enze Liu ([@BishopLiu](https://github.com/BishopLiu)), Zhuoxuan Li ([@ZhuoxuanLi-CS](https://github.com/ZhuoxuanLi-CS)), Dongze Wu ([@Joyful-bh](https://github.com/Joyful-bh)), Jiale Xu ([@JialeXu627](https://github.com/JialeXu627)), Xiaolei Wang ([@wxl1999](https://github.com/wxl1999)), Bowen Zheng ([@zhengbw0324](https://github.com/zhengbw0324)), Bingqian Li ([@Fotiligner](https://github.com/Fotiligner)), Kesha Ou ([@TayTroye](https://github.com/TayTroye)), and Chenghao Wu ([@wuchenghao0215](https://github.com/wuchenghao0215)).
 
-## About RecBole 3.0
-With the rapid advancement of recommender systems, we are receiving an increasing number of requests from RecBole users for support the most recent advances (like debiased, fairness and GNNs). Meanwhile, members of our team are conducting research on these emerging topics or models.
-As a result, we build up this extended library based on [RecBole 1.0](https://github.com/RUCAIBox/RecBole) and we believe this extension is a significant contribution to RecBole, which is a valuable resource to the research community.
-
-In order to facilitate the retrieval of models based on RecBole, we have summarized all implemented model information and see [model list](model_list.md) for details.
-
-In the following table, we summarize the open source contributions of GitHub projects based on RecBole.
+## RecBole Family Projects
+The following table summarizes the open-source contributions of RecBole family projects on GitHub.
 
 
 | **Projects**                                                 | **Stars**                                                    | **Forks**                                                    | **Issues**                                                   | **Pull requests**                                            |
