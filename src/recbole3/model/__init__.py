@@ -118,6 +118,7 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         model_cls=LazyImport("transformers", "PreTrainedModel"),
         config_cls=BIGRecConfig,
         pipeline_cls=LazyImport("recbole3.model.bigrec.pipeline", "BIGRecPipeline"),
+    ),
     "rearec": ModelSpec(
         model_cls=ReaRecModel,
         config_cls=ReaRecConfig,
