@@ -30,7 +30,7 @@ model:
   # ── SFT Training ────────────────────────────────────────────────────────────
   train_on_inputs: true                 # true = full-sequence loss (official default)
   train_batch_size: 4
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 32
   num_train_epochs: 3
   learning_rate: 3.0e-4
   weight_decay: 0.0
@@ -83,15 +83,14 @@ model:
   eval_protocol: full                   # "sampled" or "full"
   eval_user_num: 5000                   # -1 = all; 5000 mirrors official test set size
 
-  # ── vLLM Server (used for generation during evaluation) ─────────────────────
-  # vLLM is always used for inference; set vllm_conda_env if vLLM lives in a
-  # different conda env from the training environment.
+  # ── vLLM Offline Beam-Search (used for generation during evaluation) ────────
+  # Generation runs in a one-shot subprocess calling LLM.beam_search (vLLM's
+  # only beam-search-capable API from 0.6.4 onward).  Set vllm_conda_env if
+  # vLLM lives in a different conda env from the training environment.
   vllm_conda_env: ""                    # conda env name with vLLM; empty = current env
-  vllm_device_id: 0                     # starting GPU index for the vLLM server subprocess
+  vllm_device_id: 0                     # starting GPU index for the vLLM subprocess
   vllm_tensor_parallel_size: 1          # number of GPUs for vLLM tensor parallelism (>1 for large models)
   vllm_gpu_memory_utilization: 0.9      # fraction of GPU VRAM vLLM pre-allocates; lower if OOM on startup
-  vllm_server_port: 8000                # TCP port the vLLM OpenAI-compatible server uses
-  vllm_startup_timeout: 300             # seconds to wait for /health endpoint
 
   # ── Pipeline Control ─────────────────────────────────────────────────────────
   pipeline_stage: training              # "training" or "evaluation"

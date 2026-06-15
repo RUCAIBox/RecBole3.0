@@ -1134,14 +1134,11 @@ class TestTrainerEvaluate:
         trainer = self._trainer()
         num_items = data.get_num_items()
 
-        # Stub the vLLM subprocess management so no real server is started.
-        fake_proc = MagicMock()
-        monkeypatch.setattr(trainer, "_start_vllm_server", lambda cp: fake_proc)
-        monkeypatch.setattr(trainer, "_wait_vllm_ready", lambda port, timeout: None)
+        # Stub the offline vLLM subprocess so no real model is loaded.
         monkeypatch.setattr(
             trainer,
             "_generate_all_titles_vllm",
-            lambda frame, lookup: (
+            lambda frame, lookup, checkpoint_path, work_dir: (
                 ["MockTitle"] * len(frame),
                 list(frame[ITEM_ID]),
                 [None] * len(frame),
@@ -1172,13 +1169,10 @@ class TestTrainerEvaluate:
         trainer = self._trainer()
         num_items = data.get_num_items()
 
-        fake_proc = MagicMock()
-        monkeypatch.setattr(trainer, "_start_vllm_server", lambda cp: fake_proc)
-        monkeypatch.setattr(trainer, "_wait_vllm_ready", lambda port, timeout: None)
         monkeypatch.setattr(
             trainer,
             "_generate_all_titles_vllm",
-            lambda frame, lookup: (
+            lambda frame, lookup, checkpoint_path, work_dir: (
                 ["MockTitle"] * len(frame),
                 list(frame[ITEM_ID]),
                 [None] * len(frame),
@@ -2128,12 +2122,6 @@ class TestVLLMConfig:
     def test_default_vllm_device_id_is_zero(self) -> None:
         assert BIGRecConfig().vllm_device_id == 0
 
-    def test_default_vllm_server_port_is_8000(self) -> None:
-        assert BIGRecConfig().vllm_server_port == 8000
-
-    def test_default_vllm_startup_timeout_is_300(self) -> None:
-        assert BIGRecConfig().vllm_startup_timeout == 300
-
     def test_default_vllm_tensor_parallel_size_is_1(self) -> None:
         assert BIGRecConfig().vllm_tensor_parallel_size == 1
 
@@ -2155,14 +2143,6 @@ class TestVLLMConfig:
     def test_vllm_gpu_memory_utilization_overridable(self) -> None:
         cfg = BIGRecConfig(vllm_gpu_memory_utilization=0.7)
         assert cfg.vllm_gpu_memory_utilization == pytest.approx(0.7)
-
-    def test_vllm_server_port_overridable(self) -> None:
-        cfg = BIGRecConfig(vllm_server_port=9000)
-        assert cfg.vllm_server_port == 9000
-
-    def test_vllm_startup_timeout_overridable(self) -> None:
-        cfg = BIGRecConfig(vllm_startup_timeout=600)
-        assert cfg.vllm_startup_timeout == 600
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2197,193 +2177,187 @@ class TestResolveVLLMPython:
             trainer._resolve_vllm_python()
 
 
-class TestWaitVLLMReady:
-    """Tests for _wait_vllm_ready."""
+class TestRunVLLMOffline:
+    """Tests for _run_vllm_offline (replaces the legacy HTTP-server path)."""
 
-    def test_raises_timeout_when_server_absent(self) -> None:
-        """When no server is reachable, must raise TimeoutError after timeout expires."""
-        trainer = BIGRecTrainer(BIGRecConfig(vllm_server_port=19999))
-        with pytest.raises(TimeoutError, match="port 19999"):
-            trainer._wait_vllm_ready(port=19999, timeout=1)
-
-    def test_returns_immediately_when_server_responds_200(
-        self, monkeypatch: pytest.MonkeyPatch
+    @staticmethod
+    def _patch_subprocess_run(
+        monkeypatch: pytest.MonkeyPatch,
+        captured: dict[str, Any],
+        outputs: list[str],
     ) -> None:
-        """When mock URL returns 200, _wait_vllm_ready should return without error."""
-        import urllib.request as _ur
+        """Replace subprocess.run with a stub that captures args and writes outputs.
 
-        class _FakeResp:
-            status: int = 200
-            def __enter__(self) -> "_FakeResp":
-                return self
-            def __exit__(self, *a: Any) -> None:
-                pass
-
-        monkeypatch.setattr(_ur, "urlopen", lambda url, timeout=None: _FakeResp())
-        trainer = BIGRecTrainer(BIGRecConfig(vllm_server_port=8123))
-        trainer._wait_vllm_ready(port=8123, timeout=10)  # must not raise
-
-
-class TestStartVLLMServer:
-    """Tests for _start_vllm_server."""
-
-    def test_start_server_single_gpu_sets_cuda_visible_devices(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-    ) -> None:
+        The stub mimics the real subprocess by reading --output from the captured
+        cmd line and writing *outputs* there so the caller's JSON read succeeds.
+        """
         import subprocess as sp
 
-        captured: dict[str, Any] = {}
-
-        def fake_popen(cmd: list[str], env: dict[str, str] | None = None) -> MagicMock:
+        def fake_run(
+            cmd: list[str], env: dict[str, str] | None = None, check: bool = False,
+        ) -> MagicMock:
             captured["cmd"] = cmd
             captured["env"] = env
-            return MagicMock()
+            # Mirror the real subprocess: write outputs JSON to the requested path.
+            out_idx = cmd.index("--output")
+            with open(cmd[out_idx + 1], "w", encoding="utf-8") as f:
+                import json as _json
+                _json.dump(outputs, f)
+            result = MagicMock()
+            result.returncode = 0
+            return result
 
-        monkeypatch.setattr(sp, "Popen", fake_popen)
+        monkeypatch.setattr(sp, "run", fake_run)
+
+    def test_single_gpu_sets_cuda_visible_devices(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        captured: dict[str, Any] = {}
+        self._patch_subprocess_run(monkeypatch, captured, ["A", "B"])
 
         cfg = BIGRecConfig(
             vllm_conda_env="", vllm_device_id=2, vllm_tensor_parallel_size=1,
-            vllm_server_port=8765, use_lora=False,
+            use_lora=False, num_beams=4, max_new_tokens=64,
+            max_input_length=128,
         )
         trainer = BIGRecTrainer(cfg)
-        trainer._start_vllm_server(str(tmp_path))
+        trainer._run_vllm_offline(["p1", "p2"], str(tmp_path), str(tmp_path))
 
         assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "2"
-        assert "--tensor-parallel-size" not in captured["cmd"]
-        port_idx = captured["cmd"].index("--port")
-        assert captured["cmd"][port_idx + 1] == "8765"
+        tp_idx = captured["cmd"].index("--tp")
+        assert captured["cmd"][tp_idx + 1] == "1"
 
-    def test_start_server_multi_gpu_sets_consecutive_devices(
+    def test_multi_gpu_sets_consecutive_devices(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
         """vllm_device_id=1, vllm_tensor_parallel_size=3 → CUDA_VISIBLE_DEVICES=1,2,3."""
-        import subprocess as sp
-
         captured: dict[str, Any] = {}
-
-        def fake_popen(cmd: list[str], env: dict[str, str] | None = None) -> MagicMock:
-            captured["cmd"] = cmd
-            captured["env"] = env
-            return MagicMock()
-
-        monkeypatch.setattr(sp, "Popen", fake_popen)
+        self._patch_subprocess_run(monkeypatch, captured, ["A"])
 
         cfg = BIGRecConfig(
-            vllm_conda_env="", vllm_device_id=1, vllm_tensor_parallel_size=3, use_lora=False,
+            vllm_conda_env="", vllm_device_id=1, vllm_tensor_parallel_size=3,
+            use_lora=False,
         )
         trainer = BIGRecTrainer(cfg)
-        trainer._start_vllm_server(str(tmp_path))
+        trainer._run_vllm_offline(["p1"], str(tmp_path), str(tmp_path))
 
         assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "1,2,3"
-        tp_idx = captured["cmd"].index("--tensor-parallel-size")
+        tp_idx = captured["cmd"].index("--tp")
         assert captured["cmd"][tp_idx + 1] == "3"
 
-    def test_start_server_passes_gpu_memory_utilization(
+    def test_passes_gpu_memory_utilization(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
-        import subprocess as sp
-
         captured: dict[str, Any] = {}
+        self._patch_subprocess_run(monkeypatch, captured, ["A"])
 
-        def fake_popen(cmd: list[str], env: dict[str, str] | None = None) -> MagicMock:
-            captured["cmd"] = cmd
-            return MagicMock()
-
-        monkeypatch.setattr(sp, "Popen", fake_popen)
-
-        cfg = BIGRecConfig(vllm_conda_env="", vllm_gpu_memory_utilization=0.7, use_lora=False)
+        cfg = BIGRecConfig(
+            vllm_conda_env="", vllm_gpu_memory_utilization=0.7, use_lora=False,
+        )
         trainer = BIGRecTrainer(cfg)
-        trainer._start_vllm_server(str(tmp_path))
+        trainer._run_vllm_offline(["p1"], str(tmp_path), str(tmp_path))
 
         gmu_idx = captured["cmd"].index("--gpu-memory-utilization")
         assert captured["cmd"][gmu_idx + 1] == "0.7"
 
-    def test_start_server_adds_lora_args_when_use_lora_true(
+    def test_passes_beam_width_and_max_tokens(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
-        import subprocess as sp
-
         captured: dict[str, Any] = {}
+        self._patch_subprocess_run(monkeypatch, captured, ["A"])
 
-        def fake_popen(cmd: list[str], env: dict[str, str] | None = None) -> MagicMock:
-            captured["cmd"] = cmd
-            return MagicMock()
+        cfg = BIGRecConfig(
+            vllm_conda_env="", use_lora=False, num_beams=4, max_new_tokens=128,
+        )
+        trainer = BIGRecTrainer(cfg)
+        trainer._run_vllm_offline(["p1"], str(tmp_path), str(tmp_path))
 
-        monkeypatch.setattr(sp, "Popen", fake_popen)
+        bw_idx = captured["cmd"].index("--beam-width")
+        assert captured["cmd"][bw_idx + 1] == "4"
+        mt_idx = captured["cmd"].index("--max-tokens")
+        assert captured["cmd"][mt_idx + 1] == "128"
+
+    def test_adds_lora_args_when_use_lora_true(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        captured: dict[str, Any] = {}
+        self._patch_subprocess_run(monkeypatch, captured, ["A"])
 
         cfg = BIGRecConfig(vllm_conda_env="", use_lora=True, lora_r=16)
         trainer = BIGRecTrainer(cfg)
-        trainer._start_vllm_server(str(tmp_path))
+        trainer._run_vllm_offline(["p1"], str(tmp_path), str(tmp_path))
 
-        assert "--enable-lora" in captured["cmd"]
-        assert "--lora-modules" in captured["cmd"]
-        lora_rank_idx = captured["cmd"].index("--max-lora-rank")
-        assert captured["cmd"][lora_rank_idx + 1] == "16"
+        assert "--lora" in captured["cmd"]
+        lora_idx = captured["cmd"].index("--lora")
+        assert captured["cmd"][lora_idx + 1] == str(tmp_path)
+        rank_idx = captured["cmd"].index("--lora-rank")
+        assert captured["cmd"][rank_idx + 1] == "16"
 
-    def test_start_server_omits_lora_args_when_use_lora_false(
+    def test_omits_lora_args_when_use_lora_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        captured: dict[str, Any] = {}
+        self._patch_subprocess_run(monkeypatch, captured, ["A"])
+
+        cfg = BIGRecConfig(vllm_conda_env="", use_lora=False)
+        trainer = BIGRecTrainer(cfg)
+        trainer._run_vllm_offline(["p1"], str(tmp_path), str(tmp_path))
+
+        assert "--lora" not in captured["cmd"]
+        assert "--lora-rank" not in captured["cmd"]
+
+    def test_strips_quotes_and_whitespace_from_outputs(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        captured: dict[str, Any] = {}
+        self._patch_subprocess_run(
+            monkeypatch, captured, ['  "Movie A"  ', '"Movie B"\n', "  Plain  "],
+        )
+
+        cfg = BIGRecConfig(vllm_conda_env="", use_lora=False)
+        trainer = BIGRecTrainer(cfg)
+        cleaned = trainer._run_vllm_offline(
+            ["p1", "p2", "p3"], str(tmp_path), str(tmp_path),
+        )
+        assert cleaned == ["Movie A", "Movie B", "Plain"]
+
+    def test_invoked_by_absolute_path_not_via_dash_m(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """Lock in env-decoupling: the cmd must call vllm_offline.py by path.
+
+        ``python -m recbole3.model.bigrec.vllm_offline`` would require the vLLM
+        conda env to be able to ``import recbole3``.  We deliberately invoke
+        the script by absolute path so the vLLM env only needs ``vllm``.
+        """
+        captured: dict[str, Any] = {}
+        self._patch_subprocess_run(monkeypatch, captured, ["A"])
+
+        cfg = BIGRecConfig(vllm_conda_env="", use_lora=False)
+        trainer = BIGRecTrainer(cfg)
+        trainer._run_vllm_offline(["p1"], str(tmp_path), str(tmp_path))
+
+        cmd = captured["cmd"]
+        assert "-m" not in cmd, "must not use `python -m` (would require recbole3 import)"
+        # The script path is the 2nd token (right after the python executable).
+        assert cmd[1].endswith("vllm_offline.py"), f"expected vllm_offline.py path, got {cmd[1]!r}"
+        assert os.path.isabs(cmd[1]), f"script path must be absolute, got {cmd[1]!r}"
+
+    def test_nonzero_exit_raises_runtime_error(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
         import subprocess as sp
 
-        captured: dict[str, Any] = {}
+        def fake_run(
+            cmd: list[str], env: dict[str, str] | None = None, check: bool = False,
+        ) -> MagicMock:
+            result = MagicMock()
+            result.returncode = 1
+            return result
 
-        def fake_popen(cmd: list[str], env: dict[str, str] | None = None) -> MagicMock:
-            captured["cmd"] = cmd
-            return MagicMock()
-
-        monkeypatch.setattr(sp, "Popen", fake_popen)
+        monkeypatch.setattr(sp, "run", fake_run)
 
         cfg = BIGRecConfig(vllm_conda_env="", use_lora=False)
         trainer = BIGRecTrainer(cfg)
-        trainer._start_vllm_server(str(tmp_path))
-
-        assert "--enable-lora" not in captured["cmd"]
-        assert "--lora-modules" not in captured["cmd"]
-
-    def test_vllm_server_terminated_after_generation(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """evaluate() must call terminate() + wait() on the vLLM proc in all cases."""
-        data, _ = _prepare_bigrec_data()
-        cfg = BIGRecConfig(
-            eval_topk=(1,),
-            eval_metrics=("recall",),
-            eval_protocol="full",
-            eval_batch_size=2,
-            max_input_length=32,
-            max_new_tokens=8,
-            num_beams=1,
-            history_max_length=3,
-        )
-        trainer = BIGRecTrainer(cfg)
-        num_items = data.get_num_items()
-
-        fake_proc = MagicMock()
-        monkeypatch.setattr(trainer, "_start_vllm_server", lambda cp: fake_proc)
-        monkeypatch.setattr(trainer, "_wait_vllm_ready", lambda port, timeout: None)
-        monkeypatch.setattr(
-            trainer,
-            "_generate_all_titles_vllm",
-            lambda frame, lookup: (
-                ["MockTitle"] * len(frame),
-                list(frame[ITEM_ID]),
-                [None] * len(frame),
-            ),
-        )
-        monkeypatch.setattr(trainer, "_load_base_model_for_embedding", lambda *a: _FakeModel())
-        monkeypatch.setattr(trainer, "_load_tokenizer", lambda **kw: _MockTokenizer())
-        monkeypatch.setattr(
-            trainer,
-            "_precompute_item_embeddings",
-            lambda *a, **kw: torch.zeros(num_items, _FakeModel.H),
-        )
-        monkeypatch.setattr(
-            trainer,
-            "_extract_embeddings",
-            lambda model, tok, texts, batch_size, device: torch.zeros(len(texts), _FakeModel.H),
-        )
-
-        trainer.evaluate(data, checkpoint_path=str(tmp_path), split="test")
-
-        fake_proc.terminate.assert_called_once()
-        fake_proc.wait.assert_called_once()
+        with pytest.raises(RuntimeError, match="exited with code 1"):
+            trainer._run_vllm_offline(["p1"], str(tmp_path), str(tmp_path))

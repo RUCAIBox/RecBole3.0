@@ -423,20 +423,22 @@ class BIGRecConfig(SequentialModelConfig):
         },
     )
 
-    # ── vLLM Inference (Server Mode) ─────────────────────────────────────────
-    # BIGRec evaluation always uses a vLLM OpenAI-compatible HTTP server for
-    # generation.  The server is auto-started as a subprocess before Phase 1
-    # and terminated after generation completes, freeing its VRAM before the
-    # embedding model is loaded for Phase 2.
+    # ── vLLM Inference (Offline Beam-Search Subprocess) ──────────────────────
+    # BIGRec evaluation runs generation in a one-shot vLLM subprocess that
+    # calls LLM.beam_search() (see recbole3.model.bigrec.vllm_offline).  This
+    # is the only path that supports width-N beam search in vLLM ≥ 0.6.4 —
+    # the OpenAI-compatible /v1/completions endpoint dropped use_beam_search.
+    # The subprocess exits after writing its results JSON, so its VRAM is
+    # freed naturally before Phase 2 loads the embedding model.
     vllm_conda_env: str = field(
         default="",
         metadata={
             "help": (
                 "Name of the conda environment that has vLLM installed. "
-                "BIGRec will auto-start a vLLM OpenAI-compatible server in that "
-                "environment before evaluation and shut it down after generation. "
-                "Empty string (default): use the current Python interpreter "
-                "(vLLM must be installed in the same env as recbole3)."
+                "BIGRec spawns the offline beam-search subprocess in that "
+                "environment's Python interpreter.  Empty string (default): "
+                "use the current interpreter (vLLM must be installed in the "
+                "same env as recbole3)."
             )
         },
     )
@@ -444,10 +446,10 @@ class BIGRecConfig(SequentialModelConfig):
         default=0,
         metadata={
             "help": (
-                "Starting CUDA device index for the vLLM server subprocess. "
+                "Starting CUDA device index for the vLLM subprocess. "
                 "When vllm_tensor_parallel_size > 1, consecutive GPU indices "
                 "[vllm_device_id, vllm_device_id + vllm_tensor_parallel_size) "
-                "are assigned to the server via CUDA_VISIBLE_DEVICES. "
+                "are assigned via CUDA_VISIBLE_DEVICES. "
                 "May differ from device_id (the training / embedding GPU)."
             )
         },
@@ -456,11 +458,9 @@ class BIGRecConfig(SequentialModelConfig):
         default=1,
         metadata={
             "help": (
-                "Number of GPUs for vLLM tensor parallelism (--tensor-parallel-size). "
+                "Number of GPUs for vLLM tensor parallelism. "
                 "Uses vllm_tensor_parallel_size consecutive GPUs starting from "
-                "vllm_device_id.  Set > 1 when the model does not fit on a single GPU. "
-                "Example: vllm_device_id=2, vllm_tensor_parallel_size=2 → "
-                "CUDA_VISIBLE_DEVICES=2,3 and --tensor-parallel-size 2."
+                "vllm_device_id.  Set > 1 when the model does not fit on a single GPU."
             )
         },
     )
@@ -469,23 +469,9 @@ class BIGRecConfig(SequentialModelConfig):
         metadata={
             "help": (
                 "Fraction of GPU memory vLLM pre-allocates on startup "
-                "(--gpu-memory-utilization, default 0.9). "
-                "Reduce (e.g. 0.7) if another process already occupies VRAM on "
-                "the same device, or if vLLM raises a 'free memory < desired' error."
-            )
-        },
-    )
-    vllm_server_port: int = field(
-        default=8000,
-        metadata={"help": "TCP port the vLLM OpenAI-compatible server listens on."},
-    )
-    vllm_startup_timeout: int = field(
-        default=300,
-        metadata={
-            "help": (
-                "Seconds to wait for the vLLM server's /health endpoint to "
-                "return HTTP 200 after launch.  Large models (LLaMA-70B) may "
-                "need up to 600 s to load."
+                "(default 0.9). Reduce (e.g. 0.7) if another process already "
+                "occupies VRAM on the same device, or if vLLM raises a "
+                "'free memory < desired' error."
             )
         },
     )

@@ -27,9 +27,6 @@ import math
 import os
 import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
 from typing import Any, Literal
 
 import numpy as np
@@ -63,9 +60,11 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PAD_TOKEN_ID: int = 0   # unk_token_id; used when pad_token_id is None
 _DEFAULT_EOS_TOKEN_ID: int = 2   # </s>; used when eos_token_id is None
 
-# Name under which the LoRA adapter is registered with the vLLM server via
-# --lora-modules.  Requests use this as the "model" field to trigger LoRA.
-_VLLM_LORA_NAME: str = "bigrec_adapter"
+# Absolute filesystem path of the offline-generation subprocess entry point.
+# Invoked by path (not `python -m`) so the vLLM conda env only needs `vllm`
+# installed — it does NOT need to be able to `import recbole3`.  This keeps
+# the training env and the inference env fully decoupled.
+_VLLM_OFFLINE_SCRIPT: str = os.path.join(os.path.dirname(__file__), "vllm_offline.py")
 
 
 class BIGRecTrainer:
@@ -832,121 +831,22 @@ class BIGRecTrainer:
             )
         return python_path
 
-    def _start_vllm_server(self, checkpoint_path: str) -> "subprocess.Popen[bytes]":
-        """Launch the vLLM OpenAI-compatible server as a background subprocess.
-
-        Sets ``CUDA_VISIBLE_DEVICES`` for the subprocess to
-        ``config.vllm_device_id``, which may differ from ``config.device_id``
-        (the GPU used for training and embedding extraction) so that generation
-        and Phase-2 embedding extraction can run on separate physical GPUs.
-
-        When ``config.use_lora=True``, the LoRA adapter is pre-registered via
-        ``--lora-modules`` so requests can reference it by name.
-
-        Args:
-            checkpoint_path: Directory containing the saved LoRA adapter
-                             (used for ``--lora-modules`` when LoRA is enabled).
-
-        Returns:
-            Running :class:`subprocess.Popen` handle.  The caller is responsible
-            for ``terminate()`` + ``wait()`` when generation is complete.
-        """
-        python_exe = self._resolve_vllm_python()
-        max_model_len: int = self.config.max_input_length + self.config.max_new_tokens
-
-        # Build CUDA_VISIBLE_DEVICES: consecutive GPUs starting at vllm_device_id.
-        tp: int = max(1, self.config.vllm_tensor_parallel_size)
-        vllm_gpu_ids: str = ",".join(
-            str(self.config.vllm_device_id + i) for i in range(tp)
-        )
-
-        cmd: list[str] = [
-            python_exe, "-m", "vllm.entrypoints.openai.api_server",
-            "--model", self.config.llm_path,
-            "--dtype", self.config.torch_dtype,
-            "--max-model-len", str(max_model_len),
-            "--gpu-memory-utilization", str(self.config.vllm_gpu_memory_utilization),
-            "--port", str(self.config.vllm_server_port),
-        ]
-        if tp > 1:
-            cmd += ["--tensor-parallel-size", str(tp)]
-        if self.config.use_lora:
-            cmd += [
-                "--enable-lora",
-                "--lora-modules", f"{_VLLM_LORA_NAME}={checkpoint_path}",
-                "--max-lora-rank", str(self.config.lora_r),
-            ]
-
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = vllm_gpu_ids
-
-        self._log(
-            "Starting vLLM server: env=%s, CUDA_VISIBLE_DEVICES=%s, tp=%d, port=%d%s",
-            self.config.vllm_conda_env or "(current)",
-            vllm_gpu_ids,
-            tp,
-            self.config.vllm_server_port,
-            f", lora={checkpoint_path}" if self.config.use_lora else "",
-        )
-        return subprocess.Popen(cmd, env=env)
-
-    def _wait_vllm_ready(self, port: int, timeout: int) -> None:
-        """Block until the vLLM server's ``/health`` endpoint returns HTTP 200.
-
-        Polls every 5 seconds.  The server logs (printed by the subprocess to
-        the terminal) show model-loading progress while we wait.
-
-        Args:
-            port: TCP port the server is listening on.
-            timeout: Maximum seconds to wait before raising.
-
-        Raises:
-            TimeoutError: If the server does not become healthy in time.
-        """
-        url = f"http://localhost:{port}/health"
-        deadline = time.monotonic() + timeout
-        self._log("Waiting for vLLM server on port %d (timeout=%ds) …", port, timeout)
-
-        while time.monotonic() < deadline:
-            try:
-                with urllib.request.urlopen(url, timeout=3) as resp:
-                    if resp.status == 200:
-                        self._log("vLLM server is ready.")
-                        return
-            except Exception:  # connection refused, timeout, non-200, etc.
-                pass
-            time.sleep(5)
-
-        raise TimeoutError(
-            f"vLLM server did not become ready within {timeout}s on port {port}. "
-            "Check the server output above for error details."
-        )
-
-    def _generate_all_titles_vllm(
+    def _collect_eval_targets(
         self,
         eval_frame: pd.DataFrame,
-        item_text_lookup: list[str],
-    ) -> tuple[list[str], list[int], list[list[int] | None]]:
-        """Generate item titles by calling the running vLLM HTTP server.
+    ) -> tuple[list[int], list[list[int] | None]]:
+        """Extract target item_ids and per-row candidate lists from an eval split.
 
-        Sends prompts to the OpenAI-compatible ``/v1/completions`` endpoint in
-        batches of ``eval_batch_size``.  The server must already be running and
-        healthy (started via :meth:`_start_vllm_server`).
-
-        No vLLM package is imported here — communication is via plain HTTP so
-        this method works even when vLLM lives in a separate conda environment.
+        Pulled into a helper so the prompt-building and target-collection passes
+        can stay in lock-step (one row in *eval_frame* → one prompt → one target
+        → one candidate list).
 
         Args:
-            eval_frame: Evaluation DataFrame with ``history_item_ids`` and
-                        ``item_id`` columns; optionally ``candidate_item_ids``.
-            item_text_lookup: ``item_id → title`` mapping for prompt building.
+            eval_frame: DataFrame batch from the eval ``FrameDataset``.
 
         Returns:
-            Tuple ``(clean_texts, target_ids, cand_lists)`` — one entry per row
-            in *eval_frame*.
+            Tuple ``(target_ids, cand_lists)`` aligned with *eval_frame*'s row order.
         """
-        prompts: list[str] = build_eval_prompts(eval_frame, item_text_lookup, self.config)
-
         target_ids: list[int] = []
         cand_lists: list[list[int] | None] = []
         for row in eval_frame.itertuples(index=False):
@@ -960,51 +860,134 @@ class BIGRecTrainer:
                 cand_lists.append(None)
             else:
                 cand_lists.append(list(cand_val))
+        return target_ids, cand_lists
 
-        url = f"http://localhost:{self.config.vllm_server_port}/v1/completions"
-        model_name: str = _VLLM_LORA_NAME if self.config.use_lora else self.config.llm_path
-        batch_size: int = self.config.eval_batch_size
-        clean_texts: list[str] = []
+    def _run_vllm_offline(
+        self,
+        prompts: list[str],
+        checkpoint_path: str,
+        work_dir: str,
+    ) -> list[str]:
+        """Run vLLM ``LLM.beam_search`` in a one-shot subprocess and return outputs.
 
-        pbar = tqdm(
-            range(0, len(prompts), batch_size),
-            desc="vLLM generation",
-            disable=not self._is_main_process(),
+        Implementation: writes *prompts* to a JSON file in *work_dir*, spawns
+        ``python -m recbole3.model.bigrec.vllm_offline`` (in
+        ``config.vllm_conda_env``'s interpreter), then reads back the generated
+        texts from a sibling output JSON file.
+
+        Beam search is the only way to get width-N search out of vLLM ≥ 0.6.4
+        (the OpenAI-compatible server's ``use_beam_search`` flag was removed),
+        and ``LLM.beam_search`` requires the model to be loaded in the same
+        process — hence the subprocess instead of an HTTP server.
+
+        Args:
+            prompts: Full inference prompts (already include ``### Response:\\n``).
+            checkpoint_path: LoRA adapter directory; ignored when ``use_lora=False``.
+            work_dir: Directory for the transient prompts / output JSON files.
+
+        Returns:
+            List of generated text strings, one per prompt, post-stripping
+            whitespace and the outer ``"``…``"`` quotes the model was trained
+            to emit.
+
+        Raises:
+            RuntimeError: If the subprocess exits non-zero or returns a result
+                          list whose length disagrees with the input prompts.
+        """
+        python_exe = self._resolve_vllm_python()
+        max_model_len: int = self.config.max_input_length + self.config.max_new_tokens
+        tp: int = max(1, self.config.vllm_tensor_parallel_size)
+        vllm_gpu_ids: str = ",".join(
+            str(self.config.vllm_device_id + i) for i in range(tp)
         )
-        for start in pbar:
-            batch = prompts[start : start + batch_size]
-            payload: dict[str, Any] = {
-                "model": model_name,
-                "prompt": batch,
-                "max_tokens": self.config.max_new_tokens,
-                "temperature": 0.0,
-                "n": 1,
-            }
-            if self.config.num_beams > 1:
-                # best_of generates num_beams candidates server-side and returns
-                # the one with the highest log-probability (beam-search approximation).
-                payload["best_of"] = self.config.num_beams
 
-            req_data = json.dumps(payload).encode()
-            req = urllib.request.Request(
-                url,
-                data=req_data,
-                headers={"Content-Type": "application/json"},
+        # Persist transient JSON files in the run's work_dir so they survive
+        # for post-mortem inspection if the subprocess crashes mid-run.
+        os.makedirs(work_dir, exist_ok=True)
+        prompts_path = os.path.join(work_dir, "vllm_prompts.json")
+        output_path = os.path.join(work_dir, "vllm_outputs.json")
+        with open(prompts_path, "w", encoding="utf-8") as f:
+            json.dump(prompts, f, ensure_ascii=False)
+
+        cmd: list[str] = [
+            python_exe, _VLLM_OFFLINE_SCRIPT,
+            "--prompts", prompts_path,
+            "--output", output_path,
+            "--model", self.config.llm_path,
+            "--dtype", self.config.torch_dtype,
+            "--beam-width", str(max(1, self.config.num_beams)),
+            "--max-tokens", str(self.config.max_new_tokens),
+            "--max-model-len", str(max_model_len),
+            "--tp", str(tp),
+            "--gpu-memory-utilization", str(self.config.vllm_gpu_memory_utilization),
+        ]
+        if self.config.use_lora:
+            cmd += [
+                "--lora", checkpoint_path,
+                "--lora-rank", str(self.config.lora_r),
+            ]
+
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = vllm_gpu_ids
+
+        self._log(
+            "Launching vLLM offline beam-search: env=%s, CUDA_VISIBLE_DEVICES=%s, "
+            "tp=%d, beam_width=%d, n_prompts=%d%s",
+            self.config.vllm_conda_env or "(current)",
+            vllm_gpu_ids,
+            tp,
+            max(1, self.config.num_beams),
+            len(prompts),
+            f", lora={checkpoint_path}" if self.config.use_lora else "",
+        )
+
+        # Stream the subprocess output straight to our stdout/stderr so vLLM's
+        # model-loading and per-prompt progress remain visible.
+        completed = subprocess.run(cmd, env=env, check=False)
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"vLLM offline subprocess exited with code {completed.returncode}. "
+                f"Inspect the output above and the prompts file at {prompts_path}."
             )
-            try:
-                with urllib.request.urlopen(req, timeout=300) as resp:
-                    result: dict[str, Any] = json.loads(resp.read())
-            except urllib.error.HTTPError as exc:
-                body = exc.read().decode(errors="replace")
-                raise RuntimeError(
-                    f"vLLM server returned HTTP {exc.code}: {body}"
-                ) from exc
 
-            # choices are ordered by index, matching the input prompt order.
-            choices = sorted(result["choices"], key=lambda c: c["index"])
-            for i, choice in enumerate(choices):
-                text = choice["text"].strip().strip('"').strip()
-                clean_texts.append(text or f"[empty_{start + i}]")
+        with open(output_path, "r", encoding="utf-8") as f:
+            raw_outputs: list[str] = json.load(f)
+
+        if len(raw_outputs) != len(prompts):
+            raise RuntimeError(
+                f"vLLM offline returned {len(raw_outputs)} outputs but "
+                f"{len(prompts)} prompts were sent."
+            )
+
+        clean_texts: list[str] = []
+        for idx, text in enumerate(raw_outputs):
+            cleaned = text.strip().strip('"').strip()
+            clean_texts.append(cleaned or f"[empty_{idx}]")
+        return clean_texts
+
+    def _generate_all_titles_vllm(
+        self,
+        eval_frame: pd.DataFrame,
+        item_text_lookup: list[str],
+        checkpoint_path: str,
+        work_dir: str,
+    ) -> tuple[list[str], list[int], list[list[int] | None]]:
+        """Generate item titles for an eval split via the offline vLLM subprocess.
+
+        Args:
+            eval_frame: Evaluation DataFrame with ``history_item_ids`` and
+                        ``item_id`` columns; optionally ``candidate_item_ids``.
+            item_text_lookup: ``item_id → title`` mapping for prompt building.
+            checkpoint_path: LoRA adapter directory (passed to the subprocess).
+            work_dir: Directory for the transient JSON files.
+
+        Returns:
+            Tuple ``(clean_texts, target_ids, cand_lists)`` — one entry per row
+            in *eval_frame*.
+        """
+        prompts: list[str] = build_eval_prompts(eval_frame, item_text_lookup, self.config)
+        target_ids, cand_lists = self._collect_eval_targets(eval_frame)
+        clean_texts = self._run_vllm_offline(prompts, checkpoint_path, work_dir)
 
         if self._is_main_process():
             for i in range(min(3, len(clean_texts))):
@@ -1258,30 +1241,31 @@ class BIGRecTrainer:
         valid_targets: list[int] | None = None
         valid_cands: list[list[int] | None] | None = None
 
-        vllm_proc = self._start_vllm_server(checkpoint_path)
-        try:
-            self._wait_vllm_ready(self.config.vllm_server_port, self.config.vllm_startup_timeout)
+        # Generation runs in a one-shot vLLM subprocess (LLM.beam_search):
+        # vLLM ≥ 0.6.4 dropped use_beam_search from the OpenAI-compatible
+        # completions endpoint, so an HTTP server cannot produce true width-N
+        # beam search anymore.  The subprocess exits before Phase 2 runs, so
+        # its VRAM is reclaimed naturally — no manual server lifecycle needed.
+        gen_work_dir = os.path.join(checkpoint_path, "vllm_gen_io")
 
-            eval_texts, target_ids, cand_lists = self._generate_all_titles_vllm(
-                eval_frame, item_text_lookup
+        eval_texts, target_ids, cand_lists = self._generate_all_titles_vllm(
+            eval_frame, item_text_lookup, checkpoint_path, gen_work_dir,
+        )
+
+        if self.config.grounding_gamma_search:
+            self._log("Eval phase 1b: valid split for gamma-search …")
+            valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
+            if self.config.max_steps > 0:
+                max_valid_users: int = self.config.max_steps * self.config.eval_batch_size
+                if len(valid_frame) > max_valid_users:
+                    valid_frame = valid_frame.head(max_valid_users).reset_index(drop=True)
+            valid_texts, valid_targets, valid_cands = self._generate_all_titles_vllm(
+                valid_frame, item_text_lookup, checkpoint_path, gen_work_dir,
             )
 
-            if self.config.grounding_gamma_search:
-                self._log("Eval phase 1b: valid split for gamma-search …")
-                valid_frame: pd.DataFrame = task_data.get_eval_dataset("valid").frame  # type: ignore[attr-defined]
-                if self.config.max_steps > 0:
-                    max_valid_users: int = self.config.max_steps * self.config.eval_batch_size
-                    if len(valid_frame) > max_valid_users:
-                        valid_frame = valid_frame.head(max_valid_users).reset_index(drop=True)
-                valid_texts, valid_targets, valid_cands = self._generate_all_titles_vllm(
-                    valid_frame, item_text_lookup
-                )
-        finally:
-            vllm_proc.terminate()
-            vllm_proc.wait(timeout=30)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            self._log("vLLM server stopped, VRAM freed.")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        self._log("vLLM offline generation complete, VRAM reclaimed.")
 
         tokenizer = self._load_tokenizer(padding_side="left")
         device: torch.device = torch.device(
