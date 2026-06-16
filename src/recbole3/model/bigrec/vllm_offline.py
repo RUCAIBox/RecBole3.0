@@ -58,6 +58,17 @@ def _parse_args() -> argparse.Namespace:
         "--gpu-memory-utilization", type=float, default=0.9,
         help="Fraction of GPU VRAM vLLM pre-allocates.",
     )
+    parser.add_argument(
+        "--prompt-chunk-size", type=int, default=128,
+        help=(
+            "Number of prompts processed per LLM.beam_search call. "
+            "vLLM submits ALL prompts to the engine at once internally, so a "
+            "single 5000-prompt call with beam_width=4 floods the KV cache with "
+            "20000 sequences (typical cache holds ~200) and triggers thrashing "
+            "preemption.  Chunking processes one block at a time, keeping "
+            "chunk_size * beam_width below KV-cache concurrency."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -132,15 +143,41 @@ def main() -> int:
         # variants have changed across vLLM versions; positional is stable.
         lora_request = LoRARequest("bigrec_adapter", 1, args.lora)
 
+    chunk_size: int = max(1, args.prompt_chunk_size)
+    n_chunks: int = (len(prompts) + chunk_size - 1) // chunk_size
     print(
         f"[vllm_offline] Running beam_search (width={args.beam_width}, "
-        f"max_tokens={args.max_tokens}, lora={'on' if args.lora else 'off'}) …",
+        f"max_tokens={args.max_tokens}, lora={'on' if args.lora else 'off'}) "
+        f"in {n_chunks} chunk(s) of <= {chunk_size} prompts …",
         flush=True,
     )
-    if lora_request is not None:
-        outputs = llm.beam_search(prompts, params, lora_request=lora_request)
-    else:
-        outputs = llm.beam_search(prompts, params)
+
+    import time
+
+    outputs: list[Any] = []
+    overall_t0 = time.monotonic()
+    for chunk_idx in range(n_chunks):
+        start = chunk_idx * chunk_size
+        end = min(start + chunk_size, len(prompts))
+        chunk = prompts[start:end]
+        t0 = time.monotonic()
+        # use_tqdm=True surfaces vLLM's per-token-step progress bar on stderr,
+        # letting the operator see decode throughput within each chunk.
+        bs_kwargs: dict[str, Any] = {"use_tqdm": True}
+        if lora_request is not None:
+            bs_kwargs["lora_request"] = lora_request
+        chunk_outputs = llm.beam_search(chunk, params, **bs_kwargs)
+        outputs.extend(chunk_outputs)
+        elapsed = time.monotonic() - t0
+        total_elapsed = time.monotonic() - overall_t0
+        done = end
+        eta = total_elapsed * (len(prompts) - done) / max(1, done)
+        print(
+            f"[vllm_offline] chunk {chunk_idx + 1}/{n_chunks} done "
+            f"({end - start} prompts in {elapsed:.1f}s; "
+            f"cumulative {done}/{len(prompts)}; ETA {eta / 60:.1f} min)",
+            flush=True,
+        )
 
     top1_texts: list[str] = [_extract_top1_text(out) for out in outputs]
     empty_count = sum(1 for t in top1_texts if not t)
