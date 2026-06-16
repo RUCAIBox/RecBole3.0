@@ -45,6 +45,47 @@ Our library includes algorithms covering five major categories:
 
 RecBole3.0 is developed and maintained by members from [RUCAIBox](http://aibox.ruc.edu.cn/), the main developers are Enze Liu ([@BishopLiu](https://github.com/BishopLiu)), Zhuoxuan Li ([@ZhuoxuanLi-CS](https://github.com/ZhuoxuanLi-CS)), Dongze Wu ([@Joyful-bh](https://github.com/Joyful-bh)), Jiale Xu ([@JialeXu627](https://github.com/JialeXu627)), Xiaolei Wang ([@wxl1999](https://github.com/wxl1999)), Bowen Zheng ([@zhengbw0324](https://github.com/zhengbw0324)), Bingqian Li ([@Fotiligner](https://github.com/Fotiligner)), Kesha Ou ([@TayTroye](https://github.com/TayTroye)), and Chenghao Wu ([@wuchenghao0215](https://github.com/wuchenghao0215)).
 
+## 4) Experimental Results
+
+### Evaluation Settings:
+```
+model:
+  history_max_length: 20
+trainer:
+  eval:
+    protocol: full
+    exclude_history: false
+```
+
+**Musical_Instruments**:
+
+| Models     | Recall@5            | Recall@10 | NDCG@5 | NDCG@10 |
+| ---------- | ------------------- | --------- | ------ | ------- |
+| LSRM       | 0.0326              | 0.0529    | 0.0190 | 0.0255  |
+| HSTU       | 0.0377              | 0.0614    | 0.0224 | 0.0300  |
+| HSTU-Large | 0.0410              | 0.0659    | 0.0253 | 0.0333  |
+| TIGER      | 0.0360              | 0.0562    | 0.0236 | 0.0301  |
+| LETTER     | 0.0354              | 0.0552    | 0.0230 | 0.0294  |
+| RPG        | 0.0369              | 0.0547    | 0.0244 | 0.0301  |
+| LC-Rec     | 0.0329              | 0.0518    | 0.0216 | 0.0276  |
+| E4SRec     | 0.0333              | 0.0529    | 0.0210 | 0.0273  | 
+| LARES      | 0.0388              | 0.0610    | 0.0246 | 0.0318  |
+| ReaRec     | 0.0345              | 0.0546    | 0.0219 | 0.0284  |
+
+**Industrial_and_Scientific**:
+| Models     | Recall@5 | Recall@10 | NDCG@5 | NDCG@10 |
+| ---------- | -------  | --------- | ------ | ------- |
+| LSRM       | 0.0240   | 0.0391    | 0.0142 | 0.0191  |
+| HSTU       | 0.0288   | 0.0466    | 0.0165 | 0.0222  |
+| HSTU-Large | 0.0325   | 0.0509    | 0.0196 | 0.0256  |
+| TIGER      | 0.0271   | 0.0435    | 0.0177 | 0.0229  |
+| LETTER     | 0.0248   | 0.0380    | 0.0160 | 0.0203  |
+| RPG        | 0.0257   | 0.0384    | 0.0174 | 0.0215  |
+| LC-Rec     | 0.0259   | 0.0401    | 0.0175 | 0.0220  |
+| E4SRec     | 0.0242   | 0.0372    | 0.0156 | 0.0197  |
+| LARES      | 0.0296   | 0.0466    | 0.0182 | 0.0236  |
+| ReaRec     | 0.0237   | 0.0390    | 0.0153 | 0.0202  |
+
 ## RecBole Family Projects
 The following table summarizes the open-source contributions of RecBole family projects on GitHub.
 
