@@ -8,7 +8,6 @@ import torch
 from torch import nn
 import numpy as np
 
-from transformers.modeling_outputs import SequenceClassifierOutputWithPast
 from recbole3.model.base import BaseCollator, BaseRetrievalModel
 from recbole3.model.e4srec.config import E4SRecConfig
 from recbole3.model.e4srec.data import (
@@ -155,7 +154,7 @@ class E4SRecModel(BaseRetrievalModel):
             self.llm_model.enable_input_require_grads()
 
     @staticmethod
-    def _resolve_device_map(device_map: str) -> str | dict[str, int]:
+    def _resolve_device_map(device_map: str) -> str | dict[str, int] | None:
         """Resolve ``device_map`` for DDP or single-GPU training.
 
         When launched via ``accelerate launch`` (DDP), each process should
@@ -165,13 +164,14 @@ class E4SRecModel(BaseRetrievalModel):
         local_rank = os.environ.get("LOCAL_RANK")
         if local_rank is not None:
             rank = int(local_rank)
-            torch.cuda.set_device(rank)
+            if torch.cuda.is_available():
+                torch.cuda.set_device(rank)
             return {"" : rank}
         # Single-GPU: if CUDA is available, pin to device 0 to avoid
-        # auto-sharding overhead; otherwise "auto" for CPU-only.
+        # auto-sharding overhead; otherwise load on CPU.
         if torch.cuda.is_available():
             return {"" : 0}
-        return device_map
+        return None
 
     def build_train_collator(self, prepared_data) -> BaseCollator:
         return E4SRecCollator(self.config, prepared_data, include_labels=True)
@@ -234,6 +234,8 @@ class E4SRecModel(BaseRetrievalModel):
         if labels is not None:
             loss = self.loss_fct(logits, labels)
 
+        from transformers.modeling_outputs import SequenceClassifierOutputWithPast
+        
         return SequenceClassifierOutputWithPast(
             loss=loss,
             logits=logits,
@@ -302,6 +304,7 @@ class E4SRecModel(BaseRetrievalModel):
                     logits[b, row_exclude] = float("-inf")
 
         # -- Top-k over all items ------------------------------------------
+        k = min(k, logits.shape[1] - 1)  # clamp to available items (excl. padding)
         topk_internal = torch.topk(logits, k=k, dim=1).indices  # (B, k), 1-indexed
         return topk_internal - ITEM_ID_OFFSET  # back to 0-indexed framework convention
 

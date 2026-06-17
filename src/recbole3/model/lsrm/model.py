@@ -4,7 +4,6 @@ from collections.abc import Mapping
 
 import torch
 from torch import nn
-from transformers import GPT2Config, GPT2LMHeadModel
 
 from recbole3.model.base import BaseCollator, BaseRetrievalModel
 from recbole3.model.lsrm.config import LSRMConfig
@@ -20,6 +19,8 @@ class LSRMModel(BaseRetrievalModel):
         self.loss_fct = nn.CrossEntropyLoss(ignore_index=LABEL_IGNORE)
 
     def ensure_initialized(self, prepared_data) -> None:
+        from transformers import GPT2Config, GPT2LMHeadModel
+
         num_items = int(prepared_data.get_num_items())
         if self._num_items == num_items:
             return

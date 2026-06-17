@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -10,7 +10,9 @@ from torch.utils.data import DataLoader
 
 from recbole3.dataset import BaseTaskDataset
 from recbole3.model.base import BaseModel
-from recbole3.trainer_config import TrainerConfig
+
+if TYPE_CHECKING:
+    from recbole3.trainer_config import TrainerConfig
 
 
 class E4SRecTrainer:

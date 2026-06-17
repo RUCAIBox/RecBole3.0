@@ -71,9 +71,9 @@ class Trainer:
         from accelerate import Accelerator
         from accelerate.state import AcceleratorState
 
-        # GRPO 等流程在 accelerate launch 下已初始化 AcceleratorState；再 new Accelerator() 会报错。
-        if AcceleratorState._shared_state:
-            return _ExistingAcceleratorEvalContext()
+        # # GRPO 等流程在 accelerate launch 下已初始化 AcceleratorState；再 new Accelerator() 会报错。
+        # if AcceleratorState._shared_state:
+        #     return _ExistingAcceleratorEvalContext()
 
         return Accelerator(
             mixed_precision=self.config.mixed_precision,
@@ -615,7 +615,7 @@ class Trainer:
         return "{ " + ", ".join(parts) + " }"
 
     @staticmethod
-    def _create_progress_bar(eval_dataloader: DataLoader, *, split: str, disable: bool) -> Any:
+    def _create_progress_bar(eval_dataloader: DataLoader, *, split: str, disable: bool = False) -> Any:
         description = f"[eval:{split}]"
         try:
             from tqdm.auto import tqdm
