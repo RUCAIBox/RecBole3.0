@@ -67,7 +67,6 @@ def target_rank(
             return None
         ranked_item_ids = parsed.ranked_item_ids
     else:
-    else:
         ranked_item_ids = _extract_ranked_item_ids(output)
     try:
         return [int(item_id) for item_id in ranked_item_ids].index(int(target_item_id)) + 1
