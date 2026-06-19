@@ -1,0 +1,12 @@
+# @package _global_
+
+dataset:
+  name: agentcf
+  data_dir: /agentcf/dataset/
+  dataset_name: CDs-100-user-dense
+  item_file: CDs.item
+  candidate_file_suffix: random
+  split:
+    strategy: leave_one_out
+    order: chronological
+    per_user: true

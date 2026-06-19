@@ -1,0 +1,46 @@
+# @package _global_
+
+dataset:
+  name: agentcfpp_cross
+
+  # Data source: "amazon2023" auto-downloads each domain from HuggingFace Hub
+  # and builds the cross-domain dataset for you; "local_csv" reads pre-built CSV files.
+  source: amazon2023
+
+  # Each domain must be a valid Amazon Reviews 2023 category name.
+  domain_list:
+    - Books
+    - Video_Games
+    - Movies_and_TV
+
+  # --- source=amazon2023 options ---
+  # Downloads via huggingface_hub directly (bypasses dataset scripts). For slow
+  # access set env HF_ENDPOINT=https://hf-mirror.com before running.
+  download_source: huggingface       # retained for semantics; amazon2023 always uses HF Hub
+  kcore: 5core                       # "5core" (smaller) or "full"
+  download_dir: data/raw
+  processed_dir: data/processed
+  max_users: 100                     # cap on cross-domain users kept (0 = no cap)
+  min_domains_per_user: 2            # keep users active in >= this many domains
+  min_inter_per_user: 2
+  n_random_item: 100                 # candidate pool size per user per domain
+  sample_seed: 42
+  dump_dir: ""                       # if set, write built data here as local_csv files (re-readable via source=local_csv)
+
+  # --- source=local_csv options (only used when source: local_csv) ---
+  # data_dir: AgentCF-plus/dataset/crossDomainData/user_item_data
+  # inter_train_file: inter_crossdomain_timesequence_train.csv
+  # inter_test_file: inter_crossdomain_timesequence_test.csv
+  # meta_file: meta_crossdomain.csv
+  # random_files:
+  #   - random/random_Books.csv
+  #   - random/random_Video_Games.csv
+  #   - random/random_Movies_and_TV.csv
+  # user_col: user_id
+  # item_col: parent_asin
+  # random_user_col: "Unnamed: 0"
+
+  split:
+    strategy: leave_one_out
+    order: chronological
+    per_user: true

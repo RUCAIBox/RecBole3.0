@@ -47,6 +47,20 @@ from recbole3.model.llm4rs import (
     LLM4RSModel,
     LLM4RSModelDataset,
 )
+from recbole3.model.agentcf import (
+    AgentCFConfig,
+    AgentCFModel,
+    AgentCFModelDataset,
+    AgentCFTrainer,
+    AgentCFTrainerConfig,
+)
+from recbole3.model.agentcfpp import (
+    AgentCFPPConfig,
+    AgentCFPPModel,
+    AgentCFPPModelDataset,
+    AgentCFPPTrainer,
+    AgentCFPPTrainerConfig,
+)
 from recbole3.model.llm4rs.trainer import LLM4RSTrainer, LLM4RSTrainerConfig
 from recbole3.model.llmrank import (
     LLMRankConfig,
@@ -113,6 +127,22 @@ class ModelSpec:
 
 
 MODEL_TABLE: dict[str, ModelSpec] = {
+    "agentcf": ModelSpec(
+        model_cls=AgentCFModel,
+        config_cls=AgentCFConfig,
+        model_data_cls=AgentCFModelDataset,
+        trainer_cls=AgentCFTrainer,
+        trainer_config_cls=AgentCFTrainerConfig,
+        pipeline_cls=LazyImport("recbole3.model.agentcf.pipeline", "AgentCFPipeline"),
+    ),
+    "agentcfpp": ModelSpec(
+        model_cls=AgentCFPPModel,
+        config_cls=AgentCFPPConfig,
+        model_data_cls=AgentCFPPModelDataset,
+        trainer_cls=AgentCFPPTrainer,
+        trainer_config_cls=AgentCFPPTrainerConfig,
+        pipeline_cls=LazyImport("recbole3.model.agentcfpp.pipeline", "AgentCFPPPipeline"),
+    ),
     "rearec": ModelSpec(
         model_cls=ReaRecModel,
         config_cls=ReaRecConfig,
@@ -230,6 +260,16 @@ def get_model_spec(name: str) -> ModelSpec:
 
 
 __all__ = [
+    "AgentCFConfig",
+    "AgentCFModel",
+    "AgentCFModelDataset",
+    "AgentCFTrainer",
+    "AgentCFTrainerConfig",
+    "AgentCFPPConfig",
+    "AgentCFPPModel",
+    "AgentCFPPModelDataset",
+    "AgentCFPPTrainer",
+    "AgentCFPPTrainerConfig",
     "BaseCollator",
     "ReaRecConfig",
     "ReaRecModel",
