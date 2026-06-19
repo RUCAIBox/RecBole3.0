@@ -401,6 +401,64 @@ def test_starec_feedback_score_field_filters_targets() -> None:
     assert all(len(candidate_ids) == 3 for candidate_ids in positive_rows[CANDIDATE_ITEM_IDS].tolist())
 
 
+def test_starec_train_random_candidates_reject_sample_without_full_item_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_data = _FrameTaskData(
+        train_frame=pd.DataFrame(
+            [
+                {USER_ID: 0, ITEM_ID: 0, LABEL: 1.0},
+                {USER_ID: 0, ITEM_ID: 1, LABEL: 0.0},
+                {USER_ID: 0, ITEM_ID: 2, LABEL: 1.0},
+            ]
+        ),
+        valid_frame=pd.DataFrame([{USER_ID: 0, ITEM_ID: 3, LABEL: 1.0}]),
+        test_frame=pd.DataFrame([{USER_ID: 0, ITEM_ID: 4, LABEL: 1.0}]),
+        num_items=10,
+    )
+    config = STARecConfig(backbone_topk=3, candidate_seed=7)
+
+    def _fail_arange(*args, **kwargs):
+        raise AssertionError("train random candidate sampling should not materialize all item ids")
+
+    monkeypatch.setattr(
+        starec_candidates,
+        "np",
+        types.SimpleNamespace(arange=_fail_arange, random=starec_candidates.np.random),
+    )
+
+    first_frame = build_train_candidate_frame(task_data, model_config=config)
+    second_frame = build_train_candidate_frame(task_data, model_config=config)
+
+    assert first_frame[CANDIDATE_ITEM_IDS].tolist() == second_frame[CANDIDATE_ITEM_IDS].tolist()
+    assert first_frame.loc[1, CANDIDATE_ITEM_IDS] == ()
+    for candidate_ids, seen_item_ids in zip(
+        first_frame.loc[[0, 2], CANDIDATE_ITEM_IDS].tolist(),
+        first_frame.loc[[0, 2], SEEN_ITEM_IDS].tolist(),
+        strict=True,
+    ):
+        assert len(candidate_ids) == 3
+        assert len(set(candidate_ids)) == 3
+        assert set(candidate_ids).isdisjoint(seen_item_ids)
+
+
+def test_starec_train_random_candidates_counts_insufficient_availability() -> None:
+    task_data = _FrameTaskData(
+        train_frame=pd.DataFrame(
+            [
+                {USER_ID: 0, ITEM_ID: 0, LABEL: 0.0},
+                {USER_ID: 0, ITEM_ID: 1, LABEL: 1.0},
+            ]
+        ),
+        valid_frame=pd.DataFrame([{USER_ID: 0, ITEM_ID: 0, LABEL: 1.0}]),
+        test_frame=pd.DataFrame([{USER_ID: 0, ITEM_ID: 1, LABEL: 1.0}]),
+        num_items=2,
+    )
+
+    with pytest.raises(ValueError, match="only has 1 unmasked items .* user 0, but backbone_topk=2"):
+        build_train_candidate_frame(task_data, model_config=STARecConfig(backbone_topk=2))
+
+
 def test_starec_lightweight_eligible_user_selection_avoids_frame_materialization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

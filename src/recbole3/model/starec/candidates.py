@@ -13,7 +13,6 @@ from recbole3.dataset import CANDIDATE_ITEM_IDS, FrameDataset, ITEM_ID, SEEN_ITE
 from recbole3.dataset.base import BaseTaskDataset
 from recbole3.model.starec.config import STARecConfig
 from recbole3.model.starec.feedback import (
-    is_positive_or_unlabeled_record,
     positive_or_unlabeled,
     positive_or_unlabeled_mask,
 )
@@ -244,34 +243,64 @@ def _generate_train_random_candidates(
     split: str,
 ) -> list[tuple[int, ...]]:
     num_items = int(task_data.get_num_items())
-    all_item_ids = np.arange(num_items, dtype=np.int64)
     required = int(model_config.backbone_topk)
     if required <= 0:
         raise ValueError("model.backbone_topk must be a positive integer.")
 
+    positive_mask = positive_or_unlabeled_mask(frame, model_config=model_config).to_numpy(dtype=bool)
+    user_ids = frame[USER_ID].to_numpy()
+    seen_item_rows = frame[SEEN_ITEM_IDS].tolist()
+
     candidate_rows: list[tuple[int, ...]] = []
-    for row_index, record in enumerate(frame.to_dict(orient="records")):
-        if not is_positive_or_unlabeled_record(record, model_config=model_config):
+    for row_index, (is_positive, user_id, seen_item_ids) in enumerate(
+        zip(positive_mask, user_ids, seen_item_rows, strict=True)
+    ):
+        if not bool(is_positive):
             candidate_rows.append(())
             continue
-        user_id = int(record[USER_ID])
-        masked_item_ids = set(record.get(SEEN_ITEM_IDS, ()))
-        available_item_ids = [int(item_id) for item_id in all_item_ids.tolist() if int(item_id) not in masked_item_ids]
-        if len(available_item_ids) < required:
+        normalized_user_id = int(user_id)
+        masked_item_ids = _valid_masked_item_ids(seen_item_ids, num_items=num_items)
+        available_count = num_items - len(masked_item_ids)
+        if available_count < required:
             raise ValueError(
-                f"STARec train random candidate generation only has {len(available_item_ids)} unmasked items "
-                f"for user {user_id}, but backbone_topk={required} is required."
+                f"STARec train random candidate generation only has {available_count} unmasked items "
+                f"for user {normalized_user_id}, but backbone_topk={required} is required."
             )
         rng = np.random.default_rng(
-            _candidate_seed(model_config.candidate_seed, split=split, row_index=row_index, user_id=user_id)
+            _candidate_seed(model_config.candidate_seed, split=split, row_index=row_index, user_id=normalized_user_id)
         )
-        sampled = rng.choice(
-            np.asarray(available_item_ids, dtype=np.int64),
-            size=required,
-            replace=False,
-        ).tolist()
-        candidate_rows.append(tuple(int(item_id) for item_id in sampled))
+        candidate_rows.append(_sample_unmasked_random_candidates(rng, num_items, masked_item_ids, required))
     return candidate_rows
+
+
+def _valid_masked_item_ids(seen_item_ids, *, num_items: int) -> set[int]:
+    masked_item_ids: set[int] = set()
+    if seen_item_ids is None:
+        return masked_item_ids
+    for item_id in seen_item_ids:
+        if pd.isna(item_id):
+            continue
+        normalized_item_id = int(item_id)
+        if 0 <= normalized_item_id < num_items:
+            masked_item_ids.add(normalized_item_id)
+    return masked_item_ids
+
+
+def _sample_unmasked_random_candidates(
+    rng: np.random.Generator,
+    num_items: int,
+    masked_item_ids: set[int],
+    required: int,
+) -> tuple[int, ...]:
+    sampled: list[int] = []
+    sampled_item_ids: set[int] = set()
+    while len(sampled) < required:
+        candidate = int(rng.integers(0, num_items))
+        if candidate in masked_item_ids or candidate in sampled_item_ids:
+            continue
+        sampled.append(candidate)
+        sampled_item_ids.add(candidate)
+    return tuple(sampled)
 
 
 def _split_offset(split: str) -> int:
