@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from recbole3.dataset.base import BaseTaskDataset
-from recbole3.dataset.utils import ITEM_ID, LABEL, TIMESTAMP, USER_ID
+from recbole3.dataset.utils import ITEM_ID, LABEL, OVERALL, TIMESTAMP, USER_ID
 
 from .base import Amazon2014BaseConfig, Amazon2014BaseParser
 from .utils import numeric_or_none
@@ -31,6 +31,7 @@ class Amazon2014RetrievalParser(Amazon2014BaseParser):
                 USER_ID: reviews["reviewerID"].astype(object).tolist(),
                 ITEM_ID: reviews["asin"].astype(object).tolist(),
                 TIMESTAMP: timestamps,
+                OVERALL: reviews[OVERALL].tolist() if OVERALL in reviews.columns else None,
                 LABEL: None,
             }
         )

@@ -60,6 +60,9 @@ llmrank = [
   "jinja2>=3.0.0",       
   "openai>=1.0.0",       
 ]
+starec = [
+  "openai>=1.0.0",
+]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

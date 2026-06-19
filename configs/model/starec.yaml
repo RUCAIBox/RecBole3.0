@@ -1,0 +1,74 @@
+# @package _global_
+
+model:
+  name: starec
+  history_max_length: 40
+  history_min_length: 30
+  candidate_source: random
+  backbone_topk: 50
+  recall_budget: 20
+  candidate_seed: 42
+  candidate_cache_dir: outputs/candidate_cache
+  candidate_file_dir: outputs/candidate_files
+  refresh_candidate_cache: false
+  use_candidate_file: true
+  selected_user_count: 1000
+  selected_user_ids_path: null
+  has_gt: true
+  fix_pos: -1
+  shuffle: true
+  item_text_field: title
+  fallback_item_text_field: metadata_text
+  item_text_template: null
+  item_domain_singular: null
+  item_domain_plural: null
+  bm25_item_text_field: title
+  bm25_fallback_text_field: metadata_text
+  backbone_checkpoint_path: null
+  backbone_model: {}
+  backbone_trainer: {}
+  user_profile_fields: [gender, age, occupation]
+  reflection_mode: discrepancy-only
+  prediction_liked_threshold: 5
+  feedback_score_field: null
+  feedback_positive_threshold: 0.0
+  backend: deterministic
+  api_model_name: gpt-4o-mini
+  api_base_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  temperature: 1.0
+  top_p: 1.0
+  max_output_tokens: 10000
+  api_batch: 1
+  async_dispatch: false
+  request_retries: 1
+  retry_backoff_sec: 2.0
+  request_timeout_sec: 60.0
+  parse_retries: 1
+  train_init_interactions: 20
+  run_warmup: true
+  skip_warmup_when_memory_loaded: false
+  memory_load_path: null
+  memory_save_path: starec_memories.jsonl
+  sample_log_path: starec_samples.jsonl
+  teacher_trace_path: null
+
+trainer:
+  batch_size: 1
+  shuffle: false
+  dataloader_num_workers: 0
+  max_epochs: 0
+  save_inference_results: false
+  inference_topk: null
+  checkpoint:
+    save_best: false
+    save_last: false
+  eval:
+    protocol: full
+    neg_sampling_num: 0
+    candidate_seed: 42
+    metrics:
+      - name: ndcg
+        ks: [1, 5, 10, 20]
+      - name: recall
+        ks: [1, 5, 10, 20]

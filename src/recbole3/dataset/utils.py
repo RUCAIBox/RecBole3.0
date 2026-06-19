@@ -9,6 +9,7 @@ USER_ID = "user_id"
 ITEM_ID = "item_id"
 TIMESTAMP = "timestamp"
 LABEL = "label"
+OVERALL = "overall"
 SEEN_ITEM_IDS = "seen_item_ids"
 CANDIDATE_ITEM_IDS = "candidate_item_ids"
 
@@ -82,6 +83,7 @@ __all__ = [
     "FrameSchema",
     "ITEM_ID",
     "LABEL",
+    "OVERALL",
     "SEEN_ITEM_IDS",
     "TIMESTAMP",
     "USER_ID",
