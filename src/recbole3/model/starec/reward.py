@@ -63,7 +63,10 @@ def target_rank(
     if candidate_item_ids:
         candidates = [int(item_id) for item_id in candidate_item_ids]
         parsed = parse_ranking_output(output, candidates)
+        if not parsed.valid:
+            return None
         ranked_item_ids = parsed.ranked_item_ids
+    else:
     else:
         ranked_item_ids = _extract_ranked_item_ids(output)
     try:
