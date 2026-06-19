@@ -1,0 +1,47 @@
+# @package _global_
+
+model:
+  name: agentcf
+  history_max_length: 50
+  api_model_name: ""
+  api_base_url: ""
+  api_key_env: ""
+  embedding_model: "text-embedding-ada-002"
+  temperature: 0.2
+  temperature_eval: 0.0
+  max_tokens: 2000
+  max_tokens_chat: 3000
+  api_batch: 20
+  chat_api_batch: 10
+  request_retries: 3
+  retry_backoff_sec: 20.0
+  request_timeout_sec: 120.0
+  all_update_rounds: 2
+  update_neg_item: false
+  evaluation_mode: basic
+  item_representation: direct
+  recall_budget: 20
+  match_rule: fuzzy
+  has_gt: true
+  fix_pos: -1
+  shuffle_candidates: true
+  candidate_file_suffix: random
+  record_path: outputs/agentcf_records
+  save_agent_state: true
+  load_agent_state_path: ""
+  domain: cd
+
+trainer:
+  batch_size: 20
+  shuffle: false
+  dataloader_num_workers: 0
+  max_epochs: 1
+  eval:
+    protocol: full
+    metrics:
+      - name: ndcg
+        ks: [1, 3, 5, 7, 10]
+      - name: recall
+        ks: [1, 3, 5, 7, 10]
+    neg_sampling_num: 0
+    candidate_seed: 42
