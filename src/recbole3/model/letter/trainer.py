@@ -299,6 +299,17 @@ class LETTERTrainer(RQVAETrainer):
             "checkpoint_paths": {key: (str(path) if path is not None else None) for key, path in checkpoint_paths.items()},
         }
 
+    @staticmethod
+    def _to_device_batch(batch: Any, device: Any) -> Any:
+        import torch
+
+        if not isinstance(batch, dict):
+            return batch
+        return {
+            key: value.to(device, non_blocking=True) if torch.is_tensor(value) else value
+            for key, value in batch.items()
+        }
+
     def _run_evaluation(
         self,
         model: Any,
@@ -341,6 +352,7 @@ class LETTERTrainer(RQVAETrainer):
 
         with torch.no_grad():
             for batch in eval_dataloader:
+                batch = self._to_device_batch(batch, accelerator.device)
                 outputs = prepared_model.forward(batch)
 
                 all_tokens.append(self._gather_for_metrics(outputs["tokens"].detach(), accelerator).cpu())

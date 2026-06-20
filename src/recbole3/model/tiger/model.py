@@ -71,8 +71,9 @@ class TIGERModel(BaseRetrievalModel):
 
         t5 = self._t5_module()
         codec = self._sid_codec()
-        input_ids = model_inputs["input_ids"]
-        attention_mask = model_inputs["attention_mask"]
+        device = next(t5.parameters()).device
+        input_ids = model_inputs["input_ids"].to(device)
+        attention_mask = model_inputs["attention_mask"].to(device)
         batch_size = int(input_ids.shape[0])
         beam_width = int(self.config.num_beams)
 

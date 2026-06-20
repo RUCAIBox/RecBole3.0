@@ -67,6 +67,13 @@ class Trainer:
         self._logger.log_dataset_info(prepared_data)
         self._logger.log_model_info(model)
 
+    @staticmethod
+    def _reset_accelerator_state() -> None:
+        from accelerate.state import AcceleratorState
+
+        if AcceleratorState._shared_state:
+            AcceleratorState._reset_state()
+
     def create_accelerator(self) -> Any:
         from accelerate import Accelerator
         from accelerate.state import AcceleratorState
@@ -338,6 +345,9 @@ class Trainer:
             if best_checkpoint:
                 state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
                 model.load_state_dict(state_dict)
+            # fit() leaves AcceleratorState initialized; post-training evaluate() must
+            # create a fresh Accelerator so eval batches are placed on the model device.
+            self._reset_accelerator_state()
             print("[trainer] starting test evaluation")
             test_result = self.evaluate(model, prepared_data, split="test")
             print("[trainer] finished test evaluation")
@@ -652,6 +662,15 @@ class _ExistingAcceleratorEvalContext:
 
         return AcceleratorState().device
 
+    @property
+    def is_main_process(self) -> bool:
+        from accelerate.state import PartialState
+        return PartialState().is_main_process
+    def wait_for_everyone(self) -> None:
+        import torch.distributed as distributed
+        if distributed.is_available() and distributed.is_initialized():
+            distributed.barrier()
+
     def prepare(self, *args: Any) -> Any:
         if len(args) == 1:
             return args[0]
@@ -674,6 +693,9 @@ class _ExistingAcceleratorEvalContext:
 
     def backward(self, loss: torch.Tensor, **kwargs: Any) -> None:
         loss.backward(**kwargs)
+    @staticmethod
+    def print(*args: Any, **kwargs: Any) -> None:
+        print(*args, **kwargs)
 
 
 __all__ = [

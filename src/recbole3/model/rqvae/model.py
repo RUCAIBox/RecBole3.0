@@ -58,7 +58,7 @@ class RQVAEModel(BaseModel):
         Returns:
             Dictionary containing reconstruction, quantization loss, unused codes, and tokens.
         """
-        embeddings = batch["item_embeddings"]
+        embeddings = batch["item_embeddings"].to(next(self.parameters()).device)
 
         encoded = self._encoder(embeddings)
         quantized, quant_loss, unused_codes, tokens = self._rq_layer(encoded)
@@ -81,7 +81,10 @@ class RQVAEModel(BaseModel):
         Returns:
             Dictionary containing total loss, reconstruction loss, and quantization loss.
         """
-        recon_loss = F.mse_loss(outputs["reconstruction"], batch["item_embeddings"])
+        recon_loss = F.mse_loss(
+            outputs["reconstruction"],
+            batch["item_embeddings"].to(outputs["reconstruction"].device),
+        )
         quant_loss = outputs["quant_loss"]
         total_loss = recon_loss + quant_loss
 
