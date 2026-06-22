@@ -391,10 +391,11 @@ class RQVAETrainer(Trainer):
         with torch.no_grad():
             for batch in eval_dataloader:
                 # Use model directly (not prepared) to ensure consistent results
-                sem_embs = batch["item_embeddings"].to(device)
+                item_embeddings = batch["item_embeddings"]
+                sem_embs = item_embeddings.to(device)
                 tokens = unwrapped_model.predict(sem_embs)
                 all_tokens.append(tokens.cpu())
-                all_sem_embs.append(sem_embs)
+                all_sem_embs.append(item_embeddings.detach().cpu())
 
         # Concatenate all tokens
         all_tokens = torch.cat(all_tokens, dim=0).cpu().numpy()  # (num_items, codebook_num)

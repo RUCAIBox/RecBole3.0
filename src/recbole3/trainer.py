@@ -69,10 +69,15 @@ class Trainer:
 
     @staticmethod
     def _reset_accelerator_state() -> None:
-        from accelerate.state import AcceleratorState
+        try:
+            from accelerate.state import AcceleratorState
+        except ModuleNotFoundError:
+            return
 
-        if AcceleratorState._shared_state:
-            AcceleratorState._reset_state()
+        shared_state = getattr(AcceleratorState, "_shared_state", None)
+        reset_state = getattr(AcceleratorState, "_reset_state", None)
+        if shared_state and callable(reset_state):
+            reset_state()
 
     def create_accelerator(self) -> Any:
         from accelerate import Accelerator
@@ -664,10 +669,13 @@ class _ExistingAcceleratorEvalContext:
 
     @property
     def is_main_process(self) -> bool:
-        from accelerate.state import PartialState
+        from accelerate import PartialState
+
         return PartialState().is_main_process
+
     def wait_for_everyone(self) -> None:
         import torch.distributed as distributed
+
         if distributed.is_available() and distributed.is_initialized():
             distributed.barrier()
 
@@ -681,18 +689,13 @@ class _ExistingAcceleratorEvalContext:
     def unwrap_model(model: Any) -> Any:
         return model
 
-    @property
-    def is_main_process(self) -> bool:
-        from accelerate import PartialState
-
-        return PartialState().is_main_process
-
     @contextmanager
     def accumulate(self, model: Any) -> Iterator[None]:
         yield
 
     def backward(self, loss: torch.Tensor, **kwargs: Any) -> None:
         loss.backward(**kwargs)
+
     @staticmethod
     def print(*args: Any, **kwargs: Any) -> None:
         print(*args, **kwargs)
