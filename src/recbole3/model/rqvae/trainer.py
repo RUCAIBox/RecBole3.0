@@ -42,6 +42,12 @@ class RQVAETrainer(Trainer):
         try:
             fit_result = self.fit(model, prepared_data, output_dir=output_dir)
 
+            from accelerate.utils import extract_model_from_parallel
+
+            model = extract_model_from_parallel(model)
+            self._cached_eval_dataloader = None
+            self._cached_eval_split = None
+
             if (logger := getattr(self, "_logger", None)) is not None:
                 best_metric = fit_result.get("best_metric")
                 if best_metric:
@@ -55,6 +61,9 @@ class RQVAETrainer(Trainer):
             if best_checkpoint:
                 state_dict = torch.load(best_checkpoint, map_location="cpu", weights_only=True)
                 model.load_state_dict(state_dict)
+            # fit() leaves AcceleratorState initialized; post-training evaluate() must
+            # create a fresh Accelerator so eval batches are placed on the model device.
+            self._reset_accelerator_state()
             test_result = self.evaluate(model, prepared_data, split="test")
 
             if (logger := getattr(self, "_logger", None)) is not None:
@@ -377,13 +386,16 @@ class RQVAETrainer(Trainer):
         unwrapped_model.eval()
         all_tokens: list[torch.Tensor] = []
         all_sem_embs: list[torch.Tensor] = []
+        device = next(unwrapped_model.parameters()).device
+
         with torch.no_grad():
             for batch in eval_dataloader:
                 # Use model directly (not prepared) to ensure consistent results
-                sem_embs = batch["item_embeddings"]
+                item_embeddings = batch["item_embeddings"]
+                sem_embs = item_embeddings.to(device)
                 tokens = unwrapped_model.predict(sem_embs)
                 all_tokens.append(tokens.cpu())
-                all_sem_embs.append(sem_embs)
+                all_sem_embs.append(item_embeddings.detach().cpu())
 
         # Concatenate all tokens
         all_tokens = torch.cat(all_tokens, dim=0).cpu().numpy()  # (num_items, codebook_num)

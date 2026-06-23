@@ -60,20 +60,21 @@ class TIGERModel(BaseRetrievalModel):
     ) -> torch.Tensor:
         if candidate_item_ids is not None:
             raise NotImplementedError("TIGER phase 1 supports only full evaluation, not sampled evaluation.")
+
+        t5 = self._t5_module()
+        device = next(t5.parameters()).device
+        input_ids = model_inputs["input_ids"].to(device)
+        batch_size = int(input_ids.shape[0])
         if k <= 0:
-            batch_size = int(model_inputs["input_ids"].shape[0])
-            return torch.empty((batch_size, 0), dtype=torch.long, device=model_inputs["input_ids"].device)
+            return torch.empty((batch_size, 0), dtype=torch.long, device=device)
         if int(self.config.num_beams) < int(k):
             raise ValueError(
                 f"TIGERConfig.num_beams ({self.config.num_beams}) must be >= requested top-k ({k}). "
                 "Increase model.num_beams or lower eval top-k."
             )
 
-        t5 = self._t5_module()
         codec = self._sid_codec()
-        input_ids = model_inputs["input_ids"]
-        attention_mask = model_inputs["attention_mask"]
-        batch_size = int(input_ids.shape[0])
+        attention_mask = model_inputs["attention_mask"].to(device)
         beam_width = int(self.config.num_beams)
 
         generated = t5.generate(
