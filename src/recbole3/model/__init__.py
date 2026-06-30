@@ -61,6 +61,16 @@ from recbole3.model.agentcfpp import (
     AgentCFPPTrainer,
     AgentCFPPTrainerConfig,
 )
+from recbole3.model.care import (
+    CAREConfig,
+    CAREEvalCollator,
+    CAREModel,
+    CAREModelDataset,
+    CARETokenCodec,
+    CARETrainCollator,
+    CARETrainer,
+    CARETrainerConfig,
+)
 from recbole3.model.llm4rs.trainer import LLM4RSTrainer, LLM4RSTrainerConfig
 from recbole3.model.llmrank import (
     LLMRankConfig,
@@ -149,6 +159,14 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_cls=AgentCFPPTrainer,
         trainer_config_cls=AgentCFPPTrainerConfig,
         pipeline_cls=LazyImport("recbole3.model.agentcfpp.pipeline", "AgentCFPPPipeline"),
+    ),
+    "care": ModelSpec(
+        model_cls=CAREModel,
+        config_cls=CAREConfig,
+        model_data_cls=CAREModelDataset,
+        trainer_cls=CARETrainer,
+        trainer_config_cls=CARETrainerConfig,
+        pipeline_cls=Pipeline,
     ),
     "rearec": ModelSpec(
         model_cls=ReaRecModel,
@@ -295,6 +313,14 @@ __all__ = [
     "BaseRankingModel",
     "BaseRetrievalModel",
     "BaseSequentialModelDataset",
+    "CAREConfig",
+    "CAREEvalCollator",
+    "CAREModel",
+    "CAREModelDataset",
+    "CARETokenCodec",
+    "CARETrainCollator",
+    "CARETrainer",
+    "CARETrainerConfig",
     "E4SRecConfig",
     "E4SRecModel",
     "E4SRecModelDataset",
