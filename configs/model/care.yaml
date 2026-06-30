@@ -1,0 +1,84 @@
+# @package _global_
+
+model:
+  name: care
+
+  # Keys must be RecBole remapped item ids: "0", "1", ...
+  # Values may be integer SID lists or CARE textual SID token lists.
+  sid_file: ""
+
+  # Qwen2/Qwen2.5 backbone.
+  base_model: "path/to/Qwen/qwen0.5B"
+  model_max_length: 2048
+  torch_dtype: float32
+  attn_implementation: null
+  trust_remote_code: false
+  low_cpu_mem_usage: true
+
+  # RecBole sequential input format (CARE-style compact history).
+  history_max_length: 20
+  history_separator: ""
+  add_history_prefix: false
+  special_token_for_answer: "|start_of_answer|"
+
+  # CARE reasoning.
+  query_list: [1, 1, 1, 1]
+  progressive_list: [true, true, true, true]
+  progressive_attn: true
+  attention_strategy: hard
+  query_div_scale: 0.3
+
+  # CARE constrained beam search.
+  num_beams: 20
+  max_new_token: 10
+  filter_items: true
+
+trainer:
+  batch_size: 256
+  eval_batch_size: 8
+  shuffle: true
+  max_epochs: 20
+  eval_steps: 1
+  # Training-time validation follows original CARE train.py: monitor eval_loss only.
+  monitor: eval_loss
+  inference_topk: 10
+  mixed_precision: bf16
+  gradient_accumulation_steps: 1
+  dataloader_num_workers: 0
+  pin_memory: true
+  save_inference_results: false
+
+  # Original CARE TrainingArguments-style controls.
+  warmup_steps: 50
+  warmup_ratio: 0.0
+  lr_scheduler_type: cosine
+  logging_steps: 10
+  save_and_eval_strategy: epoch
+  save_and_eval_steps: 1000
+  load_best_model_at_end: true
+
+  early_stopping:
+    enabled: true
+    patience: 3
+    min_delta: 0.0
+
+  checkpoint:
+    save_best: true
+    save_last: true
+
+  optimizer:
+    name: AdamW
+    kwargs:
+      lr: 5.0e-5
+      weight_decay: 0.01
+
+  scheduler: null
+
+  eval:
+    protocol: full
+    exclude_history: false
+    metrics:
+      - name: recall
+        ks: [5, 10]
+      - name: ndcg
+        ks: [5, 10]
