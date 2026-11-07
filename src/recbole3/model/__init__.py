@@ -104,6 +104,7 @@ from recbole3.model.lrurec import (
     LRURecTrainer,
     LRURecTrainerConfig,
 )
+from recbole3.model.mancar import ManCARConfig, ManCARModel, ManCARModelDataset
 from recbole3.model.minionerec.config import MiniOneRecConfig
 from recbole3.model.rankmixer import (
     RANKMIXER_FEATURES,
@@ -186,6 +187,11 @@ MODEL_TABLE: dict[str, ModelSpec] = {
         trainer_cls=CARETrainer,
         trainer_config_cls=CARETrainerConfig,
         pipeline_cls=Pipeline,
+    ),
+    "mancar": ModelSpec(
+        model_cls=ManCARModel,
+        config_cls=ManCARConfig,
+        model_data_cls=ManCARModelDataset,
     ),
     "rearec": ModelSpec(
         model_cls=ReaRecModel,
