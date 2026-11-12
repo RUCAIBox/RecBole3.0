@@ -1,0 +1,36 @@
+# @package _global_
+
+model:
+  name: mancar
+  history_max_length: 50
+  embedding_dim: 256
+  num_layers: 2
+  num_heads: 2
+  inner_size: 300
+  dropout: 0.5
+  reason_step: 5
+  pl_weight: 1.0
+  items_per_trigger: 7
+
+trainer:
+  batch_size: 512
+  max_epochs: 100
+  monitor: ndcg@10
+  checkpoint:
+    save_best: true
+  early_stopping:
+    enabled: true
+    patience: 5
+    min_delta: 0.0
+  optimizer:
+    name: Adam
+    kwargs:
+      lr: 0.001
+  eval:
+    protocol: full
+    exclude_history: false
+    metrics:
+      - name: recall
+        ks: [5, 10]
+      - name: ndcg
+        ks: [5, 10]
