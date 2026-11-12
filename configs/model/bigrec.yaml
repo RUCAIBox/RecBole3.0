@@ -1,0 +1,101 @@
+# @package _global_
+# BIGRec — Bi-Step Grounding Paradigm for Large Language Models in Recommendation
+# Reference: Bao et al., arXiv:2308.08434 (2023)
+
+model:
+  name: bigrec
+
+  # ── LLM Backbone ────────────────────────────────────────────────────────────
+  llm_path: "/mnt/data/model/Llama-3.1-8B-Instruct"   # REQUIRED: local path or HF hub id
+  device_id: 6                          # GPU index (ignored under torchrun)
+  pipeline_parallel: false              # shard model across pipeline_parallel_gpus GPUs
+  pipeline_parallel_gpus: 2
+  torch_dtype: float16                  # "float16" or "bfloat16"
+  load_in_8bit: false                   # INT8 quantization via bitsandbytes
+  attn_implementation: flash_attention_2  # "eager" or "flash_attention_2"
+
+  # ── LoRA ────────────────────────────────────────────────────────────────────
+  use_lora: true
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  lora_target_modules:
+    - q_proj
+    - v_proj
+
+  # ── Tokenization ────────────────────────────────────────────────────────────
+  max_input_length: 2048                 # max tokens for prompt (instruction + input)
+  max_new_tokens: 128                    # max tokens generated during beam search
+
+  # ── SFT Training ────────────────────────────────────────────────────────────
+  train_on_inputs: true                 # true = full-sequence loss (official default)
+  train_batch_size: 4
+  gradient_accumulation_steps: 32
+  num_train_epochs: 3
+  learning_rate: 3.0e-4
+  weight_decay: 0.0
+  warmup_steps: 20                      # fixed warm-up steps; overrides warmup_ratio
+  warmup_ratio: 0.0
+  lr_scheduler_type: cosine
+  fp16: true
+  bf16: false
+  optim: adamw_torch
+  gradient_checkpointing: true
+  logging_steps: 10
+  save_strategy: epoch
+  save_total_limit: 1
+  load_best_model_at_end: true
+  deepspeed: null                       # path to a DeepSpeed JSON config, or null
+  early_stopping_patience: 5
+  sample_num: 1024                        # -1 = full dataset; N = subsample N rows
+  max_steps: -1                      # hard step cap; -1 = use num_train_epochs
+
+  # ── Beam-Search Generation ───────────────────────────────────────────────────
+  num_beams: 4
+  eval_batch_size: 4
+
+  # ── Embedding Grounding ──────────────────────────────────────────────────────
+  history_max_length: 20                # most-recent history items in the prompt
+  item_text_field: title                # item_table column for item name text
+  domain: product                       # "movie", "product", or "item"
+  embedding_batch_size: 32
+  embedding_cache_dir: outputs/bigrec/embeddings
+  refresh_embedding_cache: false        # reuse item embeddings across repeated evaluation runs
+  embedding_use_base_model: true        # use base (non-LoRA) model for embeddings
+
+  # ── Grounding Weight Injection (Eq. 3) ───────────────────────────────────────
+  # Modes: "none", "popularity", "cf", "popularity+cf"
+  grounding_mode: none
+  grounding_gamma: 1.0                  # γ exponent; larger = stronger weight effect
+  cf_score_path: null                   # .pt file [num_items]; required for cf mode
+  grounding_gamma_search: false         # auto grid-search best γ on val split
+  grounding_gamma_search_values: []     # custom γ grid; empty = official 199-value grid
+
+  # ── Evaluation ──────────────────────────────────────────────────────────────
+  eval_metrics:
+    - recall
+    - ndcg
+  eval_topk:
+    - 5
+    - 10
+    - 20
+  eval_protocol: full                   # "sampled" or "full"
+  exclude_history: false                # full only: mask items in seen_item_ids before Top-K
+  eval_user_num: 5000                   # -1 = all; 5000 mirrors official test set size
+
+  # ── vLLM Offline Beam-Search (used for generation during evaluation) ────────
+  # Generation runs in a one-shot subprocess calling LLM.beam_search (vLLM's
+  # only beam-search-capable API from 0.6.4 onward).  Set vllm_conda_env if
+  # vLLM lives in a different conda env from the training environment.
+  vllm_conda_env: "vllm"                    # conda env name with vLLM; empty = current env
+  vllm_device_id: 8                     # starting GPU index for the vLLM subprocess
+  vllm_tensor_parallel_size: 2          # number of GPUs for vLLM tensor parallelism (>1 for large models)
+  vllm_gpu_memory_utilization: 0.8      # fraction of GPU VRAM vLLM pre-allocates; lower if OOM on startup
+
+  # ── Pipeline Control ─────────────────────────────────────────────────────────
+  pipeline_stage: training              # "training" or "evaluation"
+  checkpoint_path: null                 # required when pipeline_stage='evaluation'
+
+dataset:
+  metadata_mode: fields
+  download_source: huggingface

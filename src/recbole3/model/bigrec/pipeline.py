@@ -1,0 +1,174 @@
+"""BIGRec pipeline: orchestrates dataset preparation, LoRA training, and evaluation."""
+
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any
+
+logging.basicConfig(level=logging.INFO)
+
+from omegaconf import DictConfig
+
+from recbole3.config import RuntimeConfig, instantiate_dataclass
+from recbole3.dataset import get_dataset_spec
+from recbole3.evaluation import EvalConfig
+from recbole3.model.bigrec.config import BIGRecConfig
+from recbole3.model.bigrec.data import BIGRecModelDataset
+from recbole3.model.bigrec.trainer import BIGRecTrainer
+from recbole3.pipeline import Pipeline
+from recbole3.utils import require_component_cfg, require_component_name
+
+logger = logging.getLogger(__name__)
+
+
+class BIGRecPipeline(Pipeline):
+    """End-to-end pipeline for BIGRec experiments.
+
+    Orchestrates the following steps:
+      1. Parse Hydra configuration (runtime / dataset / model blocks).
+      2. Prepare the task dataset (splitting, item table, eval candidates).
+      3. Build :class:`~recbole3.model.bigrec.data.BIGRecModelDataset` to inject
+         ``history_item_ids`` into every split.
+      4. Depending on ``config.pipeline_stage``:
+
+         * ``'training'``: LoRA fine-tune on the training split via
+           :meth:`BIGRecTrainer.fit`, then evaluate on the test split.
+         * ``'evaluation'``: Load an existing checkpoint and evaluate.
+    """
+
+    def _parse_config(
+        self,
+        cfg: DictConfig,
+    ) -> tuple[RuntimeConfig, DictConfig, DictConfig]:
+        """Extract and return the three top-level config blocks.
+
+        Args:
+            cfg: Composed Hydra DictConfig.
+
+        Returns:
+            Tuple of ``(runtime_cfg, dataset_cfg, model_cfg)``.
+        """
+        runtime_cfg = instantiate_dataclass(RuntimeConfig, cfg.get("runtime"))
+        dataset_cfg = require_component_cfg(cfg, "dataset")
+        model_cfg = require_component_cfg(cfg, "model")
+        return runtime_cfg, dataset_cfg, model_cfg
+
+    def run(self) -> dict[str, Any]:
+        """Execute the BIGRec experiment pipeline.
+
+        Returns:
+            Dict of metric scores (``"recall@K"``, ``"ndcg@K"``, …) or
+            ``{"checkpoint_path": ...}`` when only training is requested.
+
+        Raises:
+            ValueError: If ``pipeline_stage`` is unknown or required config
+                        fields are missing.
+        """
+        runtime_cfg, dataset_cfg, model_cfg = self._parse_config(self.cfg)
+
+        # ── Dataset ────────────────────────────────────────────────────────────
+        dataset_name = require_component_name(dataset_cfg, "dataset")
+        if dataset_name != "amazon2023_retrieval":
+            raise ValueError(
+                "BIGRec currently requires Amazon Reviews 2023 retrieval data "
+                "because grounding is title-only. Use dataset=amazon2023_retrieval "
+                f"with metadata_mode='fields'; got dataset={dataset_name!r}."
+            )
+        metadata_mode = str(dataset_cfg.get("metadata_mode", "")).strip()
+        if metadata_mode != "fields":
+            raise ValueError(
+                "BIGRec requires Amazon Reviews 2023 with metadata_mode='fields' "
+                f"so item titles are available; got metadata_mode={metadata_mode!r}."
+            )
+        dataset_spec = get_dataset_spec(dataset_name)
+
+        bigrec_config: BIGRecConfig = instantiate_dataclass(BIGRecConfig, model_cfg)
+
+        # Prepare the base task dataset (interactions, item table, eval splits).
+        # Use the protocol from BIGRecConfig so sampled / full candidates are
+        # built correctly.
+        # NOTE: this step can take several minutes on large datasets (k-core
+        # filtering, interaction splitting, item-table construction).
+        logger.info("BIGRec [1/2]: preparing dataset '%s' …", dataset_name)
+        eval_config = EvalConfig(
+            protocol=bigrec_config.eval_protocol,  # type: ignore[arg-type]
+            exclude_history=bigrec_config.exclude_history,
+        )
+        task_data = dataset_spec.dataset_cls(
+            instantiate_dataclass(dataset_spec.config_cls, dataset_cfg)
+        ).prepare(eval_config=eval_config)
+        logger.info(
+            "BIGRec [1/2]: dataset ready — %d train / %d valid / %d test rows.",
+            len(task_data.get_train_dataset().frame),
+            len(task_data.get_eval_dataset("valid").frame),
+            len(task_data.get_eval_dataset("test").frame),
+        )
+
+        # Wrap with BIGRecModelDataset to inject history_item_ids into all splits.
+        # NOTE: this step walks every training row to build prefix histories and
+        # can take a few minutes for large datasets.
+        logger.info("BIGRec [2/2]: building autoregressive history sequences …")
+        bigrec_data = BIGRecModelDataset.from_task_dataset(
+            task_data, model_config=bigrec_config
+        )
+        logger.info("BIGRec [2/2]: history sequences ready.")
+
+        # ── Trainer ────────────────────────────────────────────────────────────
+        trainer = BIGRecTrainer(bigrec_config)
+        output_dir: str = runtime_cfg.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        stage = bigrec_config.pipeline_stage.strip().lower()
+
+        if stage == "training":
+            logger.info("BIGRec pipeline: starting training stage …")
+            fit_result = trainer.fit(bigrec_data, output_dir=output_dir)
+            checkpoint_path: str = fit_result["checkpoint_path"]
+            logger.info("BIGRec pipeline: evaluating on test split …")
+            results = trainer.evaluate(
+                bigrec_data, checkpoint_path=checkpoint_path, split="test"
+            )
+            results["checkpoint_path"] = checkpoint_path
+            self._print_results(results)
+            return results
+
+        elif stage == "evaluation":
+            if not bigrec_config.checkpoint_path:
+                raise ValueError(
+                    "BIGRecConfig.checkpoint_path must be set when "
+                    "pipeline_stage='evaluation'."
+                )
+            logger.info(
+                "BIGRec pipeline: evaluation-only stage (checkpoint=%s) …",
+                bigrec_config.checkpoint_path,
+            )
+            results = trainer.evaluate(
+                bigrec_data,
+                checkpoint_path=bigrec_config.checkpoint_path,
+                split="test",
+            )
+            self._print_results(results)
+            return results
+
+        else:
+            raise ValueError(
+                f"Unknown pipeline_stage '{bigrec_config.pipeline_stage}'. "
+                "Supported: 'training', 'evaluation'."
+            )
+
+    @staticmethod
+    def _print_results(results: dict[str, Any]) -> None:
+        """Print evaluation metrics to stdout in a readable table."""
+        metric_keys = sorted(k for k in results if k != "checkpoint_path")
+        if not metric_keys:
+            return
+        print("\n" + "=" * 50)
+        print("  BIGRec Evaluation Results")
+        print("=" * 50)
+        for key in metric_keys:
+            print(f"  {key:<20} {results[key]:.4f}")
+        print("=" * 50 + "\n")
+
+
+__all__ = ["BIGRecPipeline"]
